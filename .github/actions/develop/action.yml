@@ -1,0 +1,113 @@
+# Composite action: Module 4 (develop)
+# PRD §2 module 4. SECURITY: only triggered by `accepted` label (PRD §7 S2).
+#
+# REQUIRED PERMISSIONS (caller workflow must grant):
+#   contents: write      (branch creation, commits)  -- S3: never on main; only feature branches
+#   issues:   write      (post audit, transition stage label)
+#
+# S3 ENFORCEMENT: base-branch MUST NOT be `main`. The first step refuses to
+# operate if `main`/`master` is passed. allowed_tools excludes raw `git push*`
+# and routes writes through the scoped repo-token on feature branches only.
+name: "Module 4 — Develop"
+description: "Create feature branch, implement, write impl notes (PRD §2 module 4)."
+
+inputs:
+  issue-number:
+    description: "Issue number"
+    required: true
+  base-branch:
+    description: "Branch to develop from — MUST NOT be 'main' (PRD §7 S3, enforced below)"
+    required: false
+    default: "develop"
+  runner-image:
+    description: "Runner image override (use larger runner for Rust)"
+    required: false
+    default: "ubuntu-latest"
+  repo-token:
+    description: "GITHUB_TOKEN (contents:write for branch)"
+    required: true
+  api-key:
+    description: "Engine provider API key"
+    required: true
+  engine:
+    description: "LLM engine (claude | codex)"
+    required: false
+    default: "claude"
+  model:
+    description: "Model ID override"
+    required: false
+    default: ""
+  max-turns:
+    description: "Agent turn cap (PRD §5)"
+    required: false
+    default: "20"
+  context-budget-paths:
+    description: "Path allowlist — limit reads (PRD §5)"
+    required: false
+    default: ""
+  dry-run:
+    description: "If true, do not push branch"
+    required: false
+    default: "false"
+
+outputs:
+  stage:
+    description: "Lifecycle stage reached (in-development)"
+    value: ${{ steps.emit.outputs.stage }}
+  audit-comment-url:
+    description: "URL of the audit comment"
+    value: ${{ steps.emit.outputs.audit-comment-url }}
+  branch-name:
+    description: "Feature branch name"
+    value: ${{ steps.emit.outputs.branch-name }}
+  impl-notes-path:
+    description: "Path to implementation notes"
+    value: ${{ steps.emit.outputs.impl-notes-path }}
+
+runs:
+  using: composite
+  steps:
+    - name: Refuse to operate on main (PRD §7 S3)
+      shell: bash
+      run: |
+        if [ "${{ inputs.base-branch }}" = "main" ] || [ "${{ inputs.base-branch }}" = "master" ]; then
+          echo "::error::Refusing to develop against ${{ inputs.base-branch }} (PRD §7 S3 — AI never writes to main). Set base-branch to a non-main ref."
+          exit 1
+        fi
+
+    - name: Develop via Claude
+      if: inputs.engine == 'claude'
+      id: claude-run
+      uses: anthropics/claude-code-action@v1
+      with:
+        anthropic_api_key: ${{ inputs.api-key }}
+        github_token: ${{ inputs.repo-token }}
+        prompt: |
+          Implement Issue #${{ inputs.issue-number }}. Create branch
+          `feat/issue-${{ inputs.issue-number }}` from ${{ inputs.base-branch }}.
+          Limit reads to paths named in CLAUDE.md or the issue (PRD §5 context budget).
+          Write impl notes to .github/notes/issue-${{ inputs.issue-number }}.md.
+          Never print secrets (PRD §7 S4). No force-push (PRD §6 idempotency).
+          NEVER commit to or push to main/master/${{ inputs.base-branch }} itself —
+          only the feat/issue-* branch (PRD §7 S3).
+        max_turns: ${{ inputs.max-turns }}
+        allowed_tools: "Read,Grep,Glob,Write,Edit,Bash(git checkout:*,git switch:*,git add:*,git commit:*,git status:*,git diff:*,cargo:*,uv:*)"
+
+    - name: Develop via Codex
+      if: inputs.engine == 'codex'
+      id: codex-run
+      uses: openai/codex-action@v1
+      with:
+        openai_api_key: ${{ inputs.api-key }}
+        github_token: ${{ inputs.repo-token }}
+        prompt: "Implement Issue #${{ inputs.issue-number }} on feat/ branch."
+        permission_profile: workspace-write
+
+    - name: Emit outputs
+      id: emit
+      shell: bash
+      run: |
+        echo "stage=in-development" >> "$GITHUB_OUTPUT"
+        echo "audit-comment-url=" >> "$GITHUB_OUTPUT"
+        echo "branch-name=feat/issue-${{ inputs.issue-number }}" >> "$GITHUB_OUTPUT"
+        echo "impl-notes-path=.github/notes/issue-${{ inputs.issue-number }}.md" >> "$GITHUB_OUTPUT"

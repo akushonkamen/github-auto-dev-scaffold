@@ -1,0 +1,106 @@
+# Composite action: Module 6 (test)
+# PRD §2 module 6, §4 (Codex default — out-of-distribution tester).
+#
+# REQUIRED PERMISSIONS (caller workflow must grant):
+#   contents:        read
+#   checks:          write       (publish test check run)
+#   pull-requests:   write       (annotate PR with coverage / failures)
+name: "Module 6 — Test"
+description: "Generate test cases and run selective CI (PRD §4: Codex default engine)."
+
+inputs:
+  branch-name:
+    description: "Feature branch to test"
+    required: true
+  selective-paths:
+    description: "Comma-sep paths affected (used for selective test selection)"
+    required: false
+    default: ""
+  repo-token:
+    description: "GITHUB_TOKEN (checks:write, PR annotation)"
+    required: true
+  api-key:
+    description: "Engine provider API key"
+    required: true
+  engine:
+    description: "LLM engine (default codex per PRD §4)"
+    required: false
+    default: "codex"
+  model:
+    description: "Model ID override"
+    required: false
+    default: ""
+  max-turns:
+    description: "Agent turn cap"
+    required: false
+    default: "15"
+  context-budget-paths:
+    description: "Path allowlist"
+    required: false
+    default: ""
+  dry-run:
+    description: "If true, do not commit generated tests"
+    required: false
+    default: "false"
+
+outputs:
+  stage:
+    description: "Lifecycle stage reached (testing)"
+    value: ${{ steps.emit.outputs.stage }}
+  audit-comment-url:
+    description: "URL of the audit comment"
+    value: ${{ steps.emit.outputs.audit-comment-url }}
+  report-path:
+    description: "Path to test report"
+    value: ${{ steps.emit.outputs.report-path }}
+  coverage-pct:
+    description: "Coverage percentage"
+    value: ${{ steps.emit.outputs.coverage-pct }}
+
+runs:
+  using: composite
+  steps:
+    - name: Test via Codex (default engine)
+      if: inputs.engine == 'codex'
+      id: codex-run
+      uses: openai/codex-action@v1
+      with:
+        openai_api_key: ${{ inputs.api-key }}
+        github_token: ${{ inputs.repo-token }}
+        # PRD §4: --output-schema enforces JSON contract
+        prompt: |
+          Generate test cases for branch ${{ inputs.branch-name }}.
+          Run selectively based on affected paths: ${{ inputs.selective-paths }}.
+          Output JSON: { "tests_added": int, "passing": int, "failing": int, "coverage_pct": float, "report_path": str }
+        permission_profile: workspace-write
+        output_schema: |
+          {
+            "type": "object",
+            "required": ["tests_added", "passing", "failing", "coverage_pct"],
+            "properties": {
+              "tests_added": {"type": "integer"},
+              "passing": {"type": "integer"},
+              "failing": {"type": "integer"},
+              "coverage_pct": {"type": "number"},
+              "report_path": {"type": "string"}
+            }
+          }
+
+    - name: Test via Claude (override engine)
+      if: inputs.engine == 'claude'
+      id: claude-run
+      uses: anthropics/claude-code-action@v1
+      with:
+        anthropic_api_key: ${{ inputs.api-key }}
+        github_token: ${{ inputs.repo-token }}
+        prompt: "Generate tests for ${{ inputs.branch-name }}."
+        max_turns: ${{ inputs.max-turns }}
+
+    - name: Emit outputs
+      id: emit
+      shell: bash
+      run: |
+        echo "stage=testing" >> "$GITHUB_OUTPUT"
+        echo "audit-comment-url=" >> "$GITHUB_OUTPUT"
+        echo "report-path=.github/reports/test-${{ inputs.branch-name }}.md" >> "$GITHUB_OUTPUT"
+        echo "coverage-pct=0.0" >> "$GITHUB_OUTPUT"

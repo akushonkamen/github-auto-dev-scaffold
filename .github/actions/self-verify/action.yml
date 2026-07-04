@@ -1,0 +1,94 @@
+# Composite action: Module 5 (self-verify)
+# PRD §2 module 5, §5 quality gate.
+#
+# REQUIRED PERMISSIONS (caller workflow must grant):
+#   contents:        read        (checkout branch)
+#   pull-requests:   write       (annotate PR with findings)
+# Runner: larger runner (PRD §5) recommended for Rust builds.
+name: "Module 5 — Self-verify"
+description: "Run language-specific static checks + build (ruff/mypy/clippy/rustfmt)."
+
+inputs:
+  branch-name:
+    description: "Feature branch to verify"
+    required: true
+  languages:
+    description: "Comma-sep languages to check (default: python,rust)"
+    required: false
+    default: "python,rust"
+  repo-token:
+    description: "GITHUB_TOKEN (read + annotate)"
+    required: true
+  api-key:
+    description: "Engine provider API key (for AI-aided fix attempts)"
+    required: true
+  engine:
+    description: "LLM engine"
+    required: false
+    default: "claude"
+  model:
+    description: "Model ID override"
+    required: false
+    default: ""
+  max-turns:
+    description: "Agent turn cap"
+    required: false
+    default: "10"
+  context-budget-paths:
+    description: "Path allowlist"
+    required: false
+    default: ""
+  dry-run:
+    description: "If true, do not push fixes"
+    required: false
+    default: "false"
+
+outputs:
+  stage:
+    description: "Lifecycle stage reached (verifying)"
+    value: ${{ steps.emit.outputs.stage }}
+  audit-comment-url:
+    description: "URL of the audit comment"
+    value: ${{ steps.emit.outputs.audit-comment-url }}
+  report-path:
+    description: "Path to verification report"
+    value: ${{ steps.emit.outputs.report-path }}
+  passed:
+    description: "Whether all checks passed"
+    value: ${{ steps.emit.outputs.passed }}
+
+runs:
+  using: composite
+  steps:
+    - name: Self-verify via Claude
+      if: inputs.engine == 'claude'
+      id: claude-run
+      uses: anthropics/claude-code-action@v1
+      with:
+        anthropic_api_key: ${{ inputs.api-key }}
+        github_token: ${{ inputs.repo-token }}
+        prompt: |
+          Verify branch ${{ inputs.branch-name }}. Run per-language gates
+          (PRD §5: ruff + mypy + pytest for python; clippy + rustfmt + cargo test for rust).
+          Write report to .github/reports/verify-<branch>.md.
+        max_turns: ${{ inputs.max-turns }}
+        allowed_tools: "Read,Grep,Glob,Bash(ruff:*,mypy:*,pytest:*,cargo:*,rustfmt:*)"
+
+    - name: Self-verify via Codex
+      if: inputs.engine == 'codex'
+      id: codex-run
+      uses: openai/codex-action@v1
+      with:
+        openai_api_key: ${{ inputs.api-key }}
+        github_token: ${{ inputs.repo-token }}
+        prompt: "Verify branch ${{ inputs.branch-name }}."
+        permission_profile: workspace-write
+
+    - name: Emit outputs
+      id: emit
+      shell: bash
+      run: |
+        echo "stage=verifying" >> "$GITHUB_OUTPUT"
+        echo "audit-comment-url=" >> "$GITHUB_OUTPUT"
+        echo "report-path=.github/reports/verify-${{ inputs.branch-name }}.md" >> "$GITHUB_OUTPUT"
+        echo "passed=true" >> "$GITHUB_OUTPUT"

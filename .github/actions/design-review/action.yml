@@ -1,0 +1,89 @@
+# Composite action: Module 3.5 (design review)
+# PRD §2 module 3.5. Triggered on size:XL accepted issues.
+#
+# REQUIRED PERMISSIONS (caller workflow must grant):
+#   contents: write      (write design doc to docs/designs/)
+#   issues:   write      (post audit comment, apply design-approved)
+name: "Module 3.5 — Design review"
+description: "Produce design proposal for size:XL accepted issues (PRD §2 module 3.5)."
+
+inputs:
+  issue-number:
+    description: "Issue number"
+    required: true
+  proposal-format:
+    description: "Output format (markdown | doc)"
+    required: false
+    default: "markdown"
+  repo-token:
+    description: "GITHUB_TOKEN (issues:write, contents:write)"
+    required: true
+  api-key:
+    description: "Engine provider API key"
+    required: true
+  engine:
+    description: "LLM engine (claude | codex)"
+    required: false
+    default: "claude"
+  model:
+    description: "Model ID override"
+    required: false
+    default: ""
+  max-turns:
+    description: "Agent turn cap"
+    required: false
+    default: "10"
+  context-budget-paths:
+    description: "Path allowlist"
+    required: false
+    default: ""
+  dry-run:
+    description: "If true, do not write"
+    required: false
+    default: "false"
+
+outputs:
+  stage:
+    description: "Lifecycle stage reached (design-review)"
+    value: ${{ steps.emit.outputs.stage }}
+  audit-comment-url:
+    description: "URL of the audit comment"
+    value: ${{ steps.emit.outputs.audit-comment-url }}
+  proposal-path:
+    description: "Repo-relative path of design proposal"
+    value: ${{ steps.emit.outputs.proposal-path }}
+
+runs:
+  using: composite
+  steps:
+    - name: Design via Claude
+      if: inputs.engine == 'claude'
+      id: claude-run
+      uses: anthropics/claude-code-action@v1
+      with:
+        anthropic_api_key: ${{ inputs.api-key }}
+        github_token: ${{ inputs.repo-token }}
+        prompt: |
+          Produce a design proposal for Issue #${{ inputs.issue-number }}.
+          Write to docs/designs/<slug>.md. Cover: goals, non-goals, alternatives,
+          risks, rollback. Solicit design-approved label from a maintainer.
+        max_turns: ${{ inputs.max-turns }}
+        allowed_tools: "Read,Grep,Glob,Write,Bash(git:*)"
+
+    - name: Design via Codex
+      if: inputs.engine == 'codex'
+      id: codex-run
+      uses: openai/codex-action@v1
+      with:
+        openai_api_key: ${{ inputs.api-key }}
+        github_token: ${{ inputs.repo-token }}
+        prompt: "Design proposal for Issue #${{ inputs.issue-number }} -> docs/designs/"
+        permission_profile: workspace-write
+
+    - name: Emit outputs
+      id: emit
+      shell: bash
+      run: |
+        echo "stage=design-review" >> "$GITHUB_OUTPUT"
+        echo "audit-comment-url=" >> "$GITHUB_OUTPUT"
+        echo "proposal-path=docs/designs/issue-${{ inputs.issue-number }}.md" >> "$GITHUB_OUTPUT"

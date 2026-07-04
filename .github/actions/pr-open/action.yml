@@ -1,0 +1,98 @@
+# Composite action: Module 7/8 (PR open + AI review)
+# PRD §2 modules 7 and 8 combined — both run on PR events and share tokens.
+#
+# REQUIRED PERMISSIONS (caller workflow must grant):
+#   contents:        read
+#   pull-requests:   write       (open PR, post review findings)
+name: "Modules 7+8 — PR open and AI review"
+description: "Open PR with linked-issue body, then run AI initial review (PRD §2 modules 7+8)."
+
+inputs:
+  branch-name:
+    description: "Feature branch to open PR from"
+    required: true
+  issue-number:
+    description: "Linked Issue number"
+    required: true
+  draft:
+    description: "Open as draft PR (default true per PRD §6 人工介入点)"
+    required: false
+    default: "true"
+  repo-token:
+    description: "GITHUB_TOKEN (pull-requests:write)"
+    required: true
+  api-key:
+    description: "Engine provider API key"
+    required: true
+  engine:
+    description: "LLM engine (claude | codex)"
+    required: false
+    default: "claude"
+  model:
+    description: "Model ID override"
+    required: false
+    default: ""
+  max-turns:
+    description: "Agent turn cap"
+    required: false
+    default: "12"
+  context-budget-paths:
+    description: "Path allowlist"
+    required: false
+    default: ""
+  dry-run:
+    description: "If true, do not open PR"
+    required: false
+    default: "false"
+
+outputs:
+  stage:
+    description: "Lifecycle stage reached (in-review)"
+    value: ${{ steps.emit.outputs.stage }}
+  audit-comment-url:
+    description: "URL of the audit comment"
+    value: ${{ steps.emit.outputs.audit-comment-url }}
+  pr-url:
+    description: "URL of the opened PR"
+    value: ${{ steps.emit.outputs.pr-url }}
+  pr-number:
+    description: "Number of the opened PR"
+    value: ${{ steps.emit.outputs.pr-number }}
+
+runs:
+  using: composite
+  steps:
+    - name: Open PR + initial review via Claude
+      if: inputs.engine == 'claude'
+      id: claude-run
+      uses: anthropics/claude-code-action@v1
+      with:
+        anthropic_api_key: ${{ inputs.api-key }}
+        github_token: ${{ inputs.repo-token }}
+        prompt: |
+          Open a PR from ${{ inputs.branch-name }} into main.
+          Link Issue #${{ inputs.issue-number }}. Body must contain:
+          Summary, Linked Issue, Test plan (PRD §2 module 7 contract).
+          Then run an initial review against CLAUDE.md and post findings as a comment.
+          Never approve — final approval is human (PRD §6 人工介入点 module 8).
+        max_turns: ${{ inputs.max-turns }}
+        allowed_tools: "Read,Grep,Glob,Bash(gh pr:*)"
+
+    - name: Open PR + initial review via Codex
+      if: inputs.engine == 'codex'
+      id: codex-run
+      uses: openai/codex-action@v1
+      with:
+        openai_api_key: ${{ inputs.api-key }}
+        github_token: ${{ inputs.repo-token }}
+        prompt: "Open PR from ${{ inputs.branch-name }}; link Issue #${{ inputs.issue-number }}; review."
+        permission_profile: workspace-write
+
+    - name: Emit outputs
+      id: emit
+      shell: bash
+      run: |
+        echo "stage=in-review" >> "$GITHUB_OUTPUT"
+        echo "audit-comment-url=" >> "$GITHUB_OUTPUT"
+        echo "pr-url=" >> "$GITHUB_OUTPUT"
+        echo "pr-number=" >> "$GITHUB_OUTPUT"

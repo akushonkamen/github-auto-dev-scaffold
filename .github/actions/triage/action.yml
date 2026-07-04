@@ -1,0 +1,89 @@
+# Composite action: Module 2 (triage reply)
+# PRD §2 module 2. See docs/composite-action-spec.md for the full interface.
+# COMMON inputs: repo-token, engine, api-key, model, max-turns, context-budget-paths, dry-run
+# COMMON outputs: stage, audit-comment-url
+#
+# REQUIRED PERMISSIONS (caller workflow must grant):
+#   contents: read       (read CLAUDE.md, prompts)
+#   issues:   write      (post triage comment, apply triage label) — PRD §7 S1
+name: "Module 2 — Triage reply"
+description: "First-response, dedupe, clarification, routing label for newly opened Issue (PRD §2 module 2)."
+
+inputs:
+  issue-number:
+    description: "Issue number to triage"
+    required: true
+  repo-token:
+    description: "GITHUB_TOKEN with issues:write"
+    required: true
+  api-key:
+    description: "Engine provider API key"
+    required: true
+  engine:
+    description: "LLM engine (claude | codex)"
+    required: false
+    default: "claude"
+  model:
+    description: "Model ID override"
+    required: false
+    default: ""
+  max-turns:
+    description: "Agent turn cap"
+    required: false
+    default: "6"
+  context-budget-paths:
+    description: "Space-sep path allowlist"
+    required: false
+    default: ""
+  dry-run:
+    description: "If true, do not write"
+    required: false
+    default: "false"
+
+outputs:
+  stage:
+    description: "Lifecycle stage reached (triage)"
+    value: ${{ steps.emit.outputs.stage }}
+  audit-comment-url:
+    description: "URL of the audit comment posted"
+    value: ${{ steps.emit.outputs.audit-comment-url }}
+  triage-tags:
+    description: "Comma-sep suggested labels"
+    value: ${{ steps.emit.outputs.triage-tags }}
+
+runs:
+  using: composite
+  steps:
+    # S1: read-only repo access; issues:write only via repo-token.
+    - name: Triage via Claude
+      if: inputs.engine == 'claude'
+      id: claude-run
+      uses: anthropics/claude-code-action@v1
+      with:
+        anthropic_api_key: ${{ inputs.api-key }}
+        github_token: ${{ inputs.repo-token }}
+        prompt: |
+          You are the triage module. Reply to Issue #${{ inputs.issue-number }} with:
+          1. Acknowledgement, 2. Dedup check, 3. Clarifying questions if any, 4. Suggested labels.
+          Read CLAUDE.md for project context. Do NOT read whole repo (PRD §5).
+          Never print secrets (PRD §7 S4).
+        max_turns: ${{ inputs.max-turns }}
+        allowed_tools: "Read,Grep,Glob"
+
+    - name: Triage via Codex
+      if: inputs.engine == 'codex'
+      id: codex-run
+      uses: openai/codex-action@v1
+      with:
+        openai_api_key: ${{ inputs.api-key }}
+        github_token: ${{ inputs.repo-token }}
+        prompt: "Triage Issue #${{ inputs.issue-number }} per CLAUDE.md."
+        permission_profile: workspace-write
+
+    - name: Emit outputs
+      id: emit
+      shell: bash
+      run: |
+        echo "stage=triage" >> "$GITHUB_OUTPUT"
+        echo "audit-comment-url=" >> "$GITHUB_OUTPUT"
+        echo "triage-tags=" >> "$GITHUB_OUTPUT"

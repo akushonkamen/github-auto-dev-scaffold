@@ -1,0 +1,157 @@
+# Module 3 — Need judgement (PRD §2 module 3, §8 item 2)
+#
+# This is the咽喉 (chokepoint) of the pipeline: it converts triaged issues into
+# accepted/rejected/needs-info. PRD §3 mandates three modes (auto/manual/hybrid)
+# gated by the TRIAGE_MODE repo variable, with per-issue override via the
+# `force-manual` label.
+#
+# SECURITY (PRD §7 S1): this workflow consumes untrusted Issue body content.
+#   permissions:
+#     contents: read        # only reads repo files (CLAUDE.md, prompts)
+#     issues: write         # posts comments and applies labels
+#   NEVER add `contents: write` here. A prompt-injection in an Issue body must
+#   not be able to escalate to repo writes.
+name: judge
+
+on:
+  issues:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      issue-number:
+        description: "Issue number to judge"
+        required: true
+        type: string
+
+# Default permissions: least privilege. Each job below repeats these
+# explicitly so the security posture of any single job can be read in isolation.
+permissions:
+  contents: read
+  issues: write
+
+# Single in-flight run per issue — duplicate triggers are de-duped.
+concurrency:
+  group: judge-issue-${{ github.event.issue.number || github.event.inputs.issue-number }}
+  cancel-in-progress: false
+
+jobs:
+  # Gate: only run when triage-done was just applied (or dispatch).
+  gate:
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'issues' && github.event.action == 'labeled' &&
+       github.event.label.name == 'triage-done')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read   # gate only inspects labels; does not write
+    outputs:
+      mode: ${{ steps.resolve-mode.outputs.mode }}
+      issue-number: ${{ steps.resolve-issue.outputs.issue-number }}
+    steps:
+      - id: resolve-issue
+        run: |
+          num="${{ github.event.issue.number || github.event.inputs.issue-number }}"
+          echo "issue-number=$num" >> "$GITHUB_OUTPUT"
+
+      - id: resolve-mode
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Resolve effective mode.
+          #   Priority: force-manual label  >  TRIAGE_MODE repo var  >  default 'hybrid'
+          num="${{ steps.resolve-issue.outputs.issue-number }}"
+          # Default
+          mode="${{ vars.TRIAGE_MODE }}"
+          if [ -z "$mode" ]; then mode="hybrid"; fi
+          echo "Resolved TRIAGE_MODE var: $mode"
+
+          # Check force-manual label
+          labels_json=$(gh issue view "$num" --json labels --jq '.labels[].name')
+          if echo "$labels_json" | grep -qx 'force-manual'; then
+            mode="manual"
+            echo "force-manual label present; overriding to manual"
+          fi
+
+          case "$mode" in
+            auto|manual|hybrid) ;;
+            *)
+              echo "::warning::Unknown TRIAGE_MODE='$mode', defaulting to hybrid"
+              mode="hybrid"
+              ;;
+          esac
+          echo "Effective mode: $mode"
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+
+  judge:
+    needs: gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    outputs:
+      decision: ${{ steps.judge-call.outputs.decision }}
+      confidence: ${{ steps.judge-call.outputs.confidence }}
+      reason: ${{ steps.judge-call.outputs.reason }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # Delegate the actual LLM call to the composite action (engine-agnostic).
+      # Engine = claude by default; swap by setting the `engine` input.
+      # See .github/actions/judge/action.yml. Step outputs are forwarded
+      # directly to job outputs — multi-line `reason` flows through unchanged.
+      - name: Judge (composite)
+        id: judge-call
+        uses: ./.github/actions/judge
+        with:
+          issue-number: ${{ needs.gate.outputs.issue-number }}
+          mode: ${{ needs.gate.outputs.mode }}
+          confidence-threshold: ${{ vars.HYBRID_CONFIDENCE_THRESHOLD }}
+          engine: claude
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          max-turns: 8
+
+  # Apply the verdict according to the resolved mode.
+  apply:
+    needs: [gate, judge]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Apply verdict
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MODE: ${{ needs.gate.outputs.mode }}
+          NUMBER: ${{ needs.gate.outputs.issue-number }}
+          DECISION: ${{ needs.judge.outputs.decision }}
+          CONFIDENCE: ${{ needs.judge.outputs.confidence }}
+          THRESHOLD_INPUT: ${{ vars.HYBRID_CONFIDENCE_THRESHOLD }}
+          REASON: ${{ needs.judge.outputs.reason }}
+        run: |
+          set -euo pipefail
+          ./.github/actions/judge/apply.sh
+
+  # Failure path covers gate, judge, AND apply failures.
+  # `if: always()` + per-need result checks is the only reliable pattern when
+  # apply (a non-fan-out sibling) can fail.
+  on-failure:
+    needs: [gate, judge, apply]
+    if: ${{ always() && (needs.gate.result == 'failure' || needs.judge.result == 'failure' || needs.apply.result == 'failure') }}
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write   # only need to comment + label
+    steps:
+      - name: Mark stage:failed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NUMBER: ${{ needs.gate.outputs.issue-number }}
+        run: |
+          gh issue edit "$NUMBER" --add-label "stage:failed" --remove-label "triage-done" || true
+          gh issue comment "$NUMBER" --body "⚠️ Module 3 (judge) failed in mode \`${{ needs.gate.outputs.mode }}\`. See [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details. A maintainer will triage."

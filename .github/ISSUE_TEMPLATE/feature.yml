@@ -1,0 +1,44 @@
+# Issue Form: Feature request
+# PRD §2 module 1 — structured feature intake.
+name: Feature request
+description: Propose a new capability or change in behavior
+labels: ["type:feature", triage]
+title: "[feat] "
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What can't you do today, and why does it matter?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What should the system do instead?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: textarea
+    id: scope
+    attributes:
+      label: Affected components
+      description: Which modules / directories does this touch? See CLAUDE.md repository layout.
+      placeholder: "e.g. .github/workflows/judge.yml, py/triage/, rust/judge/"
+    validations:
+      required: true
+  - type: dropdown
+    id: size
+    attributes:
+      label: Best-guess size
+      options:
+        - S (single file, < 50 lines)
+        - M (one module)
+        - L (cross-module, needs design review)
+        - XL (architectural change)
+    validations:
+      required: true

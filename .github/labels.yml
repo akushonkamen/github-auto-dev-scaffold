@@ -1,0 +1,134 @@
+# Machine-readable Label taxonomy.
+# Consumed by label-sync tooling (e.g. crazy-max/ghaction-github-labeler).
+# Source of truth pairs with docs/labels.md — keep them in sync.
+#
+# Schema:
+#   - name: <label>            (required)
+#     color: <6-hex>           (required)
+#     description: <string>    (required, <=100 chars)
+#     category: <group>        (required; one of triage, stage, type, size, force, meta)
+
+labels:
+  # ── triage funnel ────────────────────────────────────────────────────────
+  - name: triage
+    color: "fbca04"
+    description: "Newly opened; awaiting triage bot"
+    category: triage
+  - name: "triage:replying"
+    color: "fbca04"
+    description: "Triage bot is composing first response"
+    category: triage
+  - name: triage-done
+    color: "1d76db"
+    description: "Triage complete; awaiting judgement"
+    category: triage
+
+  # ── stage labels (lifecycle) ─────────────────────────────────────────────
+  - name: accepted
+    color: "0e8a16"
+    description: "Accepted for development (Module 4 trigger)"
+    category: stage
+  - name: rejected
+    color: "b60205"
+    description: "Will not be worked"
+    category: stage
+  - name: needs-info
+    color: "5319e7"
+    description: "Author must clarify before progress"
+    category: stage
+  - name: design-review
+    color: "c5def5"
+    description: "Needs design proposal first (Module 3.5)"
+    category: stage
+  - name: design-approved
+    color: "0e8a16"
+    description: "Design accepted; may develop"
+    category: stage
+  - name: in-development
+    color: "1d76db"
+    description: "Module 4 active"
+    category: stage
+  - name: verifying
+    color: "1d76db"
+    description: "Module 5 self-verify active"
+    category: stage
+  - name: testing
+    color: "1d76db"
+    description: "Module 6 test active"
+    category: stage
+  - name: ready-for-pr
+    color: "1d76db"
+    description: "Tests passed; PR may be opened"
+    category: stage
+  - name: in-review
+    color: "1d76db"
+    description: "PR opened; Module 8 active"
+    category: stage
+  - name: merged
+    color: "6f42c1"
+    description: "Module 9 complete; terminal"
+    category: stage
+  - name: "stage:failed"
+    color: "b60205"
+    description: "A module failed; needs maintainer triage"
+    category: stage
+
+  # ── type labels (intake) ─────────────────────────────────────────────────
+  - name: "type:bug"
+    color: "d73a4a"
+    description: "Defect report"
+    category: type
+  - name: "type:feature"
+    color: "a2eeef"
+    description: "New capability"
+    category: type
+  - name: "type:incident"
+    color: "b60205"
+    description: "Production incident (二期 module 10)"
+    category: type
+  - name: "type:dependencies"
+    color: "0366d6"
+    description: "Dependency bump"
+    category: type
+  - name: "type:question"
+    color: "cc317c"
+    description: "Support question; no code change expected"
+    category: type
+
+  # ── size labels (effort guess) ───────────────────────────────────────────
+  - name: "size:S"
+    color: "c2e0c6"
+    description: "< 50 LOC, single file"
+    category: size
+  - name: "size:M"
+    color: "c2e0c6"
+    description: "One module"
+    category: size
+  - name: "size:L"
+    color: "fbca04"
+    description: "Cross-module"
+    category: size
+  - name: "size:XL"
+    color: "d93f0b"
+    description: "Architectural; triggers design review"
+    category: size
+
+  # ── force / override ─────────────────────────────────────────────────────
+  - name: force-manual
+    color: "5319e7"
+    description: "Force manual triage mode for this issue (overrides TRIAGE_MODE)"
+    category: force
+
+  # ── meta (administrative) ────────────────────────────────────────────────
+  - name: "meta:duplicate"
+    color: "cccccc"
+    description: "Closed as duplicate"
+    category: meta
+  - name: "meta:wontfix"
+    color: "cccccc"
+    description: "Closed without action"
+    category: meta
+  - name: "meta:invalid"
+    color: "cccccc"
+    description: "Not a valid issue"
+    category: meta

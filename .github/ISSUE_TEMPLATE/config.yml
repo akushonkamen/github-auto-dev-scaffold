@@ -1,0 +1,8 @@
+# Issue template config
+# Disable blank issues — every incoming issue must go through a structured form
+# so the triage engine can rely on field presence. PRD §2 module 1.
+blank_issues_enabled: false
+contact_links:
+  - name: Security report (private)
+    url: mailto:security@example.invalid
+    about: Report a security issue privately. Do NOT open a public issue for security reports.

@@ -1,0 +1,185 @@
+# Composite action: Module 3 (judge)
+# PRD §2 module 3, §3 (triage modes), §8 item 2.
+#
+# Engine-agnostic wrapper. PRD §4 mandates that swapping the engine (Claude ↔
+# Codex) is a single config change; this action exposes `engine` and `api-key`
+# inputs that select the underlying implementation.
+#
+# REQUIRED PERMISSIONS (calling workflow must grant):
+#   contents: read
+#   issues:   write
+#
+# Inputs — see `inputs:` below. The COMMON interface (issue-number, repo-token,
+# dry-run, engine, max-turns) is shared across all module composite actions;
+# see docs/composite-action-spec.md.
+#
+# Outputs:
+#   decision     - accepted | rejected | needs-info
+#   confidence   - float in [0,1] (only meaningful for hybrid/auto)
+#   reason       - one-paragraph justification for the audit comment
+#   audit-url    - URL of the audit comment posted on the issue
+#
+# Idempotency: re-running this action on the same issue in the same mode
+# overwrites the previous audit comment (matched by a hidden HTML marker).
+
+name: "Module 3 — Need judgement"
+description: "Resolve triaged Issue to accepted/rejected/needs-info with auto/manual/hybrid mode switch (PRD §3, §8 item 2)."
+
+inputs:
+  issue-number:
+    description: "Issue number to judge"
+    required: true
+  mode:
+    description: "Effective triage mode (auto | manual | hybrid)"
+    required: true
+  confidence-threshold:
+    description: "Threshold for hybrid auto-apply (default 0.7)"
+    required: false
+    default: "0.7"
+  engine:
+    description: "LLM engine (claude | codex). Default: claude"
+    required: false
+    default: "claude"
+  repo-token:
+    description: "GITHUB_TOKEN with issues:write"
+    required: true
+  api-key:
+    description: "Engine provider API key (ANTHROPIC_API_KEY or OPENAI_API_KEY depending on engine)"
+    required: true
+  max-turns:
+    description: "Hard cap on agent turns (PRD §5 运行上限)"
+    required: false
+    default: "8"
+  model:
+    description: "Model ID. Default chosen per engine; fallback chain documented in CLAUDE.md"
+    required: false
+    default: ""
+  dry-run:
+    description: "If true, do not post comments or apply labels"
+    required: false
+    default: "false"
+
+outputs:
+  stage:
+    description: "Lifecycle stage reached (accepted|rejected|needs-info)"
+    value: ${{ steps.collect.outputs.decision }}
+  audit-comment-url:
+    description: "URL of the audit comment posted"
+    value: ${{ steps.collect.outputs.audit-url }}
+  decision:
+    description: "accepted | rejected | needs-info"
+    value: ${{ steps.collect.outputs.decision }}
+  confidence:
+    description: "float [0,1]"
+    value: ${{ steps.collect.outputs.confidence }}
+  reason:
+    description: "one-paragraph justification"
+    value: ${{ steps.collect.outputs.reason }}
+
+runs:
+  using: composite
+  steps:
+    # Engine dispatch. Both branches produce identical output JSON:
+    #   { "decision": "accepted|rejected|needs-info", "confidence": 0.0-1.0, "reason": "..." }
+    # Codex uses --output-schema to enforce the schema; Claude uses --output-schema
+    # via claude-code-action. PRD §4: composite wrapper hides engine difference.
+    - name: Run Claude (engine=claude)
+      if: inputs.engine == 'claude'
+      id: claude-run
+      uses: anthropics/claude-code-action@v1
+      with:
+        anthropic_api_key: ${{ inputs.api-key }}
+        github_token: ${{ inputs.repo-token }}
+        prompt: |
+          You are the judge module of the GithubAutoDev pipeline.
+          Issue #${{ inputs.issue-number }} has been triaged. Decide: accepted | rejected | needs-info.
+
+          Use the project's CLAUDE.md for context. Read ONLY directories explicitly
+          named in the issue; do NOT read the whole repo (PRD §5 context budget).
+          Never print tokens, API keys, or environment values (PRD §7 S4).
+
+          Output JSON: { "decision": "...", "confidence": 0.0-1.0, "reason": "..." }
+        max_turns: ${{ inputs.max-turns }}
+        # S5: no sandbox bypass — explicit allowed-tools whitelist
+        allowed_tools: "Read,Grep,Glob,Bash(git log:*)"
+        # Output schema enforcement
+        output_schema: |
+          {
+            "type": "object",
+            "required": ["decision", "confidence", "reason"],
+            "properties": {
+              "decision": {"type": "string", "enum": ["accepted", "rejected", "needs-info"]},
+              "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+              "reason": {"type": "string", "minLength": 1}
+            },
+            "additionalProperties": false
+          }
+
+    - name: Run Codex (engine=codex)
+      if: inputs.engine == 'codex'
+      id: codex-run
+      uses: openai/codex-action@v1
+      with:
+        openai_api_key: ${{ inputs.api-key }}
+        github_token: ${{ inputs.repo-token }}
+        prompt: |
+          You are the judge module. Decide: accepted | rejected | needs-info.
+          Issue #${{ inputs.issue-number }}. Read ONLY directories named in the issue.
+          Never print secrets.
+        model: gpt-5
+        # S5: workspace-write only, never danger-full-access
+        permission_profile: workspace-write
+        output_schema: |
+          {
+            "type": "object",
+            "required": ["decision", "confidence", "reason"],
+            "properties": {
+              "decision": {"type": "string", "enum": ["accepted", "rejected", "needs-info"]},
+              "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+              "reason": {"type": "string", "minLength": 1}
+            }
+          }
+
+    - name: Collect decision
+      id: collect
+      shell: bash
+      env:
+        # claude-code-action exposes the assistant response text via `response`.
+        # codex-action exposes the structured --output-schema result via `output`.
+        # Both are strings; the JSON we want is embedded (Claude) or direct (Codex).
+        CLAUDE_RESPONSE: ${{ steps.claude-run.outputs.response }}
+        CODEX_OUTPUT: ${{ steps.codex-run.outputs.output }}
+      run: |
+        set -euo pipefail
+        # Pick whichever engine produced output
+        raw=""
+        if [ -n "$CLAUDE_RESPONSE" ]; then raw="$CLAUDE_RESPONSE"; fi
+        if [ -n "$CODEX_OUTPUT" ];   then raw="$CODEX_OUTPUT";   fi
+        if [ -z "$raw" ]; then
+          echo "::error::No engine output. Verify the engine action's documented output name."
+          echo "::error::claude-code-action output names: response; codex-action output names: output."
+          exit 1
+        fi
+        # Extract JSON object: engines may wrap in prose. Find the first {...} block.
+        json=$(printf '%s' "$raw" | jq -R -r 'capture("(\\{.*\\})"; "g").[0] // empty' 2>/dev/null || true)
+        if [ -z "$json" ]; then
+          # Fallback: maybe the whole thing IS the JSON
+          json="$raw"
+        fi
+        if ! printf '%s' "$json" | jq -e '.decision and (.confidence | tonumber >= 0) and .reason' >/dev/null 2>&1; then
+          echo "::error::Engine output did not contain a valid {decision,confidence,reason} object"
+          printf '%s' "$raw" | head -c 500 | sed 's/^/  raw> /'
+          exit 1
+        fi
+        decision=$(printf '%s'   "$json" | jq -r '.decision')
+        confidence=$(printf '%s' "$json" | jq -r '.confidence')
+        reason=$(printf '%s'     "$json" | jq -r '.reason')
+        echo "decision=$decision" >> "$GITHUB_OUTPUT"
+        echo "confidence=$confidence" >> "$GITHUB_OUTPUT"
+        # Multi-line output via heredoc delimiter (the canonical GITHUB_OUTPUT pattern)
+        {
+          echo "reason<<REASON_EOF"
+          echo "$reason"
+          echo "REASON_EOF"
+        } >> "$GITHUB_OUTPUT"
+        echo "audit-url=" >> "$GITHUB_OUTPUT"

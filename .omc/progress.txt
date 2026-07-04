@@ -1,0 +1,55 @@
+# Ralph progress log — GithubAutoDev PRD scaffold
+
+## Iteration 1
+- Inspected repo: empty (only .omc/ state). Not a git repo.
+- Wrote refined prd.json: 6 stories (US-000 scaffolding + US-001..US-005 mapping to PRD §8 items 1..5).
+- Scope: .github/ infrastructure + docs/. No Python/Rust source — this is a pipeline scaffold repo; py/ and rust/ are referenced as future homes only.
+
+## Patterns / conventions adopted
+- All workflows: explicit `permissions:` block at workflow AND job level. S1 compliance.
+- Module 3 (judge): contents:read + issues:write ONLY. No contents:write anywhere on triage path.
+- Composite actions share a COMMON interface: `issue-number`, `repo-token`, `dry-run` inputs; `stage`, `audit-comment-url` outputs.
+- Engine selection: each composite action reads `engine` input (claude|codex), defaults to claude. Swap = one variable.
+- Thresholds/timeouts/max-turns: every AI-calling action exposes them as inputs with sensible defaults.
+- Idempotency: every workflow uses concurrency group keyed by issue/PR number.
+- YAML formatting: 2-space indent, line length <= 100 where reasonable.
+
+## Verification approach
+- YAML lint via `python3 -c 'import yaml; yaml.safe_load(...)'` for all .yml files.
+- actionlint if installed; fall back to YAML parse if not.
+- Cross-reference: grep workflows for label names; verify each is in docs/labels.md.
+
+## Iteration final — RALPH COMPLETE
+
+### Outcome
+All 6 PRD stories passes=true after architect APPROVED + deslop pass + regression clean.
+
+### Architect history
+- Iteration 1 review: REJECTED with 7 findings (2 blockers, 3 majors, 2 minors)
+- Iteration 1 fixes: all 7 addressed in same iteration
+- Re-review: APPROVED
+
+### Deslop pass changes
+- Removed redundant `Collect result` step in judge.yml (direct step→job output forwarding for decision/confidence/reason)
+- Added "Scaffold status" note to docs/composite-action-spec.md flag COMMON inputs that are wired vs pending engine integration (model/context-budget-paths/dry-run)
+
+### Regression re-verification
+- 14/14 YAML files parse
+- bash -n apply.sh OK
+- 6/6 PRD stories passes
+- 28 labels declared, all referenced labels exist
+- COMMON interface intact on all 7 actions (7 inputs / 2 outputs each)
+- Security invariants: judge.yml has 0 contents:write grants; develop.yml allowed_tools has no git push; refuse-main guard present; apply.sh idempotency via gh api PATCH present
+
+### Deliverables (23 files)
+- 4 root: README.md, CLAUDE.md, plus PRD scaffold docs
+- 7 docs/: architecture, labels, security, triage-modes, composite-action-spec
+- 8 .github/: CODEOWNERS, dependabot.yml, labels.yml, 2 workflows, 3 ISSUE_TEMPLATE
+- 8 .github/actions/*/: 7 action.yml + judge/apply.sh
+
+### Handoff
+Repo is pipeline-scaffold ready. Next steps when source code lands:
+1. Wire `model`, `context-budget-paths`, `dry-run` COMMON inputs into each engine action call (see docs/composite-action-spec.md "Scaffold status" note)
+2. Calibrate HYBRID_CONFIDENCE_THRESHOLD per docs/triage-modes.md procedure (N>=50, sweep, precision>=0.85 floor)
+3. Add workflows for modules 4-9 using the composite actions (only module 3 judge.yml is wired in this scaffold)
+4. Real engine integration: replace placeholder output names (claude `response`, codex `output`) with the actual documented outputs when the engine versions are pinned

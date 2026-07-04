@@ -1,0 +1,68 @@
+# Issue Form: Bug report
+# PRD §2 module 1 — structured input for the triage engine.
+# The triage module relies on these fields; do not rename without updating
+# .github/actions/triage/action.yml prompt inputs.
+name: Bug report
+description: Report something that is broken or behaves unexpectedly
+labels: ["type:bug", triage]
+title: "[bug] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. Please fill in the sections below;
+        a maintainer or the triage bot will route it.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: One-sentence description of the broken behavior.
+      placeholder: "When I do X, Y happens instead of Z."
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Numbered list. Include exact commands.
+      placeholder: |
+        1. Run `...`
+        2. ...
+        3. Observe error
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Affected version / commit
+      placeholder: "main @ <sha> or vX.Y.Z"
+    validations:
+      required: true
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      options:
+        - blocker (system unusable)
+        - major (feature broken)
+        - minor (annoyance)
+        - cosmetic (typo / UI nit)
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / stack trace
+      render: shell

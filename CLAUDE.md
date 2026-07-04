@@ -1,0 +1,120 @@
+# CLAUDE.md — AI agent architecture map
+
+> First-read map for any AI agent (Claude Code, Codex) working in this repo.
+> PRD §8 item 4 mandates this file: it provides the architecture context the
+> agent needs to act safely without reading the whole repository (PRD §5 context budget).
+
+## Project overview
+
+**GithubAutoDev** is an AI-driven Issue → Merge automation pipeline. A GitHub
+Issue flows through 10 modules (triage → judgement → design → develop → verify
+→ test → PR → review → merge). Modules communicate **only** via GitHub events
+and Label transitions — they never call each other directly. The Label taxonomy
+is the protocol layer.
+
+Authoritative PRD lives at [`PRD.md`](./PRD.md) (drop it there). Pipeline
+overview at [`docs/architecture.md`](docs/architecture.md).
+
+## Repository layout
+
+```
+.github/
+  workflows/      # one workflow per PRD module (triggers + glue)
+  actions/        # composite actions — engine-agnostic module wrappers
+    triage/         Module 2
+    judge/          Module 3 (chokepoint, PRD §8 item 2)
+    design-review/  Module 3.5
+    develop/        Module 4
+    self-verify/    Module 5
+    test/           Module 6
+    pr-open/        Modules 7+8
+  ISSUE_TEMPLATE/ # structured Issue Forms (Module 1)
+  CODEOWNERS      # review ownership (Module 8)
+  labels.yml      # machine-readable Label taxonomy
+  dependabot.yml
+docs/
+  architecture.md          # pipeline overview + module/engine/trigger matrix
+  labels.md                # Label state machine full definition (PRD §8 item 1)
+  triage-modes.md          # auto/manual/hybrid modes + threshold calibration
+  composite-action-spec.md # interface spec for every composite action (PRD §8 item 3)
+  security.md              # security red lines operational guide
+CLAUDE.md                  # this file
+README.md
+```
+
+`py/` and `rust/` source trees are out of scope for this scaffold — they will
+house the product code once the pipeline is wired. **Do not invent files in
+those directories**; the Issue/PR will name the directories that matter.
+
+## Module map (condensed PRD §2)
+
+| # | Module | Engine | Trigger | Output Label |
+|---|---|---|---|---|
+| 1 | Issue Forms | GitHub native | `issues.opened` | structured Issue |
+| 2 | Triage | Claude | Module 1 event | `triage` |
+| 3 | Judgement | Claude (+human) | `labeled: triage-done` | `accepted` \| `rejected` \| `needs-info` |
+| 3.5 | Design review | Claude (+human) | size:XL accepted | `design-approved` |
+| 4 | Develop | Claude | `labeled: accepted` | feature branch |
+| 5 | Self-verify | Claude | branch push | verify report |
+| 6 | Test | Codex + CI | Module 5 passed | test report |
+| 7 | PR open | Claude | Module 6 passed | Draft/ready PR |
+| 8 | Review | Claude + CODEOWNERS | `pull_request.opened` | Approve / Changes |
+| 9 | Merge | Merge Queue | approved + green | merge + close |
+
+Full table + transition rules in [`docs/labels.md`](docs/labels.md) and
+[`docs/architecture.md`](docs/architecture.md).
+
+## Label state machine (5-line summary)
+
+- `triage` → `triage-done` → `accepted`|`rejected`|`needs-info` → (optional `design-approved`) → `in-development` → `verifying` → `testing` → `ready-for-pr` → `in-review` → `merged`
+- Anywhere → `stage:failed` (graceful degradation, PRD §6)
+- `force-manual` overrides global `TRIAGE_MODE` per-issue (PRD §3)
+- Full state diagram, owners, legal transitions: [`docs/labels.md`](docs/labels.md)
+
+## Security red lines (PRD §7, verbatim)
+
+These take precedence over every feature. If a workflow change conflicts with
+any of them, the red line wins.
+
+- **S1** — Triage/judge workflows: `permissions: contents: read, issues: write`. NEVER `contents: write`. Issue bodies are untrusted input.
+- **S2** — Module 4 (develop) triggers ONLY on `labeled: accepted`. Only maintainers may apply `accepted`.
+- **S3** — AI code never lands on `main`. Secrets scoped per-module, never workflow-global.
+- **S4** — AI must never print tokens, API keys, or environment values.
+- **S5** — No sandbox bypass. Codex uses `permission-profile: workspace-write` (never `danger-full-access`). Claude uses `--allowedTools` whitelist (never `--dangerously-skip-permissions`).
+
+See [`docs/security.md`](docs/security.md) for the operational playbook and incident response.
+
+## Context budget rules (PRD §5)
+
+- **Do NOT read the whole repository.** AI agent reads only directories explicitly named in the Issue/PR body.
+- The composite action's `context-budget-paths` input lists the allowed paths; an empty value defers to this file.
+- Cap turns via the `max-turns` input (defaults: 6-20 per module). Never raise above 30 without explicit Issue scope.
+- If you need a directory not named in the Issue, ask via a comment rather than scanning.
+- Prefer `Grep` / `Glob` over `Read` of large files. Read the architecture map here, not the source.
+
+## Engine configuration
+
+- Engines are selected per module via the `engine` input on each composite action (`claude` \| `codex`).
+- Default engines: Claude for modules 2/3/4/8; Codex for module 6 (PRD §4 — out-of-distribution tester).
+- Model IDs are configurable via the `model` input on every action. Defaults:
+  - Claude: `claude-opus-4-7` (heavy) / `claude-sonnet-4-6` (standard) / `claude-haiku-4-5` (lookup)
+  - Codex: `gpt-5` family
+- Fallback chain: if the chosen model is unavailable, fall back one tier (Opus → Sonnet → Haiku). Document any fallback in the audit comment.
+- API keys per engine: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` — scoped per-job, never workflow-global (S3).
+
+## References
+
+- [PRD (drop here as `PRD.md`)](./PRD.md) — authoritative spec
+- [docs/architecture.md](docs/architecture.md) — pipeline overview
+- [docs/labels.md](docs/labels.md) — Label state machine
+- [docs/triage-modes.md](docs/triage-modes.md) — auto/manual/hybrid + calibration
+- [docs/composite-action-spec.md](docs/composite-action-spec.md) — action interfaces
+- [docs/security.md](docs/security.md) — red lines operational guide
+
+## Working agreement
+
+- Make the smallest change that satisfies the Issue. No drive-by refactors.
+- If you discover missing context, post a question on the Issue rather than guessing.
+- If a red line conflicts with the Issue, stop and post a comment citing S1-S5.
+- Every workflow change MUST keep `permissions:` explicit at workflow AND job level.
+- Audit comments are mandatory for every Label transition (PRD §3 invariant).

@@ -1,0 +1,22 @@
+# CODEOWNERS for GithubAutoDev
+# Code owner auto-review requests. PRD §2 module 8 relies on this file.
+#
+# Format: <path> <@owner or @team>+
+
+# Default: maintainers own everything not matched below
+*                           @maintainers
+
+# Pipeline infrastructure — stricter review (security-sensitive)
+/.github/workflows/         @maintainers @sec-team
+/.github/actions/           @maintainers @sec-team
+
+# Protocol / spec docs — architectural ownership
+/docs/                      @architects
+/CLAUDE.md                  @architects
+
+# Issue templates (input to triage — untrusted surface)
+/.github/ISSUE_TEMPLATE/    @maintainers
+
+# Label taxonomy — protocol primitive, maintainers only
+/.github/labels.yml         @maintainers
+/docs/labels.md             @maintainers
