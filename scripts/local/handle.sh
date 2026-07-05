@@ -142,10 +142,24 @@ if ! command -v "$CLAUDE_BIN" >/dev/null 2>&1; then
   exit 4
 fi
 
+# macOS ships no `timeout`; brew's coreutils provides `gtimeout`. Pick
+# whichever is available; fall back to no timeout with a warning.
+TIMEOUT_BIN=""
+if command -v timeout  >/dev/null 2>&1; then TIMEOUT_BIN="timeout";
+elif command -v gtimeout >/dev/null 2>&1; then TIMEOUT_BIN="gtimeout"; fi
+
 # -p = print mode (non-interactive). Output is captured for the action log.
-# --max-turns caps runaway loops.
-if ! timeout "${MAX_TURN_MINUTES}m" "$CLAUDE_BIN" -p "$PROMPT"; then
+set +e
+if [ -n "$TIMEOUT_BIN" ]; then
+  "$TIMEOUT_BIN" "${MAX_TURN_MINUTES}m" "$CLAUDE_BIN" -p "$PROMPT"
   rc=$?
+else
+  log "WARNING: neither timeout nor gtimeout found; running without wall-clock cap"
+  "$CLAUDE_BIN" -p "$PROMPT"
+  rc=$?
+fi
+set -e
+if [ "$rc" -ne 0 ]; then
   log "ERROR: $CLAUDE_BIN exited $rc"
   exit 5
 fi
