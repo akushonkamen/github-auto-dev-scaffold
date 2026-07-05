@@ -81,6 +81,36 @@ outputs:
 runs:
   using: composite
   steps:
+    # Fetch issue title/body/labels and inject into the prompt. Claude can't
+    # fetch issues itself (no Bash/Network in the allow-list), so we provide
+    # the body as context.
+    - name: Fetch issue context
+      id: issue
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.repo-token }}
+        NUMBER: ${{ inputs.issue-number }}
+      run: |
+        set -eu
+        json=$(gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json title,body,labels,url)
+        title=$(printf '%s' "$json" | jq -r '.title')
+        url=$(printf '%s' "$json"   | jq -r '.url')
+        body=$(printf '%s' "$json"  | jq -r '.body // "(empty)"')
+        labels=$(printf '%s' "$json" | jq -r '.labels | map(.name) | join(", ")')
+        if [ -z "$labels" ]; then labels="(none)"; fi
+
+        # Multi-line values via heredoc delimiters
+        {
+          echo "title<<TITLE_EOF"
+          printf '%s\n' "$title"
+          echo "TITLE_EOF"
+          echo "url=$url"
+          echo "labels=$labels"
+          echo "body<<BODY_EOF"
+          printf '%s\n' "$body"
+          echo "BODY_EOF"
+        } >> "$GITHUB_OUTPUT"
+
     # Build settings JSON (model only included if non-empty) and the
     # --json-schema arg. Both are passed verbatim to claude-code-action.
     - name: Build claude config
@@ -139,10 +169,20 @@ runs:
         github_token: ${{ inputs.repo-token }}
         prompt: |
           You are the triage module of the GithubAutoDev pipeline.
-          A new Issue #${{ inputs.issue-number }} was just opened.
+          A new Issue was just opened.
 
-          Read CLAUDE.md for project context. Read ONLY directories explicitly
-          named in the issue body (PRD §5 context budget). Do NOT read the whole repo.
+          Title: ${{ steps.issue.outputs.title }}
+          URL: ${{ steps.issue.outputs.url }}
+          Existing labels: ${{ steps.issue.outputs.labels }}
+
+          Issue body:
+          ```
+          ${{ steps.issue.outputs.body }}
+          ```
+
+          Read CLAUDE.md for project context (only if the issue references
+          directories you need to inspect; otherwise skip). Do NOT scan the
+          whole repo.
 
           Decide ONE of:
             - "reply": the issue needs clarification, is a duplicate, is out of
