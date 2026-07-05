@@ -140,13 +140,27 @@ if command -v timeout  >/dev/null 2>&1; then TIMEOUT_BIN="timeout";
 elif command -v gtimeout >/dev/null 2>&1; then TIMEOUT_BIN="gtimeout"; fi
 
 # -p = print mode (non-interactive). Output is captured for the action log.
+# --permission-mode acceptEdits: auto-accept file edits inside the project
+#   so claude can actually implement without interactive approval prompts
+#   (which never arrive in -p mode and cause claude to bail with no commits).
+#   This is the S5-compliant alternative to --dangerously-skip-permissions.
+# --allowedTools: explicit allow-list. Block Bash(git push *) so claude
+#   cannot bypass the wrapper's push+PR flow (PRD §7 S3 — wrapper owns push).
 set +e
 if [ -n "$TIMEOUT_BIN" ]; then
-  "$TIMEOUT_BIN" "${MAX_TURN_MINUTES}m" "$CLAUDE_BIN" -p "$PROMPT"
+  "$TIMEOUT_BIN" "${MAX_TURN_MINUTES}m" "$CLAUDE_BIN" \
+    --permission-mode acceptEdits \
+    --allowedTools "Read Write Edit Grep Glob Bash" \
+    --disallowedTools 'Bash(git push *)' \
+    -p "$PROMPT"
   rc=$?
 else
   log "WARNING: neither timeout nor gtimeout found; running without wall-clock cap"
-  "$CLAUDE_BIN" -p "$PROMPT"
+  "$CLAUDE_BIN" \
+    --permission-mode acceptEdits \
+    --allowedTools "Read Write Edit Grep Glob Bash" \
+    --disallowedTools 'Bash(git push *)' \
+    -p "$PROMPT"
   rc=$?
 fi
 set -e
