@@ -90,40 +90,31 @@ if [ -z "$ISSUE_BODY" ]; then
   log "WARNING: issue #$ISSUE_NUMBER has empty body; proceeding with title only"
 fi
 
-ISSUE_FILE="$(mktemp -t "issue-${ISSUE_NUMBER}.XXXXXX.md")"
-trap 'rm -f "$ISSUE_FILE"' EXIT
-
-{
-  echo "# Issue #$ISSUE_NUMBER: $ISSUE_TITLE"
-  echo ""
-  echo "URL: $ISSUE_URL"
-  echo ""
-  echo "## Body"
-  echo ""
-  printf '%s\n' "$ISSUE_BODY"
-} > "$ISSUE_FILE"
-
-log "issue body written to $ISSUE_FILE"
+ISSUE_FILE=""
 
 # --- invoke local claude CLI ----------------------------------------------
 
-# The prompt is intentionally explicit about the workflow so the agent doesn't
-# have to guess: read the issue file, look at the codebase, implement, commit.
-# Security invariants from PRD §7 (S3, S4) are repeated here because the local
-# CLI invocation doesn't go through our composite-action prompts.
+# Issue body is embedded directly in the prompt. claude in -p mode runs with
+# a sandbox that blocks reads outside the project root, so writing the body
+# to a mktemp file outside the repo is unreadable.
 read -r -d '' PROMPT <<EOF || true
 You are working on issue #$ISSUE_NUMBER of $GITHUB_REPO.
 
-The issue body is in: $ISSUE_FILE
+Title: $ISSUE_TITLE
+URL: $ISSUE_URL
+
+Issue body:
+\`\`\`
+$ISSUE_BODY
+\`\`\`
 
 Workflow:
 1. Read CLAUDE.md at the repo root for project context.
-2. Read the issue file at $ISSUE_FILE.
-3. Read ONLY the directories the issue references — do not scan the whole repo.
-4. Implement the change. Keep commits small.
-5. Commit on the current branch ($BRANCH_NAME). Use a clear commit message
+2. Read ONLY the directories the issue references — do not scan the whole repo.
+3. Implement the change. Keep commits small.
+4. Commit on the current branch ($BRANCH_NAME). Use a clear commit message
    that references "Closes #$ISSUE_NUMBER".
-6. Do NOT push — the wrapper script will push and open the PR.
+5. Do NOT push — the wrapper script will push and open the PR.
 
 Hard rules:
 - Never print tokens, API keys, or environment variable values (PRD §7 S4).
