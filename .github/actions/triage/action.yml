@@ -1,11 +1,24 @@
 # Composite action: Module 2 (triage reply)
 # PRD §2 module 2. See docs/composite-action-spec.md for the full interface.
-# COMMON inputs: repo-token, engine, api-key, model, max-turns, context-budget-paths, dry-run
-# COMMON outputs: stage, audit-comment-url
 #
-# REQUIRED PERMISSIONS (caller workflow must grant):
+# Engine-agnostic wrapper (PRD §4). With engine=claude it uses
+# anthropics/claude-code-action@v1; with engine=codex it uses openai/codex-action@v1.
+#
+# GLM (Zhipu AI) passthrough: when the caller sets `anthropic-base-url` input,
+# the claude branch injects it as ANTHROPIC_BASE_URL env on the action step.
+# claude-code CLI honors that env var, so requests route to the Zhipu
+# Anthropic-compatible endpoint (https://open.bigmodel.cn/api/anthropic)
+# without forking the action.
+#
+# REQUIRED PERMISSIONS (calling workflow must grant):
 #   contents: read       (read CLAUDE.md, prompts)
-#   issues:   write      (post triage comment, apply triage label) — PRD §7 S1
+#   issues:   write      (apply triage label) — PRD §7 S1
+#
+# Outputs — see `outputs:` below. COMMON outputs (stage, audit-comment-url)
+# plus module-specific (decision, comment_body, suggested_labels, confidence).
+# This action does NOT post the comment — the caller decides whether to post,
+# so dry-run is meaningful and the action stays reusable for non-GitHub sinks.
+
 name: "Module 2 — Triage reply"
 description: "First-response, dedupe, clarification, routing label for newly opened Issue (PRD §2 module 2)."
 
@@ -17,14 +30,18 @@ inputs:
     description: "GITHUB_TOKEN with issues:write"
     required: true
   api-key:
-    description: "Engine provider API key"
+    description: "Engine provider API key (ZHIPU_API_KEY when using GLM passthrough)"
     required: true
+  anthropic-base-url:
+    description: "Anthropic-compatible API base URL (e.g. https://open.bigmodel.cn/api/anthropic for GLM). Empty = Anthropic default."
+    required: false
+    default: ""
   engine:
     description: "LLM engine (claude | codex)"
     required: false
     default: "claude"
   model:
-    description: "Model ID override"
+    description: "Model ID override (vars.TRIAGE_MODEL). Empty = engine default."
     required: false
     default: ""
   max-turns:
@@ -36,7 +53,7 @@ inputs:
     required: false
     default: ""
   dry-run:
-    description: "If true, do not write"
+    description: "If true, do not apply labels (comment posting is caller's responsibility)"
     required: false
     default: "false"
 
@@ -45,30 +62,76 @@ outputs:
     description: "Lifecycle stage reached (triage)"
     value: ${{ steps.emit.outputs.stage }}
   audit-comment-url:
-    description: "URL of the audit comment posted"
+    description: "URL of the audit comment (empty — comment is posted by the caller workflow)"
     value: ${{ steps.emit.outputs.audit-comment-url }}
-  triage-tags:
+  decision:
+    description: "reply | work"
+    value: ${{ steps.parse.outputs.decision }}
+  comment_body:
+    description: "Body of the comment to post on the issue (multi-line markdown)"
+    value: ${{ steps.parse.outputs.comment_body }}
+  suggested_labels:
     description: "Comma-sep suggested labels"
-    value: ${{ steps.emit.outputs.triage-tags }}
+    value: ${{ steps.parse.outputs.suggested_labels }}
+  confidence:
+    description: "float [0,1] — claude's confidence in the decision"
+    value: ${{ steps.parse.outputs.confidence }}
 
 runs:
   using: composite
   steps:
-    # S1: read-only repo access; issues:write only via repo-token.
-    - name: Triage via Claude
+    # Engine dispatch. Both branches produce identical-shape JSON via output_schema:
+    #   { "decision": "reply"|"work",
+    #     "comment_body": string,
+    #     "suggested_labels": [string],
+    #     "confidence": float }
+    # The caller workflow decides what to do with decision/comment_body.
+    - name: Triage via Claude (or GLM via base-url passthrough)
       if: inputs.engine == 'claude'
       id: claude-run
       uses: anthropics/claude-code-action@v1
+      env:
+        # Empty string → env unset → claude-code CLI uses Anthropic default.
+        # Non-empty → CLI routes to the given Anthropic-compatible endpoint.
+        ANTHROPIC_BASE_URL: ${{ inputs.anthropic-base-url }}
       with:
         anthropic_api_key: ${{ inputs.api-key }}
         github_token: ${{ inputs.repo-token }}
+        model: ${{ inputs.model }}
         prompt: |
-          You are the triage module. Reply to Issue #${{ inputs.issue-number }} with:
-          1. Acknowledgement, 2. Dedup check, 3. Clarifying questions if any, 4. Suggested labels.
-          Read CLAUDE.md for project context. Do NOT read whole repo (PRD §5).
-          Never print secrets (PRD §7 S4).
+          You are the triage module of the GithubAutoDev pipeline.
+          A new Issue #${{ inputs.issue-number }} was just opened.
+
+          Read CLAUDE.md for project context. Read ONLY directories explicitly
+          named in the issue body (PRD §5 context budget). Do NOT read the whole repo.
+
+          Decide ONE of:
+            - "reply": the issue needs clarification, is a duplicate, is out of
+              scope, or is a user-error. Your comment_body should ask the question
+              or explain the resolution.
+            - "work":  the issue is a legitimate feature/bug that should enter the
+              development pipeline. Your comment_body should be a brief
+              acknowledgement + summary of what you understood the ask to be.
+
+          Never print tokens, API keys, or environment variable values (PRD §7 S4).
+
+          Respond ONLY with the JSON object matching the schema. No prose, no
+          markdown fences, no commentary outside the JSON.
         max_turns: ${{ inputs.max-turns }}
+        # S5: no sandbox bypass — explicit allow-list. Read-only.
         allowed_tools: "Read,Grep,Glob"
+        output_schema: |
+          {
+            "type": "object",
+            "required": ["decision", "comment_body", "suggested_labels", "confidence"],
+            "properties": {
+              "decision": {"type": "string", "enum": ["reply", "work"]},
+              "comment_body": {"type": "string", "minLength": 10},
+              "suggested_labels": {"type": "array", "items": {"type": "string"}},
+              "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+            },
+            "additionalProperties": false
+          }
 
     - name: Triage via Codex
       if: inputs.engine == 'codex'
@@ -77,13 +140,45 @@ runs:
       with:
         openai_api_key: ${{ inputs.api-key }}
         github_token: ${{ inputs.repo-token }}
-        prompt: "Triage Issue #${{ inputs.issue-number }} per CLAUDE.md."
+        prompt: |
+          You are the triage module. Triage Issue #${{ inputs.issue-number }} per CLAUDE.md.
+          Output JSON: { decision: "reply"|"work", comment_body, suggested_labels, confidence }.
+          Never print secrets.
         permission_profile: workspace-write
+        output_schema: |
+          {
+            "type": "object",
+            "required": ["decision", "comment_body", "suggested_labels", "confidence"],
+            "properties": {
+              "decision": {"type": "string", "enum": ["reply", "work"]},
+              "comment_body": {"type": "string", "minLength": 10},
+              "suggested_labels": {"type": "array", "items": {"type": "string"}},
+              "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+            }
+          }
 
-    - name: Emit outputs
+    # Parse the engine output. claude-code-action exposes raw text via `response`;
+    # codex-action exposes structured output via `output`. Both can wrap JSON in
+    # prose, so we use a jq-based extractor with fallback. See extract.sh.
+    - name: Parse engine output
+      id: parse
+      shell: bash
+      env:
+        CLAUDE_RESPONSE: ${{ steps.claude-run.outputs.response }}
+        CODEX_OUTPUT: ${{ steps.codex-run.outputs.output }}
+      run: |
+        set -euo pipefail
+        ./.github/actions/triage/extract.sh
+
+    - name: Emit common outputs
       id: emit
       shell: bash
+      env:
+        DECISION: ${{ steps.parse.outputs.decision }}
+        DRY_RUN: ${{ inputs.dry-run }}
       run: |
         echo "stage=triage" >> "$GITHUB_OUTPUT"
         echo "audit-comment-url=" >> "$GITHUB_OUTPUT"
-        echo "triage-tags=" >> "$GITHUB_OUTPUT"
+        if [ "$DRY_RUN" = "true" ]; then
+          echo "Dry-run: skipping label application (comment posting is caller's job)"
+        fi

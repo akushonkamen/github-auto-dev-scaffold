@@ -16,9 +16,9 @@ inputs:
     description: "Issue number"
     required: true
   base-branch:
-    description: "Branch to develop from — MUST NOT be 'main' (PRD §7 S3, enforced below)"
+    description: "Branch to develop from — MUST NOT be a protected branch (PRD §7 S3, enforced below)"
     required: false
-    default: "develop"
+    default: "dev"
   runner-image:
     description: "Runner image override (use larger runner for Rust)"
     required: false

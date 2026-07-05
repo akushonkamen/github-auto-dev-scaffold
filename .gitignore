@@ -1,0 +1,6 @@
+# oh-my-claudecode internal state — never committed (any nesting level)
+**/.omc/state/
+**/.omc/logs/
+**/.omc/research/
+
+# keep .omc/progress.txt (project progress log) at the root

@@ -1,0 +1,141 @@
+# Triage Issue — minimal viable Issue → Claude → Reply/Work loop.
+#
+# Listens for new issues, dispatches claude (or GLM via base-url passthrough)
+# to analyze the issue body, then posts claude's comment verbatim. Optionally
+# auto-applies the `accepted` label when claude's decision is "work" AND the
+# repo variable AUTO_ACCEPT_ENABLED is "true" (PRD §7 S2 — maintainer opt-in).
+#
+# SECURITY (PRD §7 S1): this workflow consumes untrusted Issue body content.
+#   permissions:
+#     contents: read        # only reads CLAUDE.md / prompts
+#     issues:   write       # posts comment, applies triage/accepted labels
+#   NEVER add `contents: write`. A prompt-injection in an Issue body must not
+#   escalate to repo writes.
+#
+# Engine: claude-code-action@v1 with ANTHROPIC_BASE_URL passthrough.
+#   - Default (no ZHIPU_API_KEY / no base url): hits Anthropic real endpoint.
+#   - Set ZHIPU_API_KEY + base url vars → routes to Zhipu AI's Anthropic-compatible
+#     endpoint (https://open.bigmodel.cn/api/anthropic). Model names like
+#     "claude-sonnet-4-6" are accepted by Zhipu's compat layer.
+name: triage-issue
+
+on:
+  issues:
+    types: [opened]
+  workflow_dispatch:
+    inputs:
+      issue-number:
+        description: "Issue number to triage (manual test)"
+        required: true
+        type: string
+
+# Default least-privilege. Each job repeats these explicitly so any single
+# job's security posture can be read in isolation.
+permissions:
+  contents: read
+  issues: write
+
+# Single in-flight run per issue — duplicate triggers queue, don't clobber.
+concurrency:
+  group: triage-issue-${{ github.event.issue.number || github.event.inputs.issue-number }}
+  cancel-in-progress: false
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    outputs:
+      decision: ${{ steps.triage.outputs.decision }}
+      comment-body: ${{ steps.triage.outputs.comment_body }}
+      suggested-labels: ${{ steps.triage.outputs.suggested_labels }}
+      confidence: ${{ steps.triage.outputs.confidence }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Resolve issue number
+        id: resolve-issue
+        run: |
+          num="${{ github.event.issue.number || github.event.inputs.issue-number }}"
+          if [ -z "$num" ]; then
+            echo "::error::No issue number (event=$GITHUB_EVENT_NAME)"
+            exit 1
+          fi
+          echo "issue-number=$num" >> "$GITHUB_OUTPUT"
+
+      # Composite action returns decision + comment_body + suggested_labels + confidence.
+      # It does NOT post the comment — that's this workflow's job.
+      - name: Run triage (claude / GLM via base-url passthrough)
+        id: triage
+        uses: ./.github/actions/triage
+        with:
+          issue-number: ${{ steps.resolve-issue.outputs.issue-number }}
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          api-key: ${{ secrets.ZHIPU_API_KEY }}
+          anthropic-base-url: ${{ vars.ANTHROPIC_BASE_URL }}
+          model: ${{ vars.TRIAGE_MODEL }}
+          engine: claude
+          max-turns: 6
+
+      # Post claude's comment verbatim. S1-safe: issues:write only.
+      - name: Post triage comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NUMBER: ${{ steps.resolve-issue.outputs.issue-number }}
+          COMMENT_BODY: ${{ steps.triage.outputs.comment_body }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$COMMENT_BODY" | gh issue comment "$NUMBER" --body-file -
+
+      # Always apply the `triage` label so downstream modules know triage ran.
+      - name: Apply triage label
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NUMBER: ${{ steps.resolve-issue.outputs.issue-number }}
+        run: gh issue edit "$NUMBER" --add-label triage
+
+      # PRD §7 S2: only maintainers may apply `accepted`. AUTO_ACCEPT_ENABLED
+      # is a repo variable (default unset = off). Set it to "true" to enable
+      # full auto-accept when claude's decision is "work".
+      - name: Auto-accept (S2 opt-in)
+        if: steps.triage.outputs.decision == 'work' && vars.AUTO_ACCEPT_ENABLED == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NUMBER: ${{ steps.resolve-issue.outputs.issue-number }}
+        run: |
+          gh issue edit "$NUMBER" --add-label accepted
+          gh issue comment "$NUMBER" --body "🤖 Claude recommends acceptance. AUTO_ACCEPT_ENABLED=true → applied \`accepted\` label. Module 4 (develop) will pick this up."
+
+      # Default "work" path: claude recommends but maintainer decides.
+      - name: Recommend acceptance (default)
+        if: steps.triage.outputs.decision == 'work' && vars.AUTO_ACCEPT_ENABLED != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NUMBER: ${{ steps.resolve-issue.outputs.issue-number }}
+          CONFIDENCE: ${{ steps.triage.outputs.confidence }}
+        run: |
+          gh issue comment "$NUMBER" --body "📊 Claude recommends entering development (confidence: ${CONFIDENCE}). Maintainer review required — apply \`accepted\` to proceed, or \`rejected\` to close."
+
+  # Failure path: post a stage:failed comment and label, do not block other issues.
+  # PRD §6 graceful degradation.
+  on-failure:
+    needs: triage
+    if: ${{ always() && needs.triage.result == 'failure' }}
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Mark stage:failed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NUMBER: ${{ github.event.issue.number || github.event.inputs.issue-number }}
+        run: |
+          if [ -z "$NUMBER" ]; then
+            echo "::warning::Cannot post stage:failed — no issue number on this event."
+            exit 0
+          fi
+          gh issue edit "$NUMBER" --add-label "stage:failed" || true
+          gh issue comment "$NUMBER" --body "⚠️ Triage failed. See [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details. A maintainer will triage manually." || true

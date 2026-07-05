@@ -33,16 +33,19 @@ Every module action shares these inputs and outputs so they compose uniformly. M
 
 | Aspect | Value |
 |---|---|
-| Description | First-response, dedupe, clarification question, routing label |
+| Description | First-response, dedupe, clarification question, routing label. Engine-agnostic; supports GLM 5.2 passthrough via `anthropic-base-url` input. |
 | Trigger | `issues.opened` |
-| Inputs | common + `issue-number` (string, required) |
-| Outputs | common + `triage-tags` (string, comma-sep suggested labels) |
-| Secrets | `repo-token`, `api-key` |
+| Inputs | common + `issue-number` (string, required), `anthropic-base-url` (string, default `""`) |
+| Outputs | common + `decision` (`reply` \| `work`), `comment_body` (multi-line markdown), `suggested_labels` (comma-sep), `confidence` (float) |
+| Secrets | `repo-token`, `api-key` (Zhipu key when using GLM passthrough) |
 | Permissions | `contents: read`, `issues: write` (PRD S1) |
 | Runner | `ubuntu-latest` |
 | Caches | none |
-| Idempotency | Re-run replaces prior triage comment (matched by HTML marker) |
-| Failure | Apply `stage:failed`; post error comment; do not block other issues |
+| Comment posting | Action does **not** post — caller workflow decides (see `.github/workflows/triage-issue.yml`) |
+| Idempotency | Re-run overwrites prior triage output via step-output recomputation; caller dedupes comments by HTML marker if needed |
+| Failure | `extract.sh` exits non-zero on schema violation → workflow's `on-failure` job posts `stage:failed` |
+
+> **Wired in this scaffold**: `.github/workflows/triage-issue.yml` calls this action end-to-end with GLM passthrough. See [`docs/quickstart-triage.md`](quickstart-triage.md) for setup.
 
 ### Module 3 — judge (`/.github/actions/judge/`)
 
@@ -77,7 +80,7 @@ Every module action shares these inputs and outputs so they compose uniformly. M
 |---|---|
 | Description | Create feature branch, implement, write impl notes |
 | Trigger | `issues.labeled: accepted` (PRD S2 — gate) |
-| Inputs | common + `issue-number` (required), `base-branch` (default `main`), `runner-image` (default `ubuntu-latest`) |
+| Inputs | common + `issue-number` (required), `base-branch` (default `dev`), `runner-image` (default `ubuntu-latest`) |
 | Outputs | common + `branch-name` (string), `impl-notes-path` (string) |
 | Secrets | `repo-token`, `api-key` |
 | Permissions | `contents: write` (branch creation), `issues: write` |

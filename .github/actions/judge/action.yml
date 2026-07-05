@@ -54,6 +54,10 @@ inputs:
     description: "Model ID. Default chosen per engine; fallback chain documented in CLAUDE.md"
     required: false
     default: ""
+  context-budget-paths:
+    description: "Space-separated allowlist of paths the agent may read (PRD §5 context budget)"
+    required: false
+    default: ""
   dry-run:
     description: "If true, do not post comments or apply labels"
     required: false

@@ -110,6 +110,7 @@ See [`docs/security.md`](docs/security.md) for the operational playbook and inci
 - [docs/triage-modes.md](docs/triage-modes.md) — auto/manual/hybrid + calibration
 - [docs/composite-action-spec.md](docs/composite-action-spec.md) — action interfaces
 - [docs/security.md](docs/security.md) — red lines operational guide
+- [docs/quickstart-triage.md](docs/quickstart-triage.md) — Issue → Claude → Reply/Work end-to-end setup (the only wired flow in this scaffold)
 
 ## Working agreement
 

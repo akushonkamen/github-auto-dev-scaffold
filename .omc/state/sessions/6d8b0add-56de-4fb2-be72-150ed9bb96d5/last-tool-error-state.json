@@ -1,7 +1,0 @@
-{
-  "tool_name": "Bash",
-  "tool_input_preview": "{\"command\":\"ruby -ryaml -e '\\nfiles = %w[.github/dependabot.yml .github/workflows/codeql.yml .github/ISSUE_TEMPLATE/bug.yml .github/ISSUE_TEMPLATE/feature.yml .github/ISSUE_TEMPLATE/config.yml]\\nok = ...",
-  "error": "Exit code 1\nOK  .github/dependabot.yml\nOK  .github/workflows/codeql.yml\nERR .github/ISSUE_TEMPLATE/bug.yml: (.github/ISSUE_TEMPLATE/bug.yml): found unexpected ':' while scanning a plain scalar at line 7 column 10\nERR .github/ISSUE_TEMPLATE/feature.yml: (.github/ISSUE_TEMPLATE/feature.yml): found unexpected ':' while scanning a plain scalar at line 5 column 10\nOK  .github/ISSUE_TEMPLATE/config.yml",
-  "timestamp": "2026-07-04T13:17:19.565Z",
-  "retry_count": 4
-}
