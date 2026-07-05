@@ -4,20 +4,21 @@
 # Engine-agnostic wrapper (PRD §4). With engine=claude it uses
 # anthropics/claude-code-action@v1; with engine=codex it uses openai/codex-action@v1.
 #
-# GLM (Zhipu AI) passthrough: when the caller sets `anthropic-base-url` input,
-# the claude branch injects it as ANTHROPIC_BASE_URL env on the action step.
+# claude-code-action@v1 API:
+#   - prompt, settings (JSON), claude_args (CLI flags), anthropic_api_key, github_token
+#   - Structured output: pass `--json-schema '<json>'` in claude_args; read
+#     `structured_output` output (JSON string).
+#
+# GLM (Zhipu AI) passthrough: when `anthropic-base-url` input is non-empty, the
+# claude branch injects it as ANTHROPIC_BASE_URL env on the action step.
 # claude-code CLI honors that env var, so requests route to the Zhipu
-# Anthropic-compatible endpoint (https://open.bigmodel.cn/api/anthropic)
-# without forking the action.
+# Anthropic-compatible endpoint without forking the action.
 #
 # REQUIRED PERMISSIONS (calling workflow must grant):
 #   contents: read       (read CLAUDE.md, prompts)
 #   issues:   write      (apply triage label) — PRD §7 S1
 #
-# Outputs — see `outputs:` below. COMMON outputs (stage, audit-comment-url)
-# plus module-specific (decision, comment_body, suggested_labels, confidence).
-# This action does NOT post the comment — the caller decides whether to post,
-# so dry-run is meaningful and the action stays reusable for non-GitHub sinks.
+# This action does NOT post the comment — the caller decides whether to post.
 
 name: "Module 2 — Triage reply"
 description: "First-response, dedupe, clarification, routing label for newly opened Issue (PRD §2 module 2)."
@@ -41,7 +42,7 @@ inputs:
     required: false
     default: "claude"
   model:
-    description: "Model ID override (vars.TRIAGE_MODEL). Empty = engine default."
+    description: "Model ID override. Empty = engine default (or whatever GLM proxy serves)."
     required: false
     default: ""
   max-turns:
@@ -49,7 +50,7 @@ inputs:
     required: false
     default: "6"
   context-budget-paths:
-    description: "Space-sep path allowlist"
+    description: "Space-sep path allowlist (currently advisory; not enforced by action)"
     required: false
     default: ""
   dry-run:
@@ -80,12 +81,51 @@ outputs:
 runs:
   using: composite
   steps:
-    # Engine dispatch. Both branches produce identical-shape JSON via output_schema:
-    #   { "decision": "reply"|"work",
-    #     "comment_body": string,
-    #     "suggested_labels": [string],
-    #     "confidence": float }
-    # The caller workflow decides what to do with decision/comment_body.
+    # Build settings JSON (model only included if non-empty) and the
+    # --json-schema arg. Both are passed verbatim to claude-code-action.
+    - name: Build claude config
+      id: cfg
+      shell: bash
+      env:
+        MODEL_INPUT: ${{ inputs.model }}
+        MAX_TURNS: ${{ inputs.max-turns }}
+      run: |
+        set -eu
+        # settings JSON: permissions + maxTurns; model only if non-empty
+        if [ -n "$MODEL_INPUT" ]; then
+          settings=$(jq -c -n \
+            --arg m "$MODEL_INPUT" \
+            --argjson t "$MAX_TURNS" \
+            '{permissions:{allow:["Read","Grep","Glob"],deny:["Write","Edit","Bash"]}, maxTurns:$t, model:$m}')
+        else
+          settings=$(jq -c -n \
+            --argjson t "$MAX_TURNS" \
+            '{permissions:{allow:["Read","Grep","Glob"],deny:["Write","Edit","Bash"]}, maxTurns:$t}')
+        fi
+        {
+          echo "settings<<SETTINGS_EOF"
+          echo "$settings"
+          echo "SETTINGS_EOF"
+        } >> "$GITHUB_OUTPUT"
+
+        # JSON schema for structured output — compact, single-line
+        schema=$(jq -c . <<'JSON'
+        {
+          "type": "object",
+          "required": ["decision", "comment_body", "suggested_labels", "confidence"],
+          "properties": {
+            "decision": {"type": "string", "enum": ["reply", "work"]},
+            "comment_body": {"type": "string", "minLength": 10},
+            "suggested_labels": {"type": "array", "items": {"type": "string"}},
+            "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+          },
+          "additionalProperties": false
+        }
+        JSON
+        )
+        # Wrap in single quotes for shell; the schema itself has no single quotes.
+        echo "schema='${schema}'" >> "$GITHUB_OUTPUT"
+
     - name: Triage via Claude (or GLM via base-url passthrough)
       if: inputs.engine == 'claude'
       id: claude-run
@@ -97,7 +137,6 @@ runs:
       with:
         anthropic_api_key: ${{ inputs.api-key }}
         github_token: ${{ inputs.repo-token }}
-        model: ${{ inputs.model }}
         prompt: |
           You are the triage module of the GithubAutoDev pipeline.
           A new Issue #${{ inputs.issue-number }} was just opened.
@@ -117,21 +156,10 @@ runs:
 
           Respond ONLY with the JSON object matching the schema. No prose, no
           markdown fences, no commentary outside the JSON.
-        max_turns: ${{ inputs.max-turns }}
-        # S5: no sandbox bypass — explicit allow-list. Read-only.
-        allowed_tools: "Read,Grep,Glob"
-        output_schema: |
-          {
-            "type": "object",
-            "required": ["decision", "comment_body", "suggested_labels", "confidence"],
-            "properties": {
-              "decision": {"type": "string", "enum": ["reply", "work"]},
-              "comment_body": {"type": "string", "minLength": 10},
-              "suggested_labels": {"type": "array", "items": {"type": "string"}},
-              "confidence": {"type": "number", "minimum": 0, "maximum": 1}
-            },
-            "additionalProperties": false
-          }
+        settings: ${{ steps.cfg.outputs.settings }}
+        # --json-schema triggers structured output; we read it via
+        # steps.claude-run.outputs.structured_output below.
+        claude_args: "--json-schema ${{ steps.cfg.outputs.schema }}"
 
     - name: Triage via Codex
       if: inputs.engine == 'codex'
@@ -144,28 +172,14 @@ runs:
           You are the triage module. Triage Issue #${{ inputs.issue-number }} per CLAUDE.md.
           Output JSON: { decision: "reply"|"work", comment_body, suggested_labels, confidence }.
           Never print secrets.
-        permission_profile: workspace-write
-        output_schema: |
-          {
-            "type": "object",
-            "required": ["decision", "comment_body", "suggested_labels", "confidence"],
-            "properties": {
-              "decision": {"type": "string", "enum": ["reply", "work"]},
-              "comment_body": {"type": "string", "minLength": 10},
-              "suggested_labels": {"type": "array", "items": {"type": "string"}},
-              "confidence": {"type": "number", "minimum": 0, "maximum": 1}
-            }
-          }
 
-    # Parse the engine output. claude-code-action exposes raw text via `response`;
-    # codex-action exposes structured output via `output`. Both can wrap JSON in
-    # prose, so we use a jq-based extractor with fallback. See extract.sh.
+    # claude-code-action exposes `structured_output` (JSON string) when
+    # --json-schema is in claude_args. We parse it and emit action outputs.
     - name: Parse engine output
       id: parse
       shell: bash
       env:
-        CLAUDE_RESPONSE: ${{ steps.claude-run.outputs.response }}
-        CODEX_OUTPUT: ${{ steps.codex-run.outputs.output }}
+        STRUCTURED: ${{ steps.claude-run.outputs.structured_output }}
       run: |
         set -euo pipefail
         ./.github/actions/triage/extract.sh
