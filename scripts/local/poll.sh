@@ -109,18 +109,15 @@ touch "$SEEN_FILE" "$FAILED_FILE" "$TRIAGE_FAILED_FILE"
 # Merge results, dedupe by issue number, retain label-set for dispatch logic.
 log info "polling $GITHUB_REPO for issues labelled '$TRIGGER_LABEL' or '$TRIAGE_LABEL'"
 
-accepted_json="$(gh issue list \
-  --repo "$GITHUB_REPO" \
-  --label "$TRIGGER_LABEL" \
-  --state open \
-  --json number \
-  --limit 50 2>/dev/null || echo '[]')"
-ralph_json="$(gh issue list \
-  --repo "$GITHUB_REPO" \
-  --label "$TRIAGE_LABEL" \
-  --state open \
-  --json number \
-  --limit 50 2>/dev/null || echo '[]')"
+# Run both API calls in parallel — independent queries, halved wall-clock time.
+accepted_tmp=$(mktemp)
+ralph_tmp=$(mktemp)
+gh issue list --repo "$GITHUB_REPO" --label "$TRIGGER_LABEL" --state open --json number --limit 50 >"$accepted_tmp" 2>/dev/null &
+gh issue list --repo "$GITHUB_REPO" --label "$TRIAGE_LABEL" --state open --json number --limit 50 >"$ralph_tmp" 2>/dev/null &
+wait
+accepted_json="$(cat "$accepted_tmp" 2>/dev/null || echo '[]')"
+ralph_json="$(cat "$ralph_tmp" 2>/dev/null || echo '[]')"
+rm -f "$accepted_tmp" "$ralph_tmp"
 
 # Union of issue numbers, deduped. Per-issue label resolution happens in the
 # dispatch check below via the in_accepted / in_ralph helpers.
