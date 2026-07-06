@@ -101,7 +101,7 @@ jobs:
           set -eu
           body=$(gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json body | jq -r '.body // ""')
           total=$(printf '%s' "$body" | tr -d '[:space:]' | wc -m | tr -d ' ')
-          cjk=$(printf '%s' "$body" | grep -oE $'[\xe4-\xe9][\x80-\xbf][\x80-\xbf]' | wc -l | tr -d ' ')
+          cjk=$(printf '%s' "$body" | grep -oE $'[\xe4-\xe9][\x80-\xbf][\x80-\xbf]' | wc -l | tr -d ' ') || cjk=0
           lang="en"
           if [ "$total" -gt 0 ] && [ "$cjk" -gt 0 ]; then
             ratio=$((cjk * 100 / total))
