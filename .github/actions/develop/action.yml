@@ -1,15 +1,26 @@
-# Composite action: Module 4 (develop)
-# PRD §2 module 4. SECURITY: only triggered by `accepted` label (PRD §7 S2).
+# Composite action: Module 4 (develop, v2)
+# PRD §2 module 4 + plan §7 S2 amendment. SECURITY: triggered by `accepted`
+# OR `accepted-by-claude` label (PRD §7 S2 + S2 amendment).
 #
 # REQUIRED PERMISSIONS (caller workflow must grant):
-#   contents: write      (branch creation, commits)  -- S3: never on main; only feature branches
+#   contents: write      (branch creation, commits)  -- S3: only on feat/claude/* branches
 #   issues:   write      (post audit, transition stage label)
+#   pull-requests: write (open PR)
 #
-# S3 ENFORCEMENT: base-branch MUST NOT be `main`. The first step refuses to
-# operate if `main`/`master` is passed. allowed_tools excludes raw `git push*`
-# and routes writes through the scoped repo-token on feature branches only.
+# S3 ENFORCEMENT: base-branch MUST NOT be `main`/`master`. The first step
+# refuses to operate if a protected branch is named. claude's --disallowedTools
+# blocks `git push --force*` and any push to main/master wholesale.
+#
+# v2 CHANGES (plan §7 S2 amendment):
+#   - adds anthropic-base-url input for GLM passthrough
+#   - seals JSON output schema for {branch_name, commit_sha, summary, language}
+#   - --disallowedTools includes Bash(git push --force*), Bash(git push * --force*),
+#     Bash(git checkout main*), Bash(git push * main*), Bash(git push * master*)
+#   - PR opened by caller workflow with CLAUDE_DEV_PAT (PR author = PAT owner)
+#   - disclosure preamble for the PR body (AC-V2-15 style)
+
 name: "Module 4 — Develop"
-description: "Create feature branch, implement, write impl notes (PRD §2 module 4)."
+description: "Implement accepted issue: claude writes code on feature branch, returns branch+sha for caller to push and open PR."
 
 inputs:
   issue-number:
@@ -19,22 +30,25 @@ inputs:
     description: "Branch to develop from — MUST NOT be a protected branch (PRD §7 S3, enforced below)"
     required: false
     default: "dev"
-  runner-image:
-    description: "Runner image override (use larger runner for Rust)"
-    required: false
-    default: "ubuntu-latest"
+  head-branch:
+    description: "Branch to create and commit onto (e.g. claude/issue-N-slug)"
+    required: true
   repo-token:
-    description: "GITHUB_TOKEN (contents:write for branch)"
+    description: "GITHUB_TOKEN (issues:read for context fetch)"
     required: true
   api-key:
-    description: "Engine provider API key"
+    description: "Engine provider API key (ZHIPU_API_KEY for GLM passthrough)"
     required: true
+  anthropic-base-url:
+    description: "Anthropic-compatible API base URL. Empty = Anthropic default."
+    required: false
+    default: ""
   engine:
-    description: "LLM engine (claude | codex)"
+    description: "LLM engine (claude | codex). Default: claude"
     required: false
     default: "claude"
   model:
-    description: "Model ID override"
+    description: "Model ID override. Empty = engine default."
     required: false
     default: ""
   max-turns:
@@ -45,69 +59,190 @@ inputs:
     description: "Path allowlist — limit reads (PRD §5)"
     required: false
     default: ""
-  dry-run:
-    description: "If true, do not push branch"
+  issue-language:
+    description: "Detected dominant natural language of the issue body (e.g. 'zh', 'en')."
     required: false
-    default: "false"
+    default: "en"
 
 outputs:
-  stage:
-    description: "Lifecycle stage reached (in-development)"
-    value: ${{ steps.emit.outputs.stage }}
-  audit-comment-url:
-    description: "URL of the audit comment"
-    value: ${{ steps.emit.outputs.audit-comment-url }}
   branch-name:
-    description: "Feature branch name"
+    description: "Branch claude committed onto"
     value: ${{ steps.emit.outputs.branch-name }}
-  impl-notes-path:
-    description: "Path to implementation notes"
-    value: ${{ steps.emit.outputs.impl-notes-path }}
+  commit-sha:
+    description: "Head commit SHA claude produced"
+    value: ${{ steps.emit.outputs.commit-sha }}
+  summary:
+    description: "One-paragraph change summary for the PR body"
+    value: ${{ steps.emit.outputs.summary }}
+  pr-language:
+    description: "Language claude wrote the PR body in (matches issue-language when possible)"
+    value: ${{ steps.emit.outputs.pr-language }}
 
 runs:
   using: composite
   steps:
     - name: Refuse to operate on main (PRD §7 S3)
       shell: bash
+      env:
+        BASE: ${{ inputs.base-branch }}
+        HEAD: ${{ inputs.head-branch }}
       run: |
-        if [ "${{ inputs.base-branch }}" = "main" ] || [ "${{ inputs.base-branch }}" = "master" ]; then
-          echo "::error::Refusing to develop against ${{ inputs.base-branch }} (PRD §7 S3 — AI never writes to main). Set base-branch to a non-main ref."
-          exit 1
+        set -eu
+        for forbidden in main master; do
+          if [ "$BASE" = "$forbidden" ]; then
+            echo "::error::Refusing to develop against $BASE (PRD §7 S3 — AI never writes to main). Set base-branch to a non-main ref."
+            exit 1
+          fi
+          if [ "$HEAD" = "$forbidden" ]; then
+            echo "::error::Refusing to use $HEAD as head branch (PRD §7 S3)."
+            exit 1
+          fi
+        done
+
+    - name: Fetch issue context
+      id: issue
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.repo-token }}
+        NUMBER: ${{ inputs.issue-number }}
+      run: |
+        set -eu
+        json=$(gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json title,body,labels,url)
+        title=$(printf '%s' "$json" | jq -r '.title')
+        body=$(printf '%s' "$json"  | jq -r '.body // "(empty)"')
+        url=$(printf '%s' "$json"   | jq -r '.url')
+        {
+          echo "title<<TITLE_EOF"
+          printf '%s\n' "$title"
+          echo "TITLE_EOF"
+          echo "url=$url"
+          echo "body<<BODY_EOF"
+          printf '%s\n' "$body"
+          echo "BODY_EOF"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Build claude config (settings + sealed schema + disallowed)
+      id: cfg
+      shell: bash
+      env:
+        MODEL_INPUT: ${{ inputs.model }}
+        MAX_TURNS: ${{ inputs.max-turns }}
+        CONTEXT_PATHS: ${{ inputs.context-budget-paths }}
+      run: |
+        set -eu
+        if [ -n "$MODEL_INPUT" ]; then
+          settings=$(jq -c -n \
+            --arg m "$MODEL_INPUT" \
+            --argjson t "$MAX_TURNS" \
+            '{permissions:{allow:["Read","Grep","Glob","Write","Edit","Bash(git status:*)","Bash(git diff:*)","Bash(git log:*)","Bash(git add:*)","Bash(git commit:*)","Bash(git checkout:*)","Bash(git switch:*)","Bash(git restore:*)"],deny:["Bash(git push:*)","Bash(git checkout main*)","Bash(git checkout master*)","Bash(git reset --hard*)"]}, maxTurns:$t, model:$m}')
+        else
+          settings=$(jq -c -n \
+            --argjson t "$MAX_TURNS" \
+            '{permissions:{allow:["Read","Grep","Glob","Write","Edit","Bash(git status:*)","Bash(git diff:*)","Bash(git log:*)","Bash(git add:*)","Bash(git commit:*)","Bash(git checkout:*)","Bash(git switch:*)","Bash(git restore:*)"],deny:["Bash(git push:*)","Bash(git checkout main*)","Bash(git checkout master*)","Bash(git reset --hard*)"]}, maxTurns:$t}')
+        fi
+        {
+          echo "settings<<SETTINGS_EOF"
+          echo "$settings"
+          echo "SETTINGS_EOF"
+        } >> "$GITHUB_OUTPUT"
+
+        schema=$(jq -c . <<'JSON'
+        {
+          "type": "object",
+          "required": ["summary", "language"],
+          "properties": {
+            "summary": {"type": "string", "minLength": 20},
+            "language": {"type": "string", "enum": ["zh", "en", "ja", "ko", "es", "fr", "de", "ru", "pt", "other"]}
+          },
+          "additionalProperties": false
+        }
+        JSON
+        )
+        echo "schema='${schema}'" >> "$GITHUB_OUTPUT"
+
+        # AC: never force-push, never push to main/master (defense in depth — claude
+        # is also denied all `git push` wholesale via settings.permissions.deny above).
+        disallowed="Bash(git push --force*),Bash(git push * --force*),Bash(git push *--force*),Bash(git push origin main*),Bash(git push origin master*),Bash(git checkout main),Bash(git checkout master)"
+        echo "disallowed=${disallowed}" >> "$GITHUB_OUTPUT"
+
+        if [ -n "$CONTEXT_PATHS" ]; then
+          echo "context_paths=$CONTEXT_PATHS" >> "$GITHUB_OUTPUT"
+        else
+          echo "context_paths=" >> "$GITHUB_OUTPUT"
         fi
 
-    - name: Develop via Claude
+    - name: Develop via Claude (or GLM via base-url passthrough)
       if: inputs.engine == 'claude'
       id: claude-run
       uses: anthropics/claude-code-action@v1
+      env:
+        ANTHROPIC_BASE_URL: ${{ inputs.anthropic-base-url }}
       with:
         anthropic_api_key: ${{ inputs.api-key }}
         github_token: ${{ inputs.repo-token }}
         prompt: |
-          Implement Issue #${{ inputs.issue-number }}. Create branch
-          `feat/issue-${{ inputs.issue-number }}` from ${{ inputs.base-branch }}.
-          Limit reads to paths named in CLAUDE.md or the issue (PRD §5 context budget).
-          Write impl notes to .github/notes/issue-${{ inputs.issue-number }}.md.
-          Never print secrets (PRD §7 S4). No force-push (PRD §6 idempotency).
-          NEVER commit to or push to main/master/${{ inputs.base-branch }} itself —
-          only the feat/issue-* branch (PRD §7 S3).
-        max_turns: ${{ inputs.max-turns }}
-        allowed_tools: "Read,Grep,Glob,Write,Edit,Bash(git checkout:*,git switch:*,git add:*,git commit:*,git status:*,git diff:*,cargo:*,uv:*)"
+          You are the develop module of the GithubAutoDev pipeline (Module 4, v2).
 
-    - name: Develop via Codex
-      if: inputs.engine == 'codex'
-      id: codex-run
-      uses: openai/codex-action@v1
-      with:
-        openai_api_key: ${{ inputs.api-key }}
-        github_token: ${{ inputs.repo-token }}
-        prompt: "Implement Issue #${{ inputs.issue-number }} on feat/ branch."
-        permission_profile: workspace-write
+          Issue #${{ inputs.issue-number }}: ${{ steps.issue.outputs.title }}
+          URL: ${{ steps.issue.outputs.url }}
+          Detected issue language: ${{ inputs.issue-language }}
+          Base branch: ${{ inputs.base-branch }} (DO NOT push to it)
+          Head branch: ${{ inputs.head-branch }} (already checked out — commit here)
 
-    - name: Emit outputs
+          Issue body:
+          ```
+          ${{ steps.issue.outputs.body }}
+          ```
+
+          ## Task
+          Implement the issue on the head branch (already checked out for you).
+          Make the smallest change that satisfies the issue. Write code, tests if
+          applicable, and a brief implementation summary.
+
+          ## Hard rules
+          1. **Never push.** The caller workflow pushes and opens the PR. Your
+             `--disallowedTools` blocks `git push*` wholesale. You only commit.
+          2. **Never check out main/master.** Stay on ${{ inputs.head-branch }}.
+          3. **Never force-push, never reset --hard** (PRD §6 idempotency + §7 S3).
+          4. **Match the natural language of the issue body** for any code comments,
+             commit messages, and the implementation summary. Detected: ${{ inputs.issue-language }}.
+             Technical identifiers (API names, library names) stay in their original language.
+          5. **Context budget (PRD §5)**: only read directories named in the issue or
+             CLAUDE.md${{ steps.cfg.outputs.context_paths && format('. Allowed paths: {0}', steps.cfg.outputs.context_paths) || '' }}. Do NOT scan the whole repo.
+          6. **Never print tokens, API keys, or environment values** (PRD §7 S4).
+          7. **Disclosure (AC-V2-15)**: your summary will appear in the PR body; the
+             PR body is decorated by the caller workflow with the AI disclosure preamble.
+
+          ## Output ONE JSON object (sealed schema):
+          {
+            "summary": "<one-paragraph change summary for the PR body, in the issue's language>",
+            "language": "<the language you wrote in: zh|en|ja|ko|es|fr|de|ru|pt|other>"
+          }
+
+          Respond ONLY with the JSON object. No prose, no markdown fences.
+        settings: ${{ steps.cfg.outputs.settings }}
+        claude_args: "--json-schema ${{ steps.cfg.outputs.schema }} --disallowedTools '${{ steps.cfg.outputs.disallowed }}'"
+
+    - name: Capture head SHA + parse engine output
       id: emit
       shell: bash
+      env:
+        HEAD_BRANCH: ${{ inputs.head-branch }}
+        STRUCTURED: ${{ steps.claude-run.outputs.structured_output }}
       run: |
-        echo "stage=in-development" >> "$GITHUB_OUTPUT"
-        echo "audit-comment-url=" >> "$GITHUB_OUTPUT"
-        echo "branch-name=feat/issue-${{ inputs.issue-number }}" >> "$GITHUB_OUTPUT"
-        echo "impl-notes-path=.github/notes/issue-${{ inputs.issue-number }}.md" >> "$GITHUB_OUTPUT"
+        set -euo pipefail
+        sha=$(git rev-parse HEAD)
+        # Validate structured output minimally; tolerate empty (engine may emit plain text).
+        summary="$(printf '%s' "${STRUCTURED:-}" | jq -r '.summary // ""' 2>/dev/null || true)"
+        language="$(printf '%s' "${STRUCTURED:-}" | jq -r '.language // "${{ inputs.issue-language }}"' 2>/dev/null || echo "${{ inputs.issue-language }}")"
+        if [ -z "$summary" ]; then
+          summary="(claude did not emit a structured summary; inspect the diff on the branch)"
+        fi
+        {
+          echo "branch-name=$HEAD_BRANCH"
+          echo "commit-sha=$sha"
+          echo "pr-language=${language}"
+          echo "summary<<SUMMARY_EOF"
+          printf '%s\n' "$summary"
+          echo "SUMMARY_EOF"
+        } >> "$GITHUB_OUTPUT"

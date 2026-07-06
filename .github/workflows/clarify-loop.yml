@@ -1,0 +1,347 @@
+# Clarify Loop — Module 3' (v2)
+#
+# Multi-turn clarification: when cloud first-pass hands off with `needs-clarify`,
+# this workflow engages Claude to read the issue + comment history and either:
+#   - ask a focused follow-up question (round-limited)
+#   - self-accept by applying `accepted-by-claude` (S2 amendment, see docs/security.md)
+#   - yield to maintainer (applies `yielded`)
+#
+# SECURITY POSTURE (PRD §7 + plan §7 S2 amendment):
+#   permissions: contents:read + issues:write (S1: NEVER contents:write here)
+#   All label/PR/push mutations are done by the DISPATCH SHELL using
+#   CLAUDE_DEV_PAT. Claude itself cannot mutate (wholesale --disallowedTools
+#   in composite action). See .github/actions/clarify/action.yml.
+#
+# Triggers:
+#   - issues.labeled with label == needs-clarify (initial entry)
+#   - issue_comment.created filtered to issue author only (AC-V2-3b)
+#
+# Concurrency: per-issue, queue (cancel-in-progress: false) so that rapid
+# comments do not stomp each other.
+
+name: clarify-loop
+
+on:
+  issues:
+    types: [labeled]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: clarify-issue-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    if: ${{ github.event_name == 'issues' && github.event.label.name == 'needs-clarify' || github.event_name == 'issue_comment' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read
+    outputs:
+      should-run: ${{ steps.gate.outputs.should-run }}
+      round-number: ${{ steps.round.outputs.round-number }}
+      issue-language: ${{ steps.lang.outputs.issue-language }}
+      hidden-ok: ${{ steps.state.outputs.hidden-ok }}
+    steps:
+      - name: AC-V2-3b — comment source filter (issue author only, exclude PAT owner)
+        id: gate
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          COMMENT_USER: ${{ github.event.comment.user.login }}
+          COMMENT_TYPE: ${{ github.event.comment.user.type }}
+          ISSUE_USER: ${{ github.event.issue.user.login }}
+          PAT_OWNER: ${{ vars.CLAUDE_DEV_PAT_OWNER }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          set -euo pipefail
+          should_run="true"
+          reason=""
+
+          if [ "$EVENT_NAME" = "issues" ]; then
+            # labeled event — already filtered by job-level if; just pass through
+            reason="labeled trigger"
+          elif [ "$EVENT_NAME" = "issue_comment" ]; then
+            # AC-V2-3b: exclude PAT owner (defense vs self-trigger)
+            if [ -n "$PAT_OWNER" ] && [ "$COMMENT_USER" = "$PAT_OWNER" ]; then
+              should_run="false"; reason="comment author is PAT owner (self-trigger guard)"
+            fi
+            # AC-V2-3b: only issue author's comments re-evaluate
+            if [ "$should_run" = "true" ] && [ "$COMMENT_TYPE" != "User" ]; then
+              should_run="false"; reason="comment author is not a User (bot/app excluded)"
+            fi
+            if [ "$should_run" = "true" ] && [ "$COMMENT_USER" != "$ISSUE_USER" ]; then
+              should_run="false"; reason="comment author is not the issue author"
+            fi
+            # AC-V2-3c: sentinel marker bail-out (belt-and-suspenders even after 3b)
+            if [ "$should_run" = "true" ] && printf '%s' "$COMMENT_BODY" | grep -qF '<!-- claude-clarify-round-'; then
+              should_run="false"; reason="comment body contains claude sentinel marker"
+            fi
+          else
+            should_run="false"; reason="unexpected event: $EVENT_NAME"
+          fi
+
+          echo "should-run=$should_run" >> "$GITHUB_OUTPUT"
+          echo "reason=$reason" >> "$GITHUB_OUTPUT"
+          echo "Preflight gate: should-run=$should_run reason=$reason"
+
+      - name: Fetch issue state (labels, hidden comment, comment count)
+        id: state
+        if: steps.gate.outputs.should-run == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          json=$(gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json labels,body,comments)
+          labels_csv=$(printf '%s' "$json" | jq -r '.labels | map(.name) | join(",")')
+          comments_combined=$(printf '%s' "$json" | jq -r '.comments | map(.body) | join("\n")')
+
+          # Maintainer override: rejected / accepted / force-manual → halt
+          for forbidden in rejected accepted force-manual; do
+            if printf ',%s,' "$labels_csv" | grep -q ",$forbidden,"; then
+              echo "should-run=false" >> "$GITHUB_OUTPUT"
+              echo "halt-reason=maintainer override label present: $forbidden" >> "$GITHUB_OUTPUT"
+              echo "Maintainer override active ($forbidden); halting clarify loop"
+              exit 0
+            fi
+          done
+
+          # AC-V2-13: cross-check clarify-r-N label vs hidden comment
+          round_from_label=$(printf '%s' "$labels_csv" | tr ',' '\n' | grep -E '^clarify-r-[0-9]+$' | sed 's/clarify-r-//' | sort -n | tail -1 || true)
+          hidden_match=$(printf '%s' "$comments_combined" | grep -oE '<!-- CLARIFY_STATE round=[0-9]+ -->' | tail -1 || true)
+          hidden_round=""
+          if [ -n "$hidden_match" ]; then
+            hidden_round=$(printf '%s' "$hidden_match" | grep -oE '[0-9]+' | head -1)
+          fi
+
+          hidden_ok="true"
+          if [ -n "$round_from_label" ] && [ -z "$hidden_round" ]; then
+            # Label says round≥1 but hidden comment absent/unparseable
+            hidden_ok="false"
+          elif [ -n "$round_from_label" ] && [ "$round_from_label" != "$hidden_round" ]; then
+            hidden_ok="false"
+          fi
+          {
+            echo "hidden-ok=$hidden_ok"
+            echo "round-from-label=$round_from_label"
+            echo "round-from-hidden=$hidden_round"
+          } >> "$GITHUB_OUTPUT"
+
+          if [ "$hidden_ok" = "false" ]; then
+            echo "::error::AC-V2-13 state corruption: label round=$round_from_label vs hidden round=$hidden_round"
+            exit 1
+          fi
+
+      - name: Compute round number
+        id: round
+        if: steps.gate.outputs.should-run == 'true' && steps.state.outputs.hidden-ok == 'true'
+        env:
+          ROUND_FROM_LABEL: ${{ steps.state.outputs.round-from-label }}
+        run: |
+          set -euo pipefail
+          # First entry (no round label yet) = round 1.
+          # Subsequent entries increment from the highest existing clarify-r-N.
+          prev="${ROUND_FROM_LABEL:-0}"
+          next=$((prev + 1))
+          echo "round-number=$next" >> "$GITHUB_OUTPUT"
+
+      - name: Detect issue language (heuristic)
+        id: lang
+        if: steps.gate.outputs.should-run == 'true' && steps.state.outputs.hidden-ok == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          body=$(gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json body | jq -r '.body // ""')
+          # Heuristic: count CJK chars vs total non-space chars. >30% non-English → "zh".
+          total=$(printf '%s' "$body" | tr -d '[:space:]' | wc -m | tr -d ' ')
+          cjk=$(printf '%s' "$body" | perl -ne 'print scalar(grep { /\x{4e00}-\x{9fff}/ } split //)' 2>/dev/null || echo 0)
+          # Simpler: count chars in CJK unicode ranges via grep -o (more portable)
+          cjk=$(printf '%s' "$body" | grep -oE $'[\xe4-\xe9][\x80-\xbf][\x80-\xbf]' | wc -l | tr -d ' ')
+          lang="en"
+          if [ "$total" -gt 0 ] && [ "$cjk" -gt 0 ]; then
+            ratio=$((cjk * 100 / total))
+            if [ "$ratio" -ge 30 ]; then lang="zh"; fi
+          fi
+          echo "issue-language=$lang" >> "$GITHUB_OUTPUT"
+
+  clarify:
+    needs: preflight
+    if: needs.preflight.outputs.should-run == 'true' && needs.preflight.outputs.hidden-ok == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    timeout-minutes: ${{ fromJSON(vars.CLARIFY_TIME_BUDGET_MIN || '30') }}
+    outputs:
+      action: ${{ steps.dispatch.outputs.action }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Self-check (AC-V2-6 source-level guard)
+        run: ./.github/actions/clarify/selfcheck.sh
+
+      - name: Max-rounds cross-check (emit ralph fallback instead of asking again)
+        id: maxrounds
+        env:
+          ROUND: ${{ needs.preflight.outputs.round-number }}
+          MAX: ${{ vars.CLARIFY_MAX_ROUNDS || '3' }}
+        run: |
+          set -euo pipefail
+          if [ "$ROUND" -gt "$MAX" ]; then
+            echo "exhausted=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exhausted=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run clarify composite (skipped when max-rounds exhausted)
+        id: clarify
+        if: steps.maxrounds.outputs.exhausted == 'false'
+        uses: ./.github/actions/clarify
+        with:
+          issue-number: ${{ github.event.issue.number }}
+          round-number: ${{ needs.preflight.outputs.round-number }}
+          issue-language: ${{ needs.preflight.outputs.issue-language }}
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          api-key: ${{ secrets.DEEPSEEK_API_KEY }}
+          anthropic-base-url: ${{ vars.ANTHROPIC_BASE_URL }}
+          model: ${{ vars.TRIAGE_MODEL }}
+
+      - name: Dispatch shell — apply action (ask / accept / yield / max-rounds fallback)
+        id: dispatch
+        env:
+          GH_TOKEN: ${{ secrets.CLAUDE_DEV_PAT }}
+          READ_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NUMBER: ${{ github.event.issue.number }}
+          ROUND: ${{ needs.preflight.outputs.round-number }}
+          MAX: ${{ vars.CLARIFY_MAX_ROUNDS || '3' }}
+          LANGUAGE: ${{ needs.preflight.outputs.issue-language }}
+          ACTION: ${{ steps.clarify.outputs.action }}
+          QUESTION: ${{ steps.clarify.outputs.question }}
+          REASON: ${{ steps.clarify.outputs.reason }}
+          EXHAUSTED: ${{ steps.maxrounds.outputs.exhausted }}
+        run: |
+          set -euo pipefail
+
+          # DENY_LIST — these labels are NEVER writable by this dispatch shell.
+          DENY_LIST='accepted rejected design-approved needs-info needs-clarify triage'
+
+          apply_label() {
+            local label="$1"
+            for forbidden in $DENY_LIST; do
+              if [ "$label" = "$forbidden" ]; then
+                echo "::error::Refusing to apply forbidden label: $label"
+                exit 7
+              fi
+            done
+            gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "$label"
+          }
+
+          remove_label() {
+            local label="$1"
+            gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "$label" || true
+          }
+
+          # Build question body (with sentinel marker + state comment for round tracking).
+          # Disclosure preamble required on round 1.
+          build_question_body() {
+            local round="$1" body="$2"
+            local preamble=""
+            if [ "$round" = "1" ]; then
+              preamble=$'I\'m an AI assistant (powered by Claude) operating under the GithubAutoDev disclosure policy.\n\n'
+            fi
+            printf '%s%s\n\n<!-- claude-clarify-round-%s -->\n<!-- CLARIFY_STATE round=%s -->\n' "$preamble" "$body" "$round" "$round"
+          }
+
+          if [ "$EXHAUSTED" = "true" ]; then
+            # Max-rounds fallback: emit needs-ralph + post ralph-style report.
+            echo "Max-rounds ($MAX) exhausted without resolution — falling back to ralph deep analysis"
+            apply_label "needs-ralph"
+            remove_label "needs-clarify"
+            gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "🛑 Clarify loop exhausted after $MAX rounds without reaching clarity. Handing off to maintainer-driven ralph deep analysis (this is the ONLY path that emits \`needs-ralph\` after v2)."
+            echo "action=yield-to-ralph" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          case "$ACTION" in
+            ask)
+              # Post the question with sentinel markers + advance round label.
+              body="$(build_question_body "$ROUND" "$QUESTION")"
+              gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$body"
+              apply_label "clarify-r-$ROUND"
+              echo "action=ask" >> "$GITHUB_OUTPUT"
+              ;;
+            accept)
+              # AC-V2-8b: re-fetch labels immediately before applying accepted-by-claude
+              current=$(gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json labels | jq -r '.labels | map(.name) | join(",")')
+              for forbidden in rejected force-manual accepted; do
+                if printf ',%s,' "$current" | grep -q ",$forbidden,"; then
+                  echo "::error::Race detected — $forbidden applied during clarify run; aborting accept"
+                  exit 1
+                fi
+              done
+              apply_label "accepted-by-claude"
+              remove_label "needs-clarify"
+              gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "✅ Claude self-acceptance (round $ROUND). \`accepted-by-claude\` applied; Module 4 (develop) will pick this up. Reason: $REASON"
+              echo "action=accept" >> "$GITHUB_OUTPUT"
+              ;;
+            yield)
+              apply_label "yielded"
+              remove_label "needs-clarify"
+              gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "🤝 Claude yielded (round $ROUND): $REASON — maintainer takeover requested."
+              echo "action=yield" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "::error::Unknown action from composite: $ACTION"
+              exit 1
+              ;;
+          esac
+
+      - name: AC-V2-13a — log-scan for secret leaks
+        if: always()
+        env:
+          NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -uo pipefail
+          # Scan workflow logs (best-effort via gh run view) for secret patterns.
+          # This step runs after every clarify attempt; on detection, fail the run.
+          sleep 2  # let logs settle
+          log_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          echo "Scanning $log_url for secret patterns (best-effort; relies on GitHub's own log redaction first)"
+          # GitHub Actions auto-redacts registered secrets in logs; this is a secondary check
+          # against patterns that should never appear regardless.
+          count=$(gh run view "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --log 2>/dev/null \
+            | grep -cE 'ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{82}|CLAUDE_DEV_PAT=' || true)
+          if [ "$count" -gt 0 ]; then
+            echo "::error::AC-V2-13a failed: $count secret-pattern matches in logs"
+            exit 1
+          else
+            echo "AC-V2-13a: 0 matches"
+          fi
+
+  on-failure:
+    needs: [preflight, clarify]
+    if: ${{ always() && (needs.preflight.result == 'failure' || needs.clarify.result == 'failure') }}
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Mark stage:failed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NUMBER: ${{ github.event.issue.number }}
+        run: |
+          if [ -z "$NUMBER" ]; then
+            echo "::warning::No issue number on this event."
+            exit 0
+          fi
+          gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "stage:failed" || true
+          gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "⚠️ Clarify loop failed. See [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details. A maintainer will triage manually." || true

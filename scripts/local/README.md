@@ -1,14 +1,32 @@
 # Local polling stack
 
+> **LEGACY (v2).** As of triage-clarify-v2, the cloud-side workflow handles the
+> full Issue → Triage → Clarify → Develop loop end-to-end. This local stack is
+> retained only as the **v1 reply-path fallback** (issues where cloud decided
+> `decision==reply` and the maintainer wants local re-analysis). For new setups,
+> default `POLL_ENABLED=false` and use the cloud pipeline documented in
+> [`docs/quickstart-clarify.md`](../../docs/quickstart-clarify.md).
+>
+> Specifically, the cloud v2 pipeline replaces:
+> - `handle-triage.sh` → cloud `clarify-loop.yml` (Module 3' multi-turn clarification)
+> - `handle.sh`         → cloud `develop.yml` (Module 4 with CLAUDE_DEV_PAT-as-developer)
+>
+> Coexistence contract: `poll.sh` checks `POLL_ENABLED` env var (default
+> `false`). Set `POLL_ENABLED=true` in `~/.config/githubautodev/config.sh` only
+> if you need the v1 local fallback alongside the v2 cloud pipeline. The v1
+> path is mutually exclusive with v2's `needs-clarify` label — see
+> [`docs/labels.md#coexistence-v1--v2`](../../docs/labels.md#coexistence-v1--v2).
+
 The hybrid architecture: **cloud-side workflow analyses + comments + labels**, **local claude code implements**. See [`docs/quickstart-triage.md`](../../docs/quickstart-triage.md) for the cloud half.
 
 This directory contains the local half:
 
 ```
 scripts/local/
-├── poll.sh     # cron entry; polls for `accepted` issues and dispatches
-├── handle.sh   # per-issue handler; calls local claude CLI, pushes, opens PR
-└── README.md   # this file
+├── poll.sh           # cron entry; polls for `accepted` AND `needs-ralph` issues, dispatches per label
+├── handle.sh         # develop-path handler (accepted label): claude + push + PR
+├── handle-triage.sh  # triage-path handler (needs-ralph label): claude + ralph → JSON + comment
+└── README.md         # this file
 ```
 
 ## How it fits together
@@ -21,25 +39,35 @@ scripts/local/
 │    ↓                                                           │
 │  Claude analyses (via GLM passthrough)                         │
 │    ↓                                                           │
-│  Posts comment + applies `accepted` label (if AUTO_ACCEPT_ON)  │
+│  decision==work OR confidence<TRIAGE_RALPH_THRESHOLD ?         │
+│    YES → applies `needs-ralph` + posts "queued" comment        │
+│    NO  → posts reply comment (+ optional `accepted` if high)   │
 └────────────────────────────────────────────────────────────────┘
                           │
                           │  (label is the handoff signal)
                           ▼
 ┌─ Your mac (local) ─────────────────────────────────────────────┐
-│  cron → poll.sh                                                │
+│  cron → poll.sh (dual-label polling)                           │
 │    ↓                                                           │
-│  gh issue list --label accepted                                │
+│  gh issue list --label needs-ralph  +  --label accepted        │
 │    ↓                                                           │
-│  new issue? → handle.sh                                        │
+│  per-issue dispatch:                                           │
+│    • needs-ralph only → handle-triage.sh                       │
+│    • accepted only    → handle.sh                              │
+│    • BOTH (race)      → accepted wins (AC-P4)                  │
 │    ↓                                                           │
-│  fetch issue body, create feat/issue-N branch                  │
+│  handle-triage.sh: claude -p + Skill(ralph) writes JSON        │
 │    ↓                                                           │
-│  invoke local `claude` CLI (uses your GLM 5.2 proxy config)    │
-│    ↓                                                           │
-│  push branch + open draft PR                                   │
+│  wrapper posts formatted comment, applies `triage-done`,       │
+│  removes `needs-ralph`. Never applies `accepted` (S2).         │
 └────────────────────────────────────────────────────────────────┘
 ```
+
+## Polling modes (AC-P1, AC-P4)
+
+`poll.sh` polls both `accepted` and `needs-ralph` labels in two parallel `gh issue list` calls (GitHub's compound `--label a,b` is AND, not OR — so two calls are needed). Results are merged and deduped by issue number.
+
+**Race priority (AC-P4):** if a maintainer applies `accepted` to an issue that's still labelled `needs-ralph` (during ralph's 5-15 min window), `accepted` wins. `poll.sh` dispatches to `handle.sh` only, removes `needs-ralph`, and marks the issue seen so `handle-triage.sh` doesn't subsequently fire on it.
 
 ## One-time setup
 
@@ -126,9 +154,16 @@ Caveat: cron has a minimal environment. If `claude`, `gh`, `jq`, or `git` aren't
 
 ```
 $XDG_STATE_HOME/githubautodev/   (default: ~/.local/state/githubautodev/)
-├── seen.txt        # issue numbers successfully handled
-├── failed.txt      # issue numbers whose handle.sh exited non-zero
-└── poll.lock.d/    # mkdir-based single-flight lock (auto-removed on exit)
+├── seen.txt           # issue numbers successfully handled (either path)
+├── failed.txt         # develop-path (handle.sh) failures
+├── triage-failed.txt  # triage-path (handle-triage.sh) failures
+├── poll.lock.d/       # mkdir-based single-flight lock (auto-removed on exit)
+└── handle-triage-N.lock.d/  # per-issue lock (prevents concurrent handle-triage.sh on same issue)
+
+$PROJECT_ROOT/.omc/state/   (per-project analysis state — gitignored)
+├── triage-prd-N.md          # ralph PRD scaffold for issue #N (wrapper-authored)
+├── triage-issue-N.json      # ralph's structured analysis output (10-field schema)
+└── labels-allow.txt         # cache of repo labels minus deny-list (used by AC-H11)
 ```
 
 To **retry** a failed issue:
@@ -153,6 +188,9 @@ sed -i.bak '/^42$/d' ~/.local/state/githubautodev/seen.txt
 | `produced no commits` | Claude succeeded but didn't commit | Re-run; check if claude needs an explicit "commit" instruction |
 | `push rejected (non-fast-forward)` | Branch diverged | Delete local `feat/issue-N` and re-run |
 | `Could not resolve host` inside cron | Minimal cron env | Source `~/.zshrc` from config.sh |
+| `handle-triage.sh: schema validation failed` | Ralph output JSON doesn't match 10-field schema or AC-S2/S3 consistency | Inspect `.omc/state/triage-issue-N.json`; re-queue by removing/re-adding `needs-ralph` |
+| `AC-H13 violation` | Wrapper attempted to apply a denied label (accepted/rejected/etc.) | This is a wrapper bug — open an issue; ralph output should never include state labels in suggested_labels |
+| `Issue already accepted; ralph analysis skipped` (AC-H14) | Maintainer raced ralph and applied `accepted` first | Expected behavior; no action needed |
 
 ## Security notes
 

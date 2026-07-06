@@ -20,7 +20,37 @@ labels:
     category: triage
   - name: triage-done
     color: "1d76db"
-    description: "Triage complete; awaiting judgement"
+    description: "Ralph deep analysis complete; awaiting maintainer accept/reject decision"
+    category: triage
+  - name: needs-ralph
+    color: "7057ff"
+    description: "Cloud first-pass flagged; awaiting local ralph deep analysis"
+    category: triage
+  - name: needs-clarify
+    color: "7057ff"
+    description: "Cloud first-pass flagged; awaiting Module 3' clarify loop"
+    category: triage
+
+  # ── Module 3' clarify loop labels (v2) ─────────────────────────────────────
+  - name: accepted-by-claude
+    color: "0e8a16"
+    description: "Claude self-acceptance after clarify loop (Module 4 trigger, distinct from maintainer accepted)"
+    category: stage
+  - name: yielded
+    color: "5319e7"
+    description: "Claude yielded; maintainer takeover required"
+    category: stage
+  - name: clarify-r-1
+    color: "c2e0c6"
+    description: "Clarify loop round 1 of N (state marker)"
+    category: triage
+  - name: clarify-r-2
+    color: "c2e0c6"
+    description: "Clarify loop round 2 of N (state marker)"
+    category: triage
+  - name: clarify-r-3
+    color: "c2e0c6"
+    description: "Clarify loop round 3 of N (state marker; max-rounds ceiling)"
     category: triage
 
   # ── stage labels (lifecycle) ─────────────────────────────────────────────

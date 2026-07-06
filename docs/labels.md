@@ -19,7 +19,9 @@
 stateDiagram-v2
     [*] --> Opened: issue opened (type:*, triage)
     Opened --> Triaging: triage bot replies
-    Triaging --> Triaged: triage-done applied
+    Triaging --> NeedsRalph: cloud first-pass flags deep analysis
+    NeedsRalph --> Triaged: local ralph finishes (triage-done applied)
+    Triaging --> Triaged: triage-done applied (high-confidence cloud decision)
     Triaged --> Accepted: judge (auto) or maintainer (manual)
     Triaged --> Rejected: judge or maintainer
     Triaged --> NeedsInfo: judge or maintainer
@@ -57,7 +59,47 @@ stateDiagram-v2
 |---|---|---|---|---|
 | `triage` | Newly opened, awaiting triage | Issue Forms auto-apply on `opened` | triage bot when posting reply | → `triage:replying` |
 | `triage:replying` | Triage bot is composing first response | triage bot | triage bot when reply posted | → `triage-done` |
-| `triage-done` | Triage complete; ready for judgement | triage bot | judge workflow when it picks up | → `accepted` \| `rejected` \| `needs-info` |
+| `needs-ralph` | **v2**: emitted ONLY by clarify-loop.yml max-rounds fallback when Claude cannot reach clarity after N rounds | clarify-loop.yml (terminal exhaustion) | maintainer takeover | → `triage-done` (maintainer-driven ralph deep analysis) |
+| `needs-clarify` | **v2**: cloud first-pass flagged; awaiting Module 3' clarify loop | triage-issue.yml (low-confidence `work` decisions only) | clarify-loop.yml on `accepted-by-claude` / `yielded` / max-rounds fallback | → `accepted-by-claude` \| `yielded` \| `needs-ralph` |
+| `clarify-r-1` / `clarify-r-2` / `clarify-r-3` | **v2**: state marker — Claude asked a round-N question, awaiting author reply | clarify-loop.yml dispatch shell (round N) | clarify-loop.yml (next round / resolution) | → next round or resolution label |
+| `accepted-by-claude` | **v2**: Claude self-acceptance after clarify loop reached clarity (S2 amendment — distinct from maintainer-only `accepted`) | clarify-loop.yml dispatch shell only | develop.yml on branch creation | → `in-development` |
+| `yielded` | **v2**: Claude yielded; maintainer takeover requested | clarify-loop.yml dispatch shell | maintainer | maintainer applies next label |
+| `triage-done` | Maintainer accept/reject decision pending (v1 maintainer-driven path) | local handle-triage.sh (v1, after ralph finishes) OR maintainer manual | maintainer when applying `accepted`/`rejected` | → `accepted` \| `rejected` \| `needs-info` |
+
+### Decision vocabulary mapping (cloud ↔ Module 3')
+
+The cloud first-pass emits `decision ∈ {reply, work}` × `confidence ∈ [0,1]`. The v2 Module 3' clarify loop emits `action ∈ {ask, accept, yield}`. Mapping:
+
+| Cloud decision + confidence | Module 3' routing | Module 3' action | Resulting label |
+|---|---|---|---|
+| `work` + low conf | queue clarify loop (`needs-clarify`) | `ask` (round N) | `clarify-r-N` |
+| `work` + low conf | (after round N) | `accept` | `accepted-by-claude` |
+| `work` + low conf | (after round N) | `yield` | `yielded` |
+| `work` + low conf | (rounds exhausted, max-rounds fallback) | n/a — emits `needs-ralph` | `needs-ralph` (the ONLY v2 path that emits `needs-ralph`) |
+| `work` + high conf | auto-accept (no clarify loop) | n/a | `accepted` (maintainer-only via `AUTO_ACCEPT_ENABLED=true`) |
+| `reply` + any conf | v1 maintainer path (no clarify loop) | n/a | maintainer manual |
+
+### accepted-by-claude state machine (S2 amendment)
+
+`accepted-by-claude` is the v2 S2-amendment label that lets Claude self-accept
+an issue after the clarify loop reaches clarity, while preserving the
+maintainer-only `accepted` invariant. Rules:
+
+(a) **Applied by** the clarify-loop.yml dispatch shell only, after Claude's
+    sealed JSON returns `action=accept`. Re-fetched label race-check (AC-V2-8b)
+    aborts the apply if `rejected`, `force-manual`, or `accepted` was added by
+    a maintainer during the run.
+(b) **Removed by** the develop.yml workflow on branch creation (replaced with
+    `in-development`). Maintainers can force removal via `force-manual` or
+    `rejected` (both halt the clarify loop in preflight).
+(c) **Coexists with** `accepted`: either label triggers develop.yml (AC-V2-12).
+    A maintainer may apply `accepted` at any time to override the Claude path
+    and force Module 4 entry; the two labels are mutually exclusive in practice
+    (develop.yml removes both on pickup).
+
+See [`docs/security.md#s2-amendment`](security.md#s2-amendment) for the full
+containment list (sealed JSON schema, dispatch shell, `--disallowedTools`,
+DENY_LIST, AC-V2-8b race guard, AC-V2-13a log-scan).
 
 ### Stage labels (terminal states for the issue lifecycle)
 
@@ -118,7 +160,8 @@ Auto-applied by Issue Forms. Maintainers may rewrite.
 A workflow MUST NOT:
 
 - Apply `accepted` to an Issue that lacks `triage-done`. (Gate for S2 — see [`security.md`](security.md).)
-- Apply `in-development` to an Issue that lacks `accepted` OR `design-approved` (if `design-review` was triggered).
+- Apply `accepted-by-claude` outside the clarify-loop.yml dispatch shell. (Gate for S2 amendment — see [`security.md#s2-amendment`](security.md#s2-amendment).)
+- Apply `in-development` to an Issue that lacks `accepted` OR `accepted-by-claude` OR `design-approved` (if `design-review` was triggered).
 - Apply `merged` to an Issue whose linked PR is not in `in-review` AND approved AND green.
 - Remove `stage:failed` except via maintainer action.
 
@@ -127,6 +170,27 @@ A workflow MUST:
 - Apply exactly one label per transition (atomic).
 - Post an audit comment for every transition (PRD §3 Audit invariant).
 - Refuse to act if the precondition label is missing — log to `stage:failed` instead.
+
+## Coexistence v1 + v2
+
+The repository supports both v1 (local ralph poller) and v2 (cloud clarify loop)
+simultaneously. Isolation is enforced by **label separation**:
+
+| Path | Trigger label | Path owner | Implementation |
+|---|---|---|---|
+| v1 maintainer-driven ralph | `needs-ralph` | local `poll.sh` (POLL_ENABLED=true) | `scripts/local/handle-triage.sh` |
+| v2 cloud clarify loop | `needs-clarify` | cloud `clarify-loop.yml` | `.github/actions/clarify` composite |
+| v2 max-rounds fallback | `needs-ralph` (re-emitted by clarify-loop.yml) | local `poll.sh` (POLL_ENABLED=true) OR maintainer manual | `scripts/local/handle-triage.sh` |
+
+**AC-V2-12b:** if `POLL_ENABLED=true` and an issue has `needs-clarify` label,
+`poll.sh` skips it (the issue is owned by the v2 cloud path). The `poll.sh`
+script only polls for `accepted` and `needs-ralph`; it never polls `needs-clarify`,
+so the isolation is structural.
+
+**Maintainer escape hatches:**
+- `force-manual` halts both v1 and v2 paths in preflight (PRD §3 mode override).
+- `rejected` halts both paths; transition to terminal.
+- `accepted` overrides any Claude path and forces Module 4 entry.
 
 ## Source of truth
 

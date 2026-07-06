@@ -31,6 +31,25 @@ Modules downstream of the `accepted` gate (PRD §7 S2) consume Issue content onl
 
 Module 4 (develop) triggers ONLY on `labeled: accepted`. Only maintainers may apply `accepted` (enforced via Label ownership in `docs/labels.md` and branch protection / CODEOWNERS). This blocks injected content from reaching code-execution workflows.
 
+### S2 Amendment (v2 — Module 3' clarify loop)
+
+> Status: **Active.** Signed off 2026-07-06.
+> See `.omc/plans/triage-clarify-v2.md` §7 for the consensus review trail (Architect + Critic APPROVED).
+
+The original S2 invariant is preserved verbatim: **`accepted` remains maintainer-only**. The v2 clarify loop introduces a **distinct parallel label** `accepted-by-claude` that Claude may apply (via the dispatch shell, never directly) after multi-turn clarification succeeds. Both labels trigger Module 4, but provenance is encoded in the label name itself — eliminating any provenance audit at gate time.
+
+**Containment (defense in depth):**
+
+1. Claude never applies any label directly. It emits sealed JSON: `{action: "ask"|"accept"|"yield", question?, reason}`.
+2. The dispatch shell (running with `CLAUDE_DEV_PAT`) applies the label based on the parsed action.
+3. Claude's `--disallowedTools` whitelist blocks `Bash(gh issue edit *)`, `Bash(gh pr *)`, `Bash(gh label *)`, `Bash(git push --force*)` — wholesale patterns.
+4. A per-label DENY_LIST is checked at runtime before any label write: `accepted`, `rejected`, `design-approved`, `needs-info`, `needs-clarify`, `triage` are **never** writable by the dispatch shell acting on claude output. (`stage:failed`, `triage-done`, and `needs-ralph` are handled elsewhere — the on-failure job and the max-rounds fallback respectively.)
+5. JSON schema validation rejects any output that does not match `{action, question?, reason}`.
+6. AC-V2-8b re-fetches labels immediately before the `accepted-by-claude` write, closing the label-race window.
+7. AC-V2-13a log-scan fails the workflow run if `ghp_`, `github_pat_`, or `CLAUDE_DEV_PAT=` patterns appear in workflow run logs.
+
+**Rollback:** removing the `accepted-by-claude` label from `.github/labels.yml` and the `clarify-loop.yml` workflow fully reverts this amendment without affecting the maintainer `accepted` path.
+
 ## S3 — Least privilege for secrets
 
 Each module receives only the secrets it needs:
@@ -52,6 +71,37 @@ Every AI-calling composite action passes `--disallowedTools` / `--allowedTools` 
 - Codex actions use `permission-profile: workspace-write` (NOT `danger-full-access`).
 - Claude actions use `--allowedTools` whitelist; never `--dangerously-skip-permissions`.
 - `--bypass-sandbox` style flags are forbidden; a CI lint rejects any workflow containing them.
+
+## S6 — Personal access token (PAT) handling (v2)
+
+The v2 clarify + develop path uses a fine-grained personal access token `CLAUDE_DEV_PAT` (stored as a repository secret) so that Claude's comments, commits, and PRs appear under a real developer identity rather than `github-actions[bot]`.
+
+**Mandatory controls (enforceable):**
+
+- **Fine-grained PAT only.** Classic PATs are forbidden.
+- **Single-repository scope.** The PAT's resource owner is restricted to this repository.
+- **Minimal permissions.** Token scope is `issues: write`, `pull-requests: write`, `contents: write` (feature branches only — branch protection prevents direct `main` pushes).
+- **Time-bounded.** Maximum lifetime 90 days; quarterly rotation review tracked via `scripts/audit/pat-rotation-check.sh` sentinel file.
+- **Audit log monitoring.** `scripts/audit/pat-actions.sh` runs a daily diff against the PAT owner's public event stream; anomalies opened as `type:incident` issues.
+- **Log disclosure protection.** AC-V2-13a log-scan step fails the workflow run if any of `ghp_`, `github_pat_`, or `CLAUDE_DEV_PAT=` patterns appear in workflow run logs.
+
+**Advisory controls (not API-enforceable for personal PATs):**
+
+- **2FA on PAT owner account.** GitHub does not expose 2FA status for personal accounts via the API in a way the workflow can gate on. The PAT owner should enable 2FA in their account settings. If the account is a GitHub org member, org-level 2FA enforcement applies.
+- **Distinct display identity.** The PAT owner's profile should clearly disclose "AI developer account operated by Claude" in bio to avoid misleading the community (see AC-V2-15).
+
+**Forbidden:**
+
+- Never commit the PAT value to any file. Storage is GitHub Actions secrets only.
+- Never share the PAT across maintainers. One PAT per identity.
+- Never widen the PAT scope beyond this repository.
+- Never print the PAT in any output. AC-V2-13a enforces this post-hoc; prevention is the prompt's S4 directive ("Never print tokens, API keys, or environment variable values").
+
+**Repository variables (docs only, not secrets):**
+
+- `CLAUDE_DEV_PAT_OWNER` — the login of the PAT owner (used by clarify-loop.yml filter to ignore the PAT owner's comments for re-entrancy prevention).
+- `CLARIFY_MAX_ROUNDS` — ceiling for clarify loop iterations (default `3`).
+- `CLARIFY_TIME_BUDGET_MIN` — wall-clock ceiling per clarify run (default `30`).
 
 ## Incident response
 
