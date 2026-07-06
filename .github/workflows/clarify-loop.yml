@@ -163,7 +163,7 @@ jobs:
           total=$(printf '%s' "$body" | tr -d '[:space:]' | wc -m | tr -d ' ')
           cjk=$(printf '%s' "$body" | perl -ne 'print scalar(grep { /\x{4e00}-\x{9fff}/ } split //)' 2>/dev/null || echo 0)
           # Simpler: count chars in CJK unicode ranges via grep -o (more portable)
-          cjk=$(printf '%s' "$body" | grep -oE $'[\xe4-\xe9][\x80-\xbf][\x80-\xbf]' | wc -l | tr -d ' ')
+          cjk=$(printf '%s' "$body" | grep -oE $'[\xe4-\xe9][\x80-\xbf][\x80-\xbf]' | wc -l | tr -d ' ') || cjk=0
           lang="en"
           if [ "$total" -gt 0 ] && [ "$cjk" -gt 0 ]; then
             ratio=$((cjk * 100 / total))
