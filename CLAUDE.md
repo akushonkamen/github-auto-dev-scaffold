@@ -51,10 +51,11 @@ those directories**; the Issue/PR will name the directories that matter.
 | # | Module | Engine | Trigger | Output Label |
 |---|---|---|---|---|
 | 1 | Issue Forms | GitHub native | `issues.opened` | structured Issue |
-| 2 | Triage | Claude | Module 1 event | `triage` |
-| 3 | Judgement | Claude (+human) | `labeled: triage-done` | `accepted` \| `rejected` \| `needs-info` |
+| 2 | Triage | Claude (cloud first-pass, GLM passthrough) | Module 1 event | `triage` + conditional `needs-clarify` |
+| 3' | Clarify loop | Claude (multi-turn, GLM passthrough) | `labeled: needs-clarify` or issue author comment | `accepted-by-claude` \| `yielded` \| `needs-ralph` (max-rounds fallback only) |
+| 3 | Judgement (v1, legacy) | ralph (local) + maintainer | `labeled: needs-ralph` → `triage-done` | structured analysis → maintainer applies `accepted` \| `rejected` \| `needs-info` |
 | 3.5 | Design review | Claude (+human) | size:XL accepted | `design-approved` |
-| 4 | Develop | Claude | `labeled: accepted` | feature branch |
+| 4 | Develop | Claude (GLM passthrough) | `labeled: accepted` \| `accepted-by-claude` | feature branch + PR |
 | 5 | Self-verify | Claude | branch push | verify report |
 | 6 | Test | Codex + CI | Module 5 passed | test report |
 | 7 | PR open | Claude | Module 6 passed | Draft/ready PR |
@@ -66,18 +67,18 @@ Full table + transition rules in [`docs/labels.md`](docs/labels.md) and
 
 ## Label state machine (5-line summary)
 
-- `triage` → `triage-done` → `accepted`|`rejected`|`needs-info` → (optional `design-approved`) → `in-development` → `verifying` → `testing` → `ready-for-pr` → `in-review` → `merged`
+- `triage` → (`needs-clarify` → Module 3' clarify loop → `accepted-by-claude`|`yielded`) OR (`needs-ralph` → ralph deep analysis → `triage-done`) → `accepted`|`rejected`|`needs-info` → (optional `design-approved`) → `in-development` → `verifying` → `testing` → `ready-for-pr` → `in-review` → `merged`
 - Anywhere → `stage:failed` (graceful degradation, PRD §6)
 - `force-manual` overrides global `TRIAGE_MODE` per-issue (PRD §3)
 - Full state diagram, owners, legal transitions: [`docs/labels.md`](docs/labels.md)
 
-## Security red lines (PRD §7, verbatim)
+## Security red lines (PRD §7, verbatim + v2 amendments)
 
 These take precedence over every feature. If a workflow change conflicts with
 any of them, the red line wins.
 
 - **S1** — Triage/judge workflows: `permissions: contents: read, issues: write`. NEVER `contents: write`. Issue bodies are untrusted input.
-- **S2** — Module 4 (develop) triggers ONLY on `labeled: accepted`. Only maintainers may apply `accepted`.
+- **S2** — Module 4 (develop) triggers on `labeled: accepted` (maintainer) OR `labeled: accepted-by-claude` (Claude self-acceptance via S2 amendment). Only maintainers may apply `accepted`; only clarify-loop.yml dispatch shell may apply `accepted-by-claude`.
 - **S3** — AI code never lands on `main`. Secrets scoped per-module, never workflow-global.
 - **S4** — AI must never print tokens, API keys, or environment values.
 - **S5** — No sandbox bypass. Codex uses `permission-profile: workspace-write` (never `danger-full-access`). Claude uses `--allowedTools` whitelist (never `--dangerously-skip-permissions`).
@@ -110,7 +111,8 @@ See [`docs/security.md`](docs/security.md) for the operational playbook and inci
 - [docs/triage-modes.md](docs/triage-modes.md) — auto/manual/hybrid + calibration
 - [docs/composite-action-spec.md](docs/composite-action-spec.md) — action interfaces
 - [docs/security.md](docs/security.md) — red lines operational guide
-- [docs/quickstart-triage.md](docs/quickstart-triage.md) — Issue → Claude → Reply/Work end-to-end setup (the only wired flow in this scaffold)
+- [docs/quickstart-triage.md](docs/quickstart-triage.md) — Issue → Claude → Reply/Work end-to-end setup (cloud first-pass)
+- [docs/quickstart-clarify.md](docs/quickstart-clarify.md) — v2 clarify loop setup (PAT, repo vars, fixture walkthrough)
 
 ## Working agreement
 

@@ -13,10 +13,8 @@
 #   escalate to repo writes.
 #
 # Engine: claude-code-action@v1 with ANTHROPIC_BASE_URL passthrough.
-#   - Default (no ZHIPU_API_KEY / no base url): hits Anthropic real endpoint.
-#   - Set ZHIPU_API_KEY + base url vars → routes to Zhipu AI's Anthropic-compatible
-#     endpoint (https://open.bigmodel.cn/api/anthropic). Model names like
-#     "claude-sonnet-4-6" are accepted by Zhipu's compat layer.
+#   - Set DEEPSEEK_API_KEY + base url vars → routes to DeepSeek's Anthropic-compatible
+#     endpoint (https://api.deepseek.com/anthropic) with model "deepseek-v4-pro".
 name: triage-issue
 
 on:
@@ -74,7 +72,7 @@ jobs:
         with:
           issue-number: ${{ steps.resolve-issue.outputs.issue-number }}
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-          api-key: ${{ secrets.ZHIPU_API_KEY }}
+          api-key: ${{ secrets.DEEPSEEK_API_KEY }}
           anthropic-base-url: ${{ vars.ANTHROPIC_BASE_URL }}
           model: ${{ vars.TRIAGE_MODEL }}
           engine: claude
@@ -97,21 +95,52 @@ jobs:
           NUMBER: ${{ steps.resolve-issue.outputs.issue-number }}
         run: gh issue edit "$NUMBER" --add-label triage
 
+      # ─── Queue clarify loop (cloud → Module 3' clarify handoff, v2) ────────
+      # AC-V2-1 (v2 plan §3 Step 2): route LOW-CONFIDENCE `work` decisions to
+      # the v2 clarify loop instead of v1 ralph. HIGH-CONFIDENCE work is handled
+      # below by auto-accept (AA on) or recommend-acceptance (AA off). REPLY
+      # decisions never enter the clarify loop — they stay on the v1 path
+      # (comment + triage label, end of pipeline).
+      #
+      # Low-confidence = (work with empty confidence) OR
+      #                  (work with confidence < TRIAGE_RALPH_THRESHOLD).
+      # Empty confidence on `work` is treated as low (safer to refine).
+      #
+      # v2 lifecycle note: `needs-ralph` is no longer emitted here. The only
+      # emitter of `needs-ralph` after this change is the clarify-loop workflow's
+      # max-rounds fallback (see .github/workflows/clarify-loop.yml).
+      - name: Queue clarify loop
+        id: queue-clarify
+        if: ${{ steps.triage.outputs.decision == 'work' && (steps.triage.outputs.confidence == '' || fromJSON(steps.triage.outputs.confidence) < fromJSON(vars.TRIAGE_RALPH_THRESHOLD || '0.7')) }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NUMBER: ${{ steps.resolve-issue.outputs.issue-number }}
+        run: |
+          gh issue edit "$NUMBER" --add-label needs-clarify
+          gh issue comment "$NUMBER" --body "⏳ Claude needs more information — Module 3' clarify loop will engage and ask follow-up questions."
+
       # PRD §7 S2: only maintainers may apply `accepted`. AUTO_ACCEPT_ENABLED
       # is a repo variable (default unset = off). Set it to "true" to enable
       # full auto-accept when claude's decision is "work".
-      - name: Auto-accept (S2 opt-in)
-        if: steps.triage.outputs.decision == 'work' && vars.AUTO_ACCEPT_ENABLED == 'true'
+      # AC-C7: cloud auto-accept fires ONLY on high-confidence work — confidence
+      # >= TRIAGE_RALPH_THRESHOLD (default 0.7). Low-confidence work goes to
+      # ralph for deeper analysis instead of being auto-accepted. This avoids
+      # the ambiguous "needs-ralph AND auto-accept" coexistence.
+      - name: Auto-accept (S2 opt-in, high-confidence only)
+        if: ${{ steps.triage.outputs.decision == 'work' && vars.AUTO_ACCEPT_ENABLED == 'true' && steps.triage.outputs.confidence != '' && fromJSON(steps.triage.outputs.confidence) >= fromJSON(vars.TRIAGE_RALPH_THRESHOLD || '0.7') }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NUMBER: ${{ steps.resolve-issue.outputs.issue-number }}
         run: |
           gh issue edit "$NUMBER" --add-label accepted
-          gh issue comment "$NUMBER" --body "🤖 Claude recommends acceptance. AUTO_ACCEPT_ENABLED=true → applied \`accepted\` label. Module 4 (develop) will pick this up."
+          gh issue comment "$NUMBER" --body "🤖 Claude recommends acceptance (high-confidence). AUTO_ACCEPT_ENABLED=true → applied \`accepted\` label. Module 4 (develop) will pick this up."
 
       # Default "work" path: claude recommends but maintainer decides.
+      # AC-C7 paired: fires when work was decided, auto-accept is off, AND
+      # confidence is high (low-confidence work is already queued for ralph
+      # above — we don't double-comment).
       - name: Recommend acceptance (default)
-        if: steps.triage.outputs.decision == 'work' && vars.AUTO_ACCEPT_ENABLED != 'true'
+        if: ${{ steps.triage.outputs.decision == 'work' && vars.AUTO_ACCEPT_ENABLED != 'true' && steps.triage.outputs.confidence != '' && fromJSON(steps.triage.outputs.confidence) >= fromJSON(vars.TRIAGE_RALPH_THRESHOLD || '0.7') }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NUMBER: ${{ steps.resolve-issue.outputs.issue-number }}

@@ -1,0 +1,244 @@
+# Module 4 — Develop (v2)
+#
+# Triggers when an issue gets `accepted` (maintainer path) OR `accepted-by-claude`
+# (Claude self-acceptance from clarify loop, plan §7 S2 amendment).
+# Creates a `claude/issue-N-<slug>` branch, calls the develop composite action,
+# pushes the branch with CLAUDE_DEV_PAT, opens a PR with CLAUDE_DEV_PAT
+# (PR opener = PAT owner so the PR is "from a real developer").
+#
+# SECURITY POSTURE (PRD §7 + plan §7):
+#   - permissions: contents:write + issues:write + pull-requests:write
+#     (Module 4 is the ONLY module allowed contents:write per S1)
+#   - All pushes and PR opens use CLAUDE_DEV_PAT
+#   - claude --disallowedTools blocks git push --force* and main/master checkout wholesale
+#   - Base branch is hardcoded to `dev` (or repo var DEV_BASE_BRANCH); never main
+#   - On failure: stage:failed label + failure comment, no main impact
+#
+# Triggers:
+#   - issues.labeled with label == accepted OR accepted-by-claude (AC-V2-12)
+
+name: develop
+
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: develop-issue-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    if: ${{ github.event.label.name == 'accepted' || github.event.label.name == 'accepted-by-claude' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read
+    outputs:
+      should-run: ${{ steps.gate.outputs.should-run }}
+      head-branch: ${{ steps.branch.outputs.head-branch }}
+      base-branch: ${{ steps.branch.outputs.base-branch }}
+      issue-language: ${{ steps.lang.outputs.issue-language }}
+    steps:
+      - name: Gate — issue open + no maintainer-block label
+        id: gate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          should_run="true"
+          reason=""
+          json=$(gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json state,labels)
+          state=$(printf '%s' "$json" | jq -r '.state')
+          labels=$(printf '%s' "$json" | jq -r '.labels | map(.name) | join(",")')
+          if [ "$state" != "OPEN" ]; then
+            should_run="false"; reason="issue state=$state (not OPEN)"
+          fi
+          for forbidden in rejected force-manual; do
+            if printf ',%s,' "$labels" | grep -q ",$forbidden,"; then
+              should_run="false"; reason="maintainer override label present: $forbidden"
+            fi
+          done
+          echo "should-run=$should_run" >> "$GITHUB_OUTPUT"
+          echo "reason=$reason" >> "$GITHUB_OUTPUT"
+          echo "Preflight gate: should-run=$should_run reason=$reason"
+
+      - name: Compute branch names
+        id: branch
+        if: steps.gate.outputs.should-run == 'true'
+        env:
+          NUMBER: ${{ github.event.issue.number }}
+          TITLE: ${{ github.event.issue.title }}
+          DEV_BASE: ${{ vars.DEV_BASE_BRANCH }}
+        run: |
+          set -eu
+          base="${DEV_BASE:-dev}"
+          # Slugify the title: lowercase, replace non-alnum with -, trim, cap length.
+          slug=$(printf '%s' "$TITLE" \
+            | tr '[:upper:]' '[:lower:]' \
+            | tr -c '[:alnum:]' '-' \
+            | tr -s '-' \
+            | sed 's/^-//; s/-$//' \
+            | cut -c1-40)
+          if [ -z "$slug" ]; then slug="issue"; fi
+          head="claude/issue-${NUMBER}-${slug}"
+          echo "base-branch=$base" >> "$GITHUB_OUTPUT"
+          echo "head-branch=$head" >> "$GITHUB_OUTPUT"
+
+      - name: Detect issue language
+        id: lang
+        if: steps.gate.outputs.should-run == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -eu
+          body=$(gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json body | jq -r '.body // ""')
+          total=$(printf '%s' "$body" | tr -d '[:space:]' | wc -m | tr -d ' ')
+          cjk=$(printf '%s' "$body" | grep -oE $'[\xe4-\xe9][\x80-\xbf][\x80-\xbf]' | wc -l | tr -d ' ')
+          lang="en"
+          if [ "$total" -gt 0 ] && [ "$cjk" -gt 0 ]; then
+            ratio=$((cjk * 100 / total))
+            if [ "$ratio" -ge 30 ]; then lang="zh"; fi
+          fi
+          echo "issue-language=$lang" >> "$GITHUB_OUTPUT"
+
+  develop:
+    needs: preflight
+    if: needs.preflight.outputs.should-run == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    timeout-minutes: ${{ fromJSON(vars.DEVELOP_TIME_BUDGET_MIN || '60') }}
+    outputs:
+      branch-name: ${{ steps.branch.outputs.branch-name }}
+      commit-sha: ${{ steps.develop.outputs.commit-sha }}
+      pr-url: ${{ steps.pr.outputs.pr-url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+          token: ${{ secrets.CLAUDE_DEV_PAT }}
+
+      - name: Create head branch (off base, never main)
+        id: branch
+        env:
+          BASE: ${{ needs.preflight.outputs.base-branch }}
+          HEAD: ${{ needs.preflight.outputs.head-branch }}
+        run: |
+          set -euo pipefail
+          # Try to check out base branch (origin/$BASE); fall back to default branch
+          # but NEVER main (S3 guard).
+          if [ "$BASE" = "main" ] || [ "$BASE" = "master" ]; then
+            echo "::error::Refusing to develop against $BASE (PRD §7 S3)"
+            exit 1
+          fi
+          if git ls-remote --exit-code --heads origin "$BASE" >/dev/null 2>&1; then
+            git checkout -B "$HEAD" "origin/$BASE"
+          else
+            # Base branch doesn't exist yet; use the repo default but keep the S3 guard.
+            default=$(git remote show origin | awk '/HEAD branch/ {print $NF}')
+            if [ "$default" = "main" ] || [ "$default" = "master" ]; then
+              echo "::error::Repo default branch is $default and DEV_BASE_BRANCH ($BASE) does not exist. Set DEV_BASE_BRANCH to a non-main ref."
+              exit 1
+            fi
+            git checkout -B "$HEAD" "origin/$default"
+          fi
+          echo "branch-name=$HEAD" >> "$GITHUB_OUTPUT"
+
+      - name: Run develop composite
+        id: develop
+        uses: ./.github/actions/develop
+        with:
+          issue-number: ${{ github.event.issue.number }}
+          base-branch: ${{ needs.preflight.outputs.base-branch }}
+          head-branch: ${{ needs.preflight.outputs.head-branch }}
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          api-key: ${{ secrets.DEEPSEEK_API_KEY }}
+          anthropic-base-url: ${{ vars.ANTHROPIC_BASE_URL }}
+          model: ${{ vars.DEVELOP_MODEL }}
+          max-turns: ${{ vars.DEVELOP_MAX_TURNS || '20' }}
+          context-budget-paths: ${{ vars.DEVELOP_CONTEXT_PATHS || '' }}
+          issue-language: ${{ needs.preflight.outputs.issue-language }}
+
+      - name: Push branch + open PR (CLAUDE_DEV_PAT)
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.CLAUDE_DEV_PAT }}
+          HEAD: ${{ steps.branch.outputs.branch-name }}
+          SHA: ${{ steps.develop.outputs.commit-sha }}
+          SUMMARY: ${{ steps.develop.outputs.summary }}
+          PR_TITLE: ${{ github.event.issue.title }}
+        run: |
+          set -euo pipefail
+          # Push the head branch (no force — claude was blocked from force-push anyway).
+          git push origin "$HEAD"
+          # Build PR body with disclosure preamble + change summary + test plan stub.
+          body=$(cat <<EOF
+          I'm an AI assistant (powered by Claude) operating under the GithubAutoDev disclosure policy.
+
+          ## Summary
+          $SUMMARY
+
+          ## Issue
+          Closes #${{ github.event.issue.number }}
+
+          ## Test plan
+          - [ ] CI green
+          - [ ] Reviewer verifies scope matches issue acceptance criteria
+          - [ ] No regressions in adjacent modules
+
+          _Branch: \`$HEAD\` @ \`${SHA:0:12}\`_
+          EOF
+          )
+          pr_url=$(gh pr create \
+            --repo "$GITHUB_REPOSITORY" \
+            --base "${{ needs.preflight.outputs.base-branch }}" \
+            --head "$HEAD" \
+            --title "[Issue #${{ github.event.issue.number }}] ${PR_TITLE}" \
+            --body "$body")
+          echo "pr-url=$pr_url" >> "$GITHUB_OUTPUT"
+          # Post audit comment on the issue (PR opener = PAT owner for traceability).
+          gh issue comment "${{ github.event.issue.number }}" --repo "$GITHUB_REPOSITORY" \
+            --body "🚀 Development branch pushed: \`$HEAD\` @ \`${SHA:0:12}\`. PR: $pr_url"
+
+      - name: Transition issue label (accepted → in-development)
+        env:
+          GH_TOKEN: ${{ secrets.CLAUDE_DEV_PAT }}
+          NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -eu
+          # Remove accepted-by-claude (clarify loop terminal marker) and accepted (maintainer)
+          # — both are valid Module 4 entry signals but neither should persist past this point.
+          gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "accepted-by-claude" 2>/dev/null || true
+          gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "accepted" 2>/dev/null || true
+          gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "in-development"
+
+  on-failure:
+    needs: [preflight, develop]
+    if: ${{ always() && (needs.preflight.result == 'failure' || needs.develop.result == 'failure') }}
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Mark stage:failed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NUMBER: ${{ github.event.issue.number }}
+        run: |
+          if [ -z "$NUMBER" ]; then
+            echo "::warning::No issue number on this event."
+            exit 0
+          fi
+          gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "stage:failed" || true
+          gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --body "⚠️ Develop failed. See [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details. A maintainer will triage manually." || true

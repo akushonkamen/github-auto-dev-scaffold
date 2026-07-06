@@ -9,14 +9,21 @@ Issue opened
 [Module 1] Issue Forms (GitHub native)
    │
    ▼ (issues.opened)
-[Module 2] Triage reply ──────────────► label: triage
+[Module 2] Triage (cloud first-pass) ──► label: triage
    │
-   ▼ (labeled: triage-done)
-[Module 3] Need judgement ────────────► label: accepted | rejected | needs-info
-   │                                          │
-   │                                          └── (large issue) ──► [3.5 Design review] ► design-approved
-   ▼ (labeled: accepted|design-approved)
-[Module 4] Develop ───────────────────► feature branch + impl notes
+   │  decision==reply (v1 path)           decision==work && low-conf (v2 path)
+   │  (maintainer manual triage)          ▼
+   │                                  [Module 3'] Clarify loop (Claude multi-turn)
+   │                                      │
+   │                                      ├── ask → clarify-r-N (await author reply)
+   │                                      ├── accept → accepted-by-claude
+   │                                      ├── yield → yielded (maintainer takeover)
+   │                                      └── max-rounds exhausted → needs-ralph
+   │                                        (ONLY v2 path that emits needs-ralph;
+   │                                         maintainer-driven ralph deep analysis)
+   │
+   ▼ (labeled: accepted | accepted-by-claude | design-approved)
+[Module 4] Develop ───────────────────► feature branch + PR
    │
    ▼ (branch push)
 [Module 5] Self-verify (ruff/mypy/clippy/rustfmt + build)
@@ -39,10 +46,11 @@ Issue opened
 | Module | Engine | Trigger | Output Label / Artifact |
 |---|---|---|---|
 | 1 Issue Forms | GitHub native | `issues.opened` | structured Issue body |
-| 2 Triage | Claude Code | Module 1 event | Comment + `triage` |
-| 3 Judgement | Claude Code (+ human fallback) | `labeled: triage-done` | `accepted` / `rejected` / `needs-info` |
+| 2 Triage | Claude Code (cloud first-pass, GLM passthrough) | Module 1 event | Comment + `triage`; conditional `needs-clarify` for v2 clarify loop |
+| 3' Clarify loop | Claude Code (multi-turn, GLM passthrough) | `labeled: needs-clarify` or `issue_comment` (author reply) | `accepted-by-claude` \| `yielded` \| `needs-ralph` (max-rounds fallback only) |
+| 3 Judgement (v1, legacy) | ralph (local) + maintainer | `labeled: needs-ralph` → local poll.sh → `triage-done` | structured analysis JSON → maintainer applies `accepted` / `rejected` / `needs-info` |
 | 3.5 Design review | Claude Code (+ human) | size threshold hit on `accepted` | Comment + `design-approved` |
-| 4 Develop | Claude Code | `labeled: accepted` | feature branch + impl notes |
+| 4 Develop | Claude Code (GLM passthrough) | `labeled: accepted` OR `accepted-by-claude` | feature branch + PR (CLAUDE_DEV_PAT as PR opener) |
 | 5 Self-verify | Claude Code | branch push | verify report |
 | 6 Test | Codex + CI | Module 5 passed | test report + coverage |
 | 7 PR open | Claude Code | Module 6 passed | Draft / ready PR |

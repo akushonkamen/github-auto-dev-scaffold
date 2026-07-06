@@ -26,20 +26,20 @@ GitHub → your repo → **Settings → Secrets and variables → Actions → Ne
 
 | Name | Value |
 |---|---|
-| `ZHIPU_API_KEY` | Your Zhipu AI API key (get one at https://open.bigmodel.cn) |
+| `DEEPSEEK_API_KEY` | Your DeepSeek API key (get one at https://platform.deepseek.com) |
 
 > **Don't paste the key into the repo, commits, or PR descriptions.** S4: AI must never print tokens or API keys.
 
-### 2. (Optional) Configure GLM 5.2 passthrough
+### 2. Configure DeepSeek passthrough
 
-If you want claude-code-action to route through Zhipu AI's Anthropic-compatible endpoint instead of Anthropic's real API, set these **repo variables** (Settings → Secrets and variables → Actions → Variables tab):
+Set these **repo variables** (Settings → Secrets and variables → Actions → Variables tab):
 
 | Name | Value |
 |---|---|
-| `ANTHROPIC_BASE_URL` | `https://open.bigmodel.cn/api/anthropic` |
-| `TRIAGE_MODEL` | (optional) e.g. `claude-sonnet-4-6` — Zhipu's compat layer accepts Anthropic model names |
+| `ANTHROPIC_BASE_URL` | `https://api.deepseek.com/anthropic` |
+| `TRIAGE_MODEL` | `deepseek-v4-pro` |
 
-Leave both unset to use Anthropic directly (in that case `ZHIPU_API_KEY` should be a real Anthropic key, rename it to `ANTHROPIC_API_KEY` and update the workflow).
+The `ANTHROPIC_BASE_URL` redirects claude-code-action's Anthropic SDK to DeepSeek's Anthropic-compatible endpoint. `DEEPSEEK_API_KEY` is passed as the bearer token.
 
 ### 3. (Optional) Enable auto-accept
 
@@ -75,11 +75,11 @@ claude-code-action's output names may have changed across versions. Check the [a
 
 ### API key errors
 
-If using GLM passthrough and you see 401/403 from `open.bigmodel.cn`:
+If you see 401/403 from `api.deepseek.com`:
 
-- Verify `ZHIPU_API_KEY` is the Zhipu key, not an Anthropic key.
-- Verify the key has not expired and has credit on the Zhipu dashboard.
-- Test the key locally: `curl -H "Authorization: Bearer $ZHIPU_API_KEY" https://open.bigmodel.cn/api/anthropic/v1/messages -d '{"model":"claude-sonnet-4-6","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}'`
+- Verify `DEEPSEEK_API_KEY` is the DeepSeek key, not an Anthropic key.
+- Verify the key has not expired and has credit on the DeepSeek dashboard.
+- Test the key locally: `curl -H "Authorization: Bearer $DEEPSEEK_API_KEY" https://api.deepseek.com/anthropic/v1/messages -d '{"model":"deepseek-v4-pro","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}'`
 
 ### claude-code-action rejects the base URL
 
@@ -87,7 +87,7 @@ Some versions of claude-code-action hardcode the Anthropic endpoint and ignore `
 
 - Pin a newer version of claude-code-action that respects `ANTHROPIC_BASE_URL`, or
 - Switch to engine=codex in the workflow call (uses `openai/codex-action`), or
-- Replace the claude branch in `.github/actions/triage/action.yml` with a direct `curl` to the Zhipu endpoint. This drops the claude-code CLI integration but removes the dependency entirely.
+- Replace the claude branch in `.github/actions/triage/action.yml` with a direct `curl` to the DeepSeek endpoint. This drops the claude-code CLI integration but removes the dependency entirely.
 
 ### JSON parse failures
 
@@ -108,9 +108,105 @@ Two kill switches:
 - **Disable the workflow**: GitHub → Actions → "triage-issue" → ⋯ → Disable workflow. Existing issues are unaffected.
 - **Disable just auto-accept while keeping triage comments**: delete the `AUTO_ACCEPT_ENABLED` repo variable.
 
+## Two-tier flow with local ralph (deep analysis)
+
+Cloud first-pass is fast but shallow. For contested or work-like issues, the cloud workflow applies the `needs-ralph` label, signalling your local cron to dispatch a deeper ralph analysis.
+
+### How the two tiers connect
+
+```
+issue opened
+  ↓ (cloud)
+triage-issue.yml — single LLM call, emits {decision, confidence}
+  ↓
+decision==work OR confidence<TRIAGE_RALPH_THRESHOLD ?
+  YES → apply needs-ralph + post "⏳ queued" comment
+  NO  → comment-only flow (existing path)
+  ↓ (local cron)
+poll.sh detects needs-ralph → dispatches handle-triage.sh
+  ↓
+handle-triage.sh: claude -p with Skill("oh-my-claudecode:ralph")
+  ↓
+ralph writes .omc/state/triage-issue-N.json (10-field schema)
+  ↓
+wrapper validates JSON, posts formatted comment, applies triage-done + suggested non-state labels
+  ↓
+maintainer reads ralph analysis, decides accept/reject
+```
+
+### Configuration knobs
+
+| Setting | Type | Default | Effect |
+|---|---|---|---|
+| `TRIAGE_RALPH_THRESHOLD` | repo variable | `0.7` | Confidence below this triggers ralph even if decision is `work` |
+| `MAX_TURN_MINUTES` | local config.sh | `15` | Wall-clock cap for the local claude call |
+| `CLAUDE_BIN` | local config.sh | `claude` | Override if your claude CLI is elsewhere |
+
+### Local setup (one-time)
+
+1. Install the local poll stack per [`scripts/local/README.md`](../scripts/local/README.md).
+2. Make sure `claude` and `omc` are on `$PATH` and accessible to cron.
+3. Configure `~/.config/githubautodev/config.sh` with `GITHUB_REPO`, `GITHUB_TOKEN`.
+4. Install cron entry (every 2 minutes recommended).
+
+### Reading ralph's output
+
+After ralph finishes, the issue gets a formatted comment with:
+
+- **Decision** (bug/feature/duplicate/out-of-scope/needs-info) and **confidence**
+- **Size estimate** with rationale
+- **Summary** + **rationale** (cites issue body or codebase paths)
+- **Draft acceptance criteria** (only for bug/feature decisions)
+- **Risks** list
+- **Related issues** (only for duplicate decisions)
+- **Applied suggested labels** (type:* and size:*; never state labels — those stay maintainer-only)
+- A "⚠️ Ralph overturns cloud first-pass" preamble when ralph's decision disagrees with the cloud first-pass
+
+The full structured JSON is at `.omc/state/triage-issue-N.json` in your local clone (gitignored).
+
+### Race condition: maintainer applies `accepted` during ralph's window
+
+If you apply `accepted` while ralph is still running (or before `poll.sh` picks up `needs-ralph`), `poll.sh` will:
+
+- See both labels on the issue.
+- Dispatch to `handle.sh` (develop path) — `accepted` wins (AC-P4).
+- Remove `needs-ralph` and mark the issue seen so `handle-triage.sh` does NOT subsequently run.
+
+No ralph analysis will be posted in that case. This is by design — `accepted` short-circuits the deep-analysis path.
+
+### S2 enforcement
+
+`handle-triage.sh` enforces S2 (only maintainers apply `accepted`) at three layers:
+
+1. The wrapper itself never writes `--add-label accepted` (verified by an AC-H13 defensive self-grep at startup).
+2. Ralph runs with `--disallowedTools 'Bash(gh issue edit *)'` — even if prompt-injected, the binary refuses.
+3. Suggested labels from ralph pass through an allow-list with a hard-coded deny-list: `accepted`, `rejected`, `stage:failed`, `design-approved`, `needs-info`, `triage`, `triage-done`, `needs-ralph`. Ralph's `suggested_labels` array can only contain non-state labels.
+
+### Recommended PAT scope for the local stack
+
+Use a fine-grained PAT with:
+
+- `issues: write` (for posting comments and applying `triage-done` / non-state labels)
+- `contents: read` (for reading CLAUDE.md / repo state)
+- `metadata: read`
+
+If your GitHub plan supports label restrictions, consider explicitly denying `accepted`/`rejected` application for this token. Otherwise, the wrapper's defensive grep is your safety net.
+
+### Troubleshooting the ralph path
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `needs-ralph` stays on issue > 15 min | Local cron not running, or `handle-triage.sh` failed | Check `/tmp/githubautodev-poll.log`; remove the issue from `~/.local/state/githubautodev/triage-failed.txt` to retry |
+| Ralph analysis comment missing | claude binary errored, or schema validation failed | Check `triage-failed.txt`; inspect `.omc/state/triage-issue-N.json` if it exists; re-queue by removing/re-adding `needs-ralph` |
+| `stage:failed` on issue | Ralph crashed, schema validation failed, or wall-clock timeout exceeded | Same as above; ralph is non-destructive — re-queue is always safe |
+| `accepted` applied during ralph run | Maintainer raced ralph (AC-P4 path) | Expected; `accepted` wins, ralph skipped |
+| `Ralph overturns` preamble appears frequently | Cloud first-pass and ralph consistently disagree | Calibrate `TRIAGE_RALPH_THRESHOLD` upward (so cloud lets more through without ralph); or review cloud prompt for bias |
+
 ## Related
 
 - [`docs/composite-action-spec.md`](composite-action-spec.md) — full interface spec for the triage action.
-- [`docs/labels.md`](labels.md) — Label state machine (where `triage` and `accepted` live).
+- [`docs/labels.md`](labels.md) — Label state machine (where `triage`, `needs-ralph`, and `triage-done` live).
 - [`docs/security.md`](security.md) — S1–S5 red lines this workflow enforces.
-- [`.github/workflows/triage-issue.yml`](../.github/workflows/triage-issue.yml) — the actual workflow.
+- [`docs/quickstart-clarify.md`](quickstart-clarify.md) — v2 clarify loop setup (the work path now flows through Module 3').
+- [`scripts/local/README.md`](../scripts/local/README.md) — local poll + handle stack setup.
+- [`.github/workflows/triage-issue.yml`](../.github/workflows/triage-issue.yml) — the cloud workflow.

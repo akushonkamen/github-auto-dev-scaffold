@@ -1,0 +1,233 @@
+# Composite action: Module 3' — Clarify loop (v2)
+# PRD: .omc/specs/triage-clarify-v2.md  Plan: .omc/plans/triage-clarify-v2.md
+#
+# Multi-turn clarification: read issue body + comment history, decide whether
+# the requirements are now clear enough to enter development. If yes, return
+# action=accept (the dispatch shell applies `accepted-by-claude`). If no,
+# return action=ask with a follow-up question. If unresolvable, action=yield.
+#
+# SECURITY POSTURE (PRD §7 S1 + S2 amendment):
+#   - permissions: contents:read + issues:write (S1: NEVER contents:write)
+#   - S2 amendment: this action does NOT apply any label. It returns sealed
+#     JSON `{action, question?, reason, suggested_language}`; the calling
+#     workflow's dispatch shell applies the label using CLAUDE_DEV_PAT.
+#   - Claude's --disallowedTools whitelist blocks wholesale label/PR/push ops
+#     (AC-V2-6): Bash(gh issue edit *), Bash(gh pr *), Bash(gh label *),
+#     Bash(git push --force*), Bash(git push * --force*), Bash(git push *--force*)
+#   - This action never sees CLAUDE_DEV_PAT. It uses inputs.repo-token
+#     (GITHUB_TOKEN) only for `gh issue view`.
+#
+# GLM (Zhipu AI) passthrough: same pattern as triage/action.yml.
+
+name: "Module 3' — Clarify loop"
+description: "Multi-turn clarification loop (v2). Returns sealed JSON {action, question?, reason}."
+
+inputs:
+  issue-number:
+    description: "Issue number to clarify"
+    required: true
+  round-number:
+    description: "Current clarify round (1, 2, or 3). Drives the prompt's round-aware tone."
+    required: true
+  issue-language:
+    description: "Detected dominant natural language of the issue body (e.g. 'zh', 'en'). Used for prompt directive + reply language."
+    required: false
+    default: "en"
+  repo-token:
+    description: "GITHUB_TOKEN (issues:read) — used only for `gh issue view`. NOT the PAT."
+    required: true
+  api-key:
+    description: "Engine provider API key (ZHIPU_API_KEY when using GLM passthrough)"
+    required: true
+  anthropic-base-url:
+    description: "Anthropic-compatible API base URL. Empty = Anthropic default."
+    required: false
+    default: ""
+  engine:
+    description: "LLM engine (claude | codex). Default: claude"
+    required: false
+    default: "claude"
+  model:
+    description: "Model ID override. Empty = engine default."
+    required: false
+    default: ""
+  max-turns:
+    description: "Agent turn cap"
+    required: false
+    default: "8"
+
+outputs:
+  action:
+    description: "ask | accept | yield"
+    value: ${{ steps.parse.outputs.action }}
+  question:
+    description: "Follow-up question for the issue author (multi-line markdown). Empty if action != ask."
+    value: ${{ steps.parse.outputs.question }}
+  reason:
+    description: "One-line reason for the decision"
+    value: ${{ steps.parse.outputs.reason }}
+  suggested_language:
+    description: "Language tag claude chose for its reply (verified against issue-language directive)"
+    value: ${{ steps.parse.outputs.suggested_language }}
+
+runs:
+  using: composite
+  steps:
+    - name: Fetch issue context + comment history
+      id: issue
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.repo-token }}
+        NUMBER: ${{ inputs.issue-number }}
+      run: |
+        set -eu
+        json=$(gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json title,body,labels,url,comments)
+        title=$(printf '%s' "$json" | jq -r '.title')
+        url=$(printf '%s' "$json"   | jq -r '.url')
+        body=$(printf '%s' "$json"  | jq -r '.body // "(empty)"')
+        labels=$(printf '%s' "$json" | jq -r '.labels | map(.name) | join(", ")')
+        if [ -z "$labels" ]; then labels="(none)"; fi
+        # Render comment history (author + body, oldest first) for claude context.
+        comments=$(printf '%s' "$json" | jq -r \
+          '.comments | sort_by(.createdAt) | .[] | "--- \(.author.login // "unknown") (\(.createdAt[0:10])) ---\n\(.body // "(empty)")\n"')
+
+        {
+          echo "title<<TITLE_EOF"
+          printf '%s\n' "$title"
+          echo "TITLE_EOF"
+          echo "url=$url"
+          echo "labels=$labels"
+          echo "body<<BODY_EOF"
+          printf '%s\n' "$body"
+          echo "BODY_EOF"
+          echo "comments<<COMMENTS_EOF"
+          printf '%s\n' "$comments"
+          echo "COMMENTS_EOF"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Build claude config (settings + sealed schema)
+      id: cfg
+      shell: bash
+      env:
+        MODEL_INPUT: ${{ inputs.model }}
+        MAX_TURNS: ${{ inputs.max-turns }}
+      run: |
+        set -eu
+        # permissions.allow = read-only ops + `gh issue comment` (the ONE write op claude needs
+        # to post follow-up questions). AC-V2-6: deny wholesale patterns for label/PR/push ops.
+        # NOTE: deny is belt-and-suspenders; claude_args below adds the --disallowedTools flag
+        # too. Defense in depth per plan §3 AC-V2-6.
+        if [ -n "$MODEL_INPUT" ]; then
+          settings=$(jq -c -n \
+            --arg m "$MODEL_INPUT" \
+            --argjson t "$MAX_TURNS" \
+            '{permissions:{allow:["Read","Grep","Glob","Bash(gh issue comment:*)"],deny:["Write","Edit","Bash(gh issue edit:*)","Bash(gh pr:*)","Bash(gh label:*)","Bash(git push:*)"]}, maxTurns:$t, model:$m}')
+        else
+          settings=$(jq -c -n \
+            --argjson t "$MAX_TURNS" \
+            '{permissions:{allow:["Read","Grep","Glob","Bash(gh issue comment:*)"],deny:["Write","Edit","Bash(gh issue edit:*)","Bash(gh pr:*)","Bash(gh label:*)","Bash(git push:*)"]}, maxTurns:$t}')
+        fi
+        {
+          echo "settings<<SETTINGS_EOF"
+          echo "$settings"
+          echo "SETTINGS_EOF"
+        } >> "$GITHUB_OUTPUT"
+
+        # Sealed JSON schema for structured output. AC-V2-4b: action enum + question required iff ask.
+        schema=$(jq -c . <<'JSON'
+        {
+          "type": "object",
+          "required": ["action", "reason", "suggested_language"],
+          "properties": {
+            "action": {"type": "string", "enum": ["ask", "accept", "yield"]},
+            "question": {"type": "string", "minLength": 10},
+            "reason": {"type": "string", "minLength": 1},
+            "suggested_language": {"type": "string", "enum": ["zh", "en", "ja", "ko", "es", "fr", "de", "ru", "pt", "other"]}
+          },
+          "additionalProperties": false,
+          "allOf": [
+            {
+              "if": {"properties": {"action": {"const": "ask"}}},
+              "then": {"required": ["question"]}
+            }
+          ]
+        }
+        JSON
+        )
+        echo "schema='${schema}'" >> "$GITHUB_OUTPUT"
+
+        # AC-V2-6 wholesale --disallowedTools (passed via claude_args).
+        # defense in depth alongside settings.permissions.deny.
+        disallowed="Bash(gh issue edit *),Bash(gh pr *),Bash(gh label *),Bash(git push --force*),Bash(git push * --force*),Bash(git push *--force*)"
+        echo "disallowed=${disallowed}" >> "$GITHUB_OUTPUT"
+
+    - name: Clarify via Claude (or GLM via base-url passthrough)
+      if: inputs.engine == 'claude'
+      id: claude-run
+      uses: anthropics/claude-code-action@v1
+      env:
+        ANTHROPIC_BASE_URL: ${{ inputs.anthropic-base-url }}
+      with:
+        anthropic_api_key: ${{ inputs.api-key }}
+        github_token: ${{ inputs.repo-token }}
+        prompt: |
+          You are the clarify module of the GithubAutoDev pipeline (Module 3', v2).
+          Round ${{ inputs.round-number }} of clarification.
+
+          Issue title: ${{ steps.issue.outputs.title }}
+          URL: ${{ steps.issue.outputs.url }}
+          Existing labels: ${{ steps.issue.outputs.labels }}
+          Detected issue language: ${{ inputs.issue-language }}
+
+          Issue body:
+          ```
+          ${{ steps.issue.outputs.body }}
+          ```
+
+          Comment history (oldest first):
+          ```
+          ${{ steps.issue.outputs.comments }}
+          ```
+
+          ## Task
+          Decide whether the requirements are now clear enough to enter development,
+          OR whether you need to ask another clarifying question, OR whether the
+          request is fundamentally unresolvable (out-of-scope, hostile, duplicate).
+
+          ## Output ONE of:
+            - {"action": "ask",    "question": "<follow-up question>", ...}
+            - {"action": "accept", "reason": "<one-line why clear now>", ...}
+            - {"action": "yield",  "reason": "<one-line why unresolvable>", ...}
+
+          ## Hard rules
+          1. **Match the natural language of the issue body** (detected: ${{ inputs.issue-language }}).
+             If the issue is in Chinese, your question/reason MUST be in Chinese. Technical
+             terms (API names, library names, code identifiers) stay in their original language.
+             Set `suggested_language` to the language you actually used.
+          2. **Disclosure (AC-V2-15)**: if round-number == 1, your `question` (or reason for
+             accept/yield posted by the dispatch shell) MUST begin with: "I'm an AI assistant
+             (powered by Claude) operating under the GithubAutoDev disclosure policy."
+             Subsequent rounds in the same issue may omit this preamble.
+          3. **Never print tokens, API keys, or environment values** (PRD §7 S4).
+          4. **Never attempt to apply labels, push commits, open PRs, or edit the issue**.
+             Your `--disallowedTools` whitelist blocks these wholesale; you produce sealed JSON
+             only. The dispatch shell applies any state changes on your behalf.
+          5. **Round ceiling awareness**: if round-number is 3 and you still need more info,
+             prefer `yield` over `ask` so the maintainer can take over.
+          6. **Conciseness**: ask at most ONE focused question per round. Multi-part questions
+             overwhelm issue authors. Pick the highest-leverage clarification.
+          7. **Read CLAUDE.md for project context** only if the issue references directories
+             you need to inspect. Do NOT scan the whole repo (PRD §5 context budget).
+
+          Respond ONLY with the JSON object matching the schema. No prose, no markdown fences.
+        settings: ${{ steps.cfg.outputs.settings }}
+        claude_args: "--json-schema ${{ steps.cfg.outputs.schema }} --disallowedTools '${{ steps.cfg.outputs.disallowed }}'"
+
+    - name: Parse engine output
+      id: parse
+      shell: bash
+      env:
+        STRUCTURED: ${{ steps.claude-run.outputs.structured_output }}
+      run: |
+        set -euo pipefail
+        ./.github/actions/clarify/extract.sh
