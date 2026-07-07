@@ -94,7 +94,7 @@ jobs:
           set -eu
           gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "testing" || true
 
-      - name: Verify OPENAI_API_KEY secret exists (S4: never print value)
+      - name: "Verify OPENAI_API_KEY secret exists (S4: never print value)"
         shell: bash
         run: |
           if [ -z "${{ secrets.OPENAI_API_KEY }}" ]; then
