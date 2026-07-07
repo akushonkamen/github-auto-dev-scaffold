@@ -116,6 +116,30 @@ runs:
           echo "ISSUE_BODY_EOF"
         } >> "$GITHUB_OUTPUT"
 
+    - name: Build claude config
+      id: cfg
+      shell: bash
+      env:
+        MODEL_INPUT: ${{ inputs.model }}
+        MAX_TURNS: ${{ inputs.max-turns }}
+      run: |
+        set -eu
+        if [ -n "$MODEL_INPUT" ]; then
+          settings=$(jq -c -n \
+            --arg m "$MODEL_INPUT" \
+            --argjson t "$MAX_TURNS" \
+            '{permissions:{allow:["Read","Grep","Glob","Bash(gh pr:*)"],deny:["Write","Edit","Bash(git push:*)","Bash(git checkout main*)","Bash(git checkout master*)","Bash(git reset --hard*)"]}, maxTurns:$t, model:$m}')
+        else
+          settings=$(jq -c -n \
+            --argjson t "$MAX_TURNS" \
+            '{permissions:{allow:["Read","Grep","Glob","Bash(gh pr:*)"],deny:["Write","Edit","Bash(git push:*)","Bash(git checkout main*)","Bash(git checkout master*)","Bash(git reset --hard*)"]}, maxTurns:$t}')
+        fi
+        {
+          echo "settings<<SETTINGS_EOF"
+          echo "$settings"
+          echo "SETTINGS_EOF"
+        } >> "$GITHUB_OUTPUT"
+
     - name: Review via Claude (DeepSeek passthrough)
       if: inputs.engine == 'claude'
       id: claude-run
@@ -125,6 +149,7 @@ runs:
       with:
         anthropic_api_key: ${{ inputs.api-key }}
         github_token: ${{ inputs.repo-token }}
+        settings: ${{ steps.cfg.outputs.settings }}
         prompt: |
           You are Module 8 (Review) of the GithubAutoDev pipeline — AI initial
           review.  Your job is to review the PR diff for correctness, security,
@@ -224,9 +249,6 @@ runs:
           After completing the review and posting the comment, report a one-line
           summary: "AI review posted on PR #${{ inputs.pr-number }}. Findings: N
           issues noted."
-        max_turns: ${{ inputs.max-turns }}
-        allowed_tools: "Read,Grep,Glob,Bash(gh pr:*)"
-
     - name: Review via Codex
       if: inputs.engine == 'codex'
       id: codex-run

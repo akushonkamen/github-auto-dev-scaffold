@@ -56,6 +56,30 @@ outputs:
 runs:
   using: composite
   steps:
+    - name: Build claude config
+      id: cfg
+      shell: bash
+      env:
+        MODEL_INPUT: ${{ inputs.model }}
+        MAX_TURNS: ${{ inputs.max-turns }}
+      run: |
+        set -eu
+        if [ -n "$MODEL_INPUT" ]; then
+          settings=$(jq -c -n \
+            --arg m "$MODEL_INPUT" \
+            --argjson t "$MAX_TURNS" \
+            '{permissions:{allow:["Read","Grep","Glob","Write","Bash(git:*)"],deny:["Edit","Bash(git push:*)","Bash(git checkout main*)","Bash(git checkout master*)","Bash(git reset --hard*)"]}, maxTurns:$t, model:$m}')
+        else
+          settings=$(jq -c -n \
+            --argjson t "$MAX_TURNS" \
+            '{permissions:{allow:["Read","Grep","Glob","Write","Bash(git:*)"],deny:["Edit","Bash(git push:*)","Bash(git checkout main*)","Bash(git checkout master*)","Bash(git reset --hard*)"]}, maxTurns:$t}')
+        fi
+        {
+          echo "settings<<SETTINGS_EOF"
+          echo "$settings"
+          echo "SETTINGS_EOF"
+        } >> "$GITHUB_OUTPUT"
+
     - name: Design via Claude
       if: inputs.engine == 'claude'
       id: claude-run
@@ -63,12 +87,11 @@ runs:
       with:
         anthropic_api_key: ${{ inputs.api-key }}
         github_token: ${{ inputs.repo-token }}
+        settings: ${{ steps.cfg.outputs.settings }}
         prompt: |
           Produce a design proposal for Issue #${{ inputs.issue-number }}.
           Write to docs/designs/<slug>.md. Cover: goals, non-goals, alternatives,
           risks, rollback. Solicit design-approved label from a maintainer.
-        max_turns: ${{ inputs.max-turns }}
-        allowed_tools: "Read,Grep,Glob,Write,Bash(git:*)"
 
     - name: Design via Codex
       if: inputs.engine == 'codex'
