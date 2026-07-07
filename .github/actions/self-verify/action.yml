@@ -1,94 +1,268 @@
-# Composite action: Module 5 (self-verify)
-# PRD §2 module 5, §5 quality gate.
+# Composite action: Module 5 (self-verify, v2)
+# PRD §2 module 5 — post-develop verify report.
+#
+# SECURITY: triggered on branch push to claude/issue-* branches after develop
+# opens a PR. Reads the PR diff + issue acceptance criteria, runs Claude to
+# verify the implementation, emits a verify report + label transition.
 #
 # REQUIRED PERMISSIONS (caller workflow must grant):
-#   contents:        read        (checkout branch)
-#   pull-requests:   write       (annotate PR with findings)
-# Runner: larger runner (PRD §5) recommended for Rust builds.
+#   contents:        read        (read PR diff)
+#   issues:          write       (post audit comment, apply labels)
+#   pull-requests:   write       (post PR comment, read PR metadata)
+#
+# S1: NO contents:write. Issue bodies are untrusted input — read-only on src.
+# S5: claude --allowedTools whitelist (Read, Grep, Glob — no Bash, no Write).
+
 name: "Module 5 — Self-verify"
-description: "Run language-specific static checks + build (ruff/mypy/clippy/rustfmt)."
+description: "Verify implementation against issue acceptance criteria, emit report + label transition."
 
 inputs:
-  branch-name:
-    description: "Feature branch to verify"
+  issue-number:
+    description: "Issue number"
     required: true
-  languages:
-    description: "Comma-sep languages to check (default: python,rust)"
-    required: false
-    default: "python,rust"
+  head-branch:
+    description: "The claude/issue-N-* branch that was pushed"
+    required: true
+  base-branch:
+    description: "Base branch (dev)"
+    required: true
+  pr-url:
+    description: "PR URL for audit comment traceability"
+    required: true
   repo-token:
-    description: "GITHUB_TOKEN (read + annotate)"
+    description: "GITHUB_TOKEN (read-only + issues:write)"
     required: true
   api-key:
-    description: "Engine provider API key (for AI-aided fix attempts)"
+    description: "Engine provider API key (DEEPSEEK_API_KEY for GLM passthrough)"
     required: true
+  anthropic-base-url:
+    description: "Anthropic-compatible API base URL. Empty = Anthropic default."
+    required: false
+    default: ""
   engine:
-    description: "LLM engine"
+    description: "LLM engine (claude | codex). Default: claude"
     required: false
     default: "claude"
   model:
-    description: "Model ID override"
+    description: "Model ID override. Empty = engine default."
     required: false
     default: ""
   max-turns:
-    description: "Agent turn cap"
+    description: "Agent turn cap (PRD §5)"
     required: false
     default: "10"
   context-budget-paths:
-    description: "Path allowlist"
+    description: "Path allowlist — limit reads (PRD §5)"
     required: false
     default: ""
-  dry-run:
-    description: "If true, do not push fixes"
+  issue-language:
+    description: "Detected dominant natural language of the issue body (e.g. 'zh', 'en')."
     required: false
-    default: "false"
+    default: "en"
 
 outputs:
-  stage:
-    description: "Lifecycle stage reached (verifying)"
-    value: ${{ steps.emit.outputs.stage }}
-  audit-comment-url:
-    description: "URL of the audit comment"
-    value: ${{ steps.emit.outputs.audit-comment-url }}
-  report-path:
-    description: "Path to verification report"
-    value: ${{ steps.emit.outputs.report-path }}
-  passed:
-    description: "Whether all checks passed"
-    value: ${{ steps.emit.outputs.passed }}
+  verify-status:
+    description: "Verification result (passed | failed)"
+    value: ${{ steps.emit.outputs.verify-status }}
+  verify-report:
+    description: "Maintainer-readable verify report (max 2000 chars)"
+    value: ${{ steps.emit.outputs.verify-report }}
+  commit-sha:
+    description: "Head commit SHA that was verified"
+    value: ${{ steps.emit.outputs.commit-sha }}
 
 runs:
   using: composite
   steps:
-    - name: Self-verify via Claude
+    - name: Fetch issue context + PR diff
+      id: context
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.repo-token }}
+        NUMBER: ${{ inputs.issue-number }}
+        PR_URL: ${{ inputs.pr-url }}
+      run: |
+        set -eu
+        # Fetch issue title, body, labels
+        json=$(gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json title,body,url)
+        title=$(printf '%s' "$json" | jq -r '.title')
+        body=$(printf '%s' "$json"  | jq -r '.body // "(empty)"')
+        url=$(printf '%s' "$json"   | jq -r '.url')
+        {
+          echo "title<<TITLE_EOF"
+          printf '%s\n' "$title"
+          echo "TITLE_EOF"
+          echo "url=$url"
+          echo "body<<BODY_EOF"
+          printf '%s\n' "$body"
+          echo "BODY_EOF"
+        } >> "$GITHUB_OUTPUT"
+
+        # Fetch PR diff (first 8000 lines — cap for context budget)
+        pr_number=$(printf '%s' "$PR_URL" | grep -oE '[0-9]+$' || echo "")
+        if [ -n "$pr_number" ]; then
+          diff=$(gh pr diff "$pr_number" --repo "$GITHUB_REPOSITORY" 2>/dev/null | head -n 8000 || echo "(diff unavailable)")
+        else
+          diff="(PR number could not be extracted from pr-url=$PR_URL)"
+        fi
+        {
+          echo "diff<<DIFF_EOF"
+          printf '%s\n' "$diff"
+          echo "DIFF_EOF"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Build claude config (settings + sealed schema + disallowed)
+      id: cfg
+      shell: bash
+      env:
+        MODEL_INPUT: ${{ inputs.model }}
+        MAX_TURNS: ${{ inputs.max-turns }}
+        CONTEXT_PATHS: ${{ inputs.context-budget-paths }}
+      run: |
+        set -eu
+        if [ -n "$MODEL_INPUT" ]; then
+          settings=$(jq -c -n \
+            --arg m "$MODEL_INPUT" \
+            --argjson t "$MAX_TURNS" \
+            '{permissions:{allow:["Read","Grep","Glob"],deny:["Bash","Write","Edit"]}, maxTurns:$t, model:$m}')
+        else
+          settings=$(jq -c -n \
+            --argjson t "$MAX_TURNS" \
+            '{permissions:{allow:["Read","Grep","Glob"],deny:["Bash","Write","Edit"]}, maxTurns:$t}')
+        fi
+        {
+          echo "settings<<SETTINGS_EOF"
+          echo "$settings"
+          echo "SETTINGS_EOF"
+        } >> "$GITHUB_OUTPUT"
+
+        schema=$(jq -c . <<'JSON'
+        {
+          "type": "object",
+          "required": ["verify_status", "verify_report", "failures"],
+          "properties": {
+            "verify_status": {"type": "string", "enum": ["passed", "failed"]},
+            "verify_report": {"type": "string", "maxLength": 2000},
+            "failures": {"type": "array", "items": {"type": "string"}}
+          },
+          "additionalProperties": false
+        }
+        JSON
+        )
+        echo "schema='${schema}'" >> "$GITHUB_OUTPUT"
+
+        # S5: verify is read-only — claude must never write or run shell commands.
+        # deny all Bash variants and Write/Edit wholesale.
+        disallowed="Bash(git *),Bash(*),Write,Edit"
+        echo "disallowed=${disallowed}" >> "$GITHUB_OUTPUT"
+
+        if [ -n "$CONTEXT_PATHS" ]; then
+          echo "context_paths=$CONTEXT_PATHS" >> "$GITHUB_OUTPUT"
+        else
+          echo "context_paths=" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Self-verify via Claude (or GLM via base-url passthrough)
       if: inputs.engine == 'claude'
       id: claude-run
       uses: anthropics/claude-code-action@v1
+      env:
+        ANTHROPIC_BASE_URL: ${{ inputs.anthropic-base-url }}
       with:
         anthropic_api_key: ${{ inputs.api-key }}
         github_token: ${{ inputs.repo-token }}
         prompt: |
-          Verify branch ${{ inputs.branch-name }}. Run per-language gates
-          (PRD §5: ruff + mypy + pytest for python; clippy + rustfmt + cargo test for rust).
-          Write report to .github/reports/verify-<branch>.md.
-        max_turns: ${{ inputs.max-turns }}
-        allowed_tools: "Read,Grep,Glob,Bash(ruff:*,mypy:*,pytest:*,cargo:*,rustfmt:*)"
+          You are the self-verify module of the GithubAutoDev pipeline (Module 5, v2).
 
-    - name: Self-verify via Codex
-      if: inputs.engine == 'codex'
-      id: codex-run
-      uses: openai/codex-action@v1
-      with:
-        openai_api_key: ${{ inputs.api-key }}
-        github_token: ${{ inputs.repo-token }}
-        prompt: "Verify branch ${{ inputs.branch-name }}."
-        permission_profile: workspace-write
+          Issue #${{ inputs.issue-number }}: ${{ steps.context.outputs.title }}
+          URL: ${{ steps.context.outputs.url }}
 
-    - name: Emit outputs
+          ## Issue body (acceptance criteria source)
+          ```
+          ${{ steps.context.outputs.body }}
+          ```
+
+          ## PR diff (implementation to verify)
+          ```diff
+          ${{ steps.context.outputs.diff }}
+          ```
+
+          ## Task
+          Verify that the implementation in the PR diff satisfies the acceptance criteria
+          listed in the issue body. Read any files referenced in the diff for deeper context
+          if needed, but do NOT write anything and do NOT run shell commands (S5).
+
+          ## Verification process
+          1. Extract all acceptance criteria from the issue body (look for checkboxes `[ ]`,
+             bullet lists of requirements, "Acceptance criteria" sections).
+          2. For each criterion, check whether the PR diff + referenced files satisfy it.
+          3. Produce a concise, maintainer-readable verify report.
+
+          ## Output ONE JSON object (sealed schema):
+          {
+            "verify_status": "passed" | "failed",
+            "verify_report": "<maintainer-readable report, max 2000 chars>",
+            "failures": ["<criterion not met>", ...]
+          }
+
+          Rules:
+          - `verify_status` is "passed" only if ALL acceptance criteria are met.
+          - `verify_report` is a structured summary: list each criterion, mark ✓ or ✗,
+            add a one-line note per criterion.
+          - `failures` is an array of specific criteria that were NOT met (empty if passed).
+          - Do NOT write files, do NOT run shell commands. Read-only (S5).
+          - Match the natural language of the issue body in the verify_report.
+          ${{ steps.cfg.outputs.context_paths && format('Allowed paths: {0}', steps.cfg.outputs.context_paths) || '' }}
+
+          Respond ONLY with the JSON object. No prose, no markdown fences.
+        settings: ${{ steps.cfg.outputs.settings }}
+        claude_args: "--json-schema ${{ steps.cfg.outputs.schema }} --disallowedTools '${{ steps.cfg.outputs.disallowed }}'"
+
+    - name: Parse engine output
       id: emit
       shell: bash
+      env:
+        STRUCTURED: ${{ steps.claude-run.outputs.structured_output }}
+        HEAD_BRANCH: ${{ inputs.head-branch }}
       run: |
-        echo "stage=verifying" >> "$GITHUB_OUTPUT"
-        echo "audit-comment-url=" >> "$GITHUB_OUTPUT"
-        echo "report-path=.github/reports/verify-${{ inputs.branch-name }}.md" >> "$GITHUB_OUTPUT"
-        echo "passed=true" >> "$GITHUB_OUTPUT"
+        set -euo pipefail
+        sha=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
+        raw="${STRUCTURED:-}"
+
+        if [ -z "$raw" ]; then
+          echo "::warning::structured_output is empty — engine may have failed or timed out."
+          {
+            echo "verify-status=failed"
+            echo "verify-report=(engine did not emit structured output; inspect run logs)"
+            echo "commit-sha=$sha"
+          } >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        # Validate against sealed schema
+        if ! printf '%s' "$raw" | jq -e '
+          (.verify_status == "passed" or .verify_status == "failed")
+          and (.verify_report | type == "string" and length <= 2000)
+          and (.failures | type == "array")
+        ' >/dev/null 2>&1; then
+          echo "::error::Engine output did not match the {verify_status, verify_report, failures} schema."
+          echo "Raw output (first 500 chars):"
+          printf '%s' "$raw" | head -c 500 | sed 's/^/  raw> /'
+          {
+            echo "verify-status=failed"
+            echo "verify-report=(engine output schema mismatch; inspect run logs)"
+            echo "commit-sha=$sha"
+          } >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        verify_status="$(printf '%s' "$raw" | jq -r '.verify_status')"
+        verify_report="$(printf '%s' "$raw" | jq -r '.verify_report')"
+
+        echo "verify-status=$verify_status" >> "$GITHUB_OUTPUT"
+        echo "commit-sha=$sha" >> "$GITHUB_OUTPUT"
+        {
+          echo "verify-report<<VERIFY_REPORT_EOF"
+          printf '%s\n' "$verify_report"
+          echo "VERIFY_REPORT_EOF"
+        } >> "$GITHUB_OUTPUT"

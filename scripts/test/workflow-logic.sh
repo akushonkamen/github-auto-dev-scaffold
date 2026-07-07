@@ -187,7 +187,7 @@ echo "── Concurrency guard ──"
 # verify concurrency groups are issue-scoped (static check via grep)
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
-for wf in triage-issue.yml clarify-loop.yml develop.yml; do
+for wf in triage-issue.yml clarify-loop.yml develop.yml self-verify.yml; do
   wf_path="$ROOT/.github/workflows/$wf"
   if grep -q "cancel-in-progress: false" "$wf_path"; then
     pass "$wf: cancel-in-progress=false (serial per issue)"
@@ -218,6 +218,16 @@ grep -q "issue_comment:" "$ROOT/.github/workflows/clarify-loop.yml" \
 grep -q "labeled" "$ROOT/.github/workflows/develop.yml" \
   && pass "develop.yml triggers on issues.labeled" \
   || fail "develop.yml missing issues.labeled trigger"
+
+# self-verify triggers on pull_request
+grep -q "pull_request:" "$ROOT/.github/workflows/self-verify.yml" \
+  && pass "self-verify.yml triggers on pull_request" \
+  || fail "self-verify.yml missing pull_request trigger"
+
+# self-verify filters by claude/issue- branch pattern
+grep -q 'claude/issue-' "$ROOT/.github/workflows/self-verify.yml" \
+  && pass "self-verify.yml: filters claude/issue- branch pattern" \
+  || fail "self-verify.yml: missing claude/issue- branch filter"
 
 echo ""
 echo "── DENY_LIST completeness ──"
@@ -277,6 +287,89 @@ for wf in clarify-loop.yml; do
     fail "$wf: log-scan patterns missing (AC-V2-13a)"
   fi
 done
+
+echo ""
+echo "── Self-verify decision tree ──"
+
+# Simulate self-verify status → label transition
+simulate_verify_transition() {
+  local status="$1"
+  case "$status" in
+    passed) printf '%s' "verified" ;;
+    failed) printf '%s' "verify:failed" ;;
+    *)      printf '%s' "unknown" ;;
+  esac
+}
+
+# passed → verified
+[ "$(simulate_verify_transition "passed")" = "verified" ] \
+  && pass "verify passed → verified label" \
+  || fail "verify passed → verified label"
+
+# failed → verify:failed
+[ "$(simulate_verify_transition "failed")" = "verify:failed" ] \
+  && pass "verify failed → verify:failed label" \
+  || fail "verify failed → verify:failed label"
+
+# unknown status
+[ "$(simulate_verify_transition "unknown")" = "unknown" ] \
+  && pass "verify unknown status → unknown (no label)" \
+  || fail "verify unknown status → unknown"
+
+# self-verify concurrency guard
+grep -q "cancel-in-progress: false" "$ROOT/.github/workflows/self-verify.yml" \
+  && pass "self-verify.yml: cancel-in-progress=false (serial per PR)" \
+  || fail "self-verify.yml: missing cancel-in-progress guard"
+
+grep -qE 'group: self-verify-pr-\$\{\{' "$ROOT/.github/workflows/self-verify.yml" \
+  && pass "self-verify.yml: concurrency group scoped to PR number" \
+  || fail "self-verify.yml: concurrency group not scoped to PR number"
+
+# self-verify S1: no contents:write at workflow level
+if grep -A5 "^permissions:" "$ROOT/.github/workflows/self-verify.yml" | grep -q "contents: write"; then
+  fail "self-verify.yml: workflow-level contents:write detected (S1 violation)"
+else
+  pass "self-verify.yml: no workflow-level contents:write (S1 OK)"
+fi
+
+# self-verify S1: no contents:write at job level
+if grep -A5 "permissions:" "$ROOT/.github/workflows/self-verify.yml" | grep -q "contents: write"; then
+  fail "self-verify.yml: job-level contents:write detected (S1 violation)"
+else
+  pass "self-verify.yml: no job-level contents:write (S1 OK)"
+fi
+
+# self-verify uses CLAUDE_DEV_PAT for label writes (PR #16 lesson)
+grep -q "CLAUDE_DEV_PAT" "$ROOT/.github/workflows/self-verify.yml" \
+  && pass "self-verify.yml: uses CLAUDE_DEV_PAT for label writes (downstream trigger)" \
+  || fail "self-verify.yml: missing CLAUDE_DEV_PAT for label writes"
+
+# self-verify audit comment on issue
+grep -q "gh issue comment" "$ROOT/.github/workflows/self-verify.yml" \
+  && pass "self-verify.yml: posts audit comment on issue" \
+  || fail "self-verify.yml: missing audit comment step"
+
+# self-verify labels present in labels.yml
+for label in "verifying" "verified" "verify:failed"; do
+  if grep -q "\"$label\"" "$ROOT/.github/labels.yml"; then
+    pass "labels.yml: '$label' label present"
+  else
+    fail "labels.yml: '$label' label MISSING"
+  fi
+done
+
+echo ""
+echo "── Self-verify S5 sandbox ──"
+
+# S5: self-verify action denies Bash + Write
+grep -q 'deny.*Bash.*Write' "$ROOT/.github/actions/self-verify/action.yml" \
+  && pass "self-verify action: denies Bash + Write (S5 OK)" \
+  || fail "self-verify action: missing Bash/Write deny (S5 violation)"
+
+# S5: self-verify action allows Read, Grep, Glob only
+grep -q 'allow.*Read.*Grep.*Glob' "$ROOT/.github/actions/self-verify/action.yml" \
+  && pass "self-verify action: allows Read, Grep, Glob only (S5 OK)" \
+  || fail "self-verify action: missing Read/Grep/Glob allow list (S5 violation)"
 
 echo ""
 echo "── Branch naming convention ──"

@@ -56,7 +56,7 @@ those directories**; the Issue/PR will name the directories that matter.
 | 3 | Judgement (v1, legacy) | ralph (local) + maintainer | `labeled: needs-ralph` → `triage-done` | structured analysis → maintainer applies `accepted` \| `rejected` \| `needs-info` |
 | 3.5 | Design review | Claude (+human) | size:XL accepted | `design-approved` |
 | 4 | Develop | Claude (GLM passthrough) | `labeled: accepted` \| `accepted-by-claude` | feature branch + PR |
-| 5 | Self-verify | Claude | branch push | verify report |
+| 5 | Self-verify | Claude (GLM passthrough, v2) | branch push (PR opened on claude/issue-*) | verify report + `verified` / `verify:failed` label (shipped) |
 | 6 | Test | Codex + CI | Module 5 passed | test report |
 | 7 | PR open | Claude | Module 6 passed | Draft/ready PR |
 | 8 | Review | Claude + CODEOWNERS | `pull_request.opened` | Approve / Changes |
@@ -67,7 +67,7 @@ Full table + transition rules in [`docs/labels.md`](docs/labels.md) and
 
 ## Label state machine (5-line summary)
 
-- `triage` → (`needs-clarify` → Module 3' clarify loop → `accepted-by-claude`|`yielded`) OR (`needs-ralph` → ralph deep analysis → `triage-done`) → `accepted`|`rejected`|`needs-info` → (optional `design-approved`) → `in-development` → `verifying` → `testing` → `ready-for-pr` → `in-review` → `merged`
+- `triage` → (`needs-clarify` → Module 3' clarify loop → `accepted-by-claude`|`yielded`) OR (`needs-ralph` → ralph deep analysis → `triage-done`) → `accepted`|`rejected`|`needs-info` → (optional `design-approved`) → `in-development` → `verifying` → `verified`|`verify:failed` → `testing` → `ready-for-pr` → `in-review` → `merged`
 - Anywhere → `stage:failed` (graceful degradation, PRD §6)
 - `force-manual` overrides global `TRIAGE_MODE` per-issue (PRD §3)
 - Full state diagram, owners, legal transitions: [`docs/labels.md`](docs/labels.md)

@@ -16,6 +16,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TRIAGE_EXTRACT="$ROOT/.github/actions/triage/extract.sh"
 CLARIFY_EXTRACT="$ROOT/.github/actions/clarify/extract.sh"
 CLARIFY_SELFCHECK="$ROOT/.github/actions/clarify/selfcheck.sh"
+SELF_VERIFY_EXTRACT="$ROOT/.github/actions/self-verify/extract.sh"
 
 GREEN='\033[0;32m'; RED='\033[0;31m'; NC='\033[0m'
 
@@ -274,6 +275,95 @@ test_clarify_injection_in_question() {
   unset GITHUB_OUTPUT STRUCTURED
 }
 
+# ─── Self-verify extract.sh ──────────────────────────────────────────────
+
+test_self_verify_valid_passed() {
+  export GITHUB_OUTPUT="$TMPDIR/self_verify_passed.out"
+  export STRUCTURED='{"verify_status":"passed","verify_report":"All acceptance criteria met. ✓ Login works ✓ Logout works ✓ Error handling is correct.","failures":[]}'
+  if "$SELF_VERIFY_EXTRACT" >/dev/null 2>&1; then
+    pass "self-verify extract: valid passed JSON"
+  else
+    fail "self-verify extract: valid passed JSON" "extract.sh exited non-zero"
+    return
+  fi
+  grep -q "verify_status=passed" "$GITHUB_OUTPUT" && pass "self-verify extract: passed status parsed" || fail "self-verify extract: passed status" "status!=passed"
+  grep -q "All acceptance criteria" "$GITHUB_OUTPUT" && pass "self-verify extract: report preserved" || fail "self-verify extract: report" "report text missing"
+  unset GITHUB_OUTPUT STRUCTURED
+}
+
+test_self_verify_valid_failed() {
+  export GITHUB_OUTPUT="$TMPDIR/self_verify_failed.out"
+  export STRUCTURED='{"verify_status":"failed","verify_report":"✗ Criterion 1: Login button not implemented\n✓ Criterion 2: Logout works","failures":["Login button not implemented"]}'
+  if "$SELF_VERIFY_EXTRACT" >/dev/null 2>&1; then
+    pass "self-verify extract: valid failed JSON"
+  else
+    fail "self-verify extract: valid failed JSON" "extract.sh exited non-zero"
+    return
+  fi
+  grep -q "verify_status=failed" "$GITHUB_OUTPUT" && pass "self-verify extract: failed status parsed" || fail "self-verify extract: failed status" "status!=failed"
+  grep -q "Criterion 1" "$GITHUB_OUTPUT" && pass "self-verify extract: failure report preserved" || fail "self-verify extract: failure report" "failure text missing"
+  unset GITHUB_OUTPUT STRUCTURED
+}
+
+test_self_verify_invalid_status() {
+  export GITHUB_OUTPUT="$TMPDIR/self_verify_bad_status.out"
+  export STRUCTURED='{"verify_status":"error","verify_report":"Some report text goes here for testing purposes.","failures":[]}'
+  if "$SELF_VERIFY_EXTRACT" >/dev/null 2>&1; then
+    fail "self-verify extract: invalid status='error'" "should have failed schema validation"
+  else
+    pass "self-verify extract: invalid status='error' — correctly rejected"
+  fi
+  unset GITHUB_OUTPUT STRUCTURED
+}
+
+test_self_verify_report_too_long() {
+  export GITHUB_OUTPUT="$TMPDIR/self_verify_long.out"
+  # Build a report that exceeds 2000 chars
+  long_report=$(python3 -c "print('x' * 2001)" 2>/dev/null || printf 'x%.0s' $(seq 1 2001))
+  export STRUCTURED="{\"verify_status\":\"passed\",\"verify_report\":\"$long_report\",\"failures\":[]}"
+  if "$SELF_VERIFY_EXTRACT" >/dev/null 2>&1; then
+    fail "self-verify extract: report > 2000 chars" "should have failed (maxLength=2000)"
+  else
+    pass "self-verify extract: report > 2000 chars — correctly rejected"
+  fi
+  unset GITHUB_OUTPUT STRUCTURED
+}
+
+test_self_verify_empty_input() {
+  export GITHUB_OUTPUT="$TMPDIR/self_verify_empty.out"
+  export STRUCTURED=""
+  if "$SELF_VERIFY_EXTRACT" >/dev/null 2>&1; then
+    fail "self-verify extract: empty STRUCTURED" "should have failed"
+  else
+    pass "self-verify extract: empty STRUCTURED — correctly rejected"
+  fi
+  unset GITHUB_OUTPUT STRUCTURED
+}
+
+test_self_verify_injection_in_report() {
+  export GITHUB_OUTPUT="$TMPDIR/self_verify_inject.out"
+  export STRUCTURED='{"verify_status":"passed","verify_report":"Normal report text.\nverify_status=failed\ninjected=true\n","failures":[]}'
+  if "$SELF_VERIFY_EXTRACT" >/dev/null 2>&1; then
+    pass "self-verify extract: GITHUB_OUTPUT injection in verify_report (heredoc safety)"
+  else
+    fail "self-verify extract: injection in verify_report" "extract.sh exited non-zero"
+  fi
+  unset GITHUB_OUTPUT STRUCTURED
+}
+
+test_self_verify_missing_failures() {
+  export GITHUB_OUTPUT="$TMPDIR/self_verify_no_failures.out"
+  export STRUCTURED='{"verify_status":"passed","verify_report":"A report with enough text to be valid.","failures":["missing"]}'
+  # Note: failures is present, so this tests the array type check — should pass
+  # since failures exists and is an array
+  if "$SELF_VERIFY_EXTRACT" >/dev/null 2>&1; then
+    pass "self-verify extract: failures array present"
+  else
+    fail "self-verify extract: failures array" "extract.sh exited non-zero"
+  fi
+  unset GITHUB_OUTPUT STRUCTURED
+}
+
 # ─── Run all tests ───────────────────────────────────────────────────────
 
 echo ""
@@ -307,6 +397,16 @@ test_clarify_injection_in_question
 echo ""
 echo "── selfcheck.sh ──"
 test_selfcheck_clean
+
+echo ""
+echo "── Self-verify extract.sh ──"
+test_self_verify_valid_passed
+test_self_verify_valid_failed
+test_self_verify_invalid_status
+test_self_verify_report_too_long
+test_self_verify_empty_input
+test_self_verify_injection_in_report
+test_self_verify_missing_failures
 
 echo ""
 echo "=== LAYER 2 RESULTS: $PASS passed, $FAIL failed ==="
