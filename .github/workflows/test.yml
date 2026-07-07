@@ -94,6 +94,15 @@ jobs:
           set -eu
           gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "testing" || true
 
+      - name: Verify OPENAI_API_KEY secret exists (S4: never print value)
+        shell: bash
+        run: |
+          if [ -z "${{ secrets.OPENAI_API_KEY }}" ]; then
+            echo "::error::OPENAI_API_KEY secret is not set or is empty. Module 6 requires this secret for Codex (PRD §4)."
+            exit 1
+          fi
+          echo "::notice::OPENAI_API_KEY secret is configured (value not printed per S4)."
+
       - name: Run test composite (Codex engine)
         id: test
         uses: ./.github/actions/test
