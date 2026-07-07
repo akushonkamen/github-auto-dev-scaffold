@@ -113,7 +113,9 @@ DENY_LIST, AC-V2-8b race guard, AC-V2-13a log-scan).
 | `design-review` | Needs design proposal first | judge workflow on `size:XL` + `accepted` | design-review workflow on completion | Triggers Module 3.5 |
 | `design-approved` | Design accepted, may develop | design-review workflow | — | Unlocks Module 4 |
 | `in-development` | Module 4 active | develop workflow | develop workflow on push | — |
-| `verifying` | Module 5 (self-verify) active | develop workflow | self-verify workflow | — |
+| `verifying` | Module 5 (self-verify) active | self-verify workflow | self-verify workflow | → `verified` \| `verify:failed` |
+| `verified` | Module 5 self-verify passed | self-verify workflow | test workflow | → `testing` |
+| `verify:failed` | Module 5 self-verify failed; needs maintainer review | self-verify workflow | maintainer | → maintainer triage |
 | `testing` | Module 6 (test) active | self-verify workflow | test workflow | — |
 | `ready-for-pr` | Tests passed; PR may be opened | test workflow | pr-open workflow | — |
 | `in-review` | PR opened, Module 8 active | pr-open workflow | review workflow | — |

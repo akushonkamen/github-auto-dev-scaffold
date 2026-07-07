@@ -91,18 +91,22 @@ Every module action shares these inputs and outputs so they compose uniformly. M
 
 ### Module 5 — self-verify (`/.github/actions/self-verify/`)
 
+> **Shipped.** v2 composite action with Claude engine, GLM passthrough support, and sealed JSON output schema.
+
 | Aspect | Value |
 |---|---|
-| Description | Run static checks + build per language (PRD §5 quality gate) |
-| Trigger | branch push |
-| Inputs | common + `branch-name` (required), `languages` (comma-sep, default `python,rust`) |
-| Outputs | common + `report-path` (string), `passed` (bool) |
-| Secrets | `repo-token` (read-only) |
-| Permissions | `contents: read`, `pull-requests: write` (annotate) |
-| Runner | larger runner with sccache |
-| Caches | `sccache`, `uv`, `cargo` |
-| Idempotency | Re-run replaces report |
-| Failure | Apply `stage:failed`; do NOT let downstream modules run |
+| Description | Verify implementation against issue acceptance criteria using Claude; emit maintainer-readable report + label transition |
+| Trigger | `pull_request.opened` / `.synchronize` on `claude/issue-*` branches targeting `dev` |
+| Inputs | common + `issue-number` (required), `head-branch` (required), `base-branch` (required), `pr-url` (required), `anthropic-base-url` (optional), `issue-language` (optional, default `"en"`) |
+| Outputs | `verify-status` (`passed` \| `failed`), `verify-report` (multi-line, max 2000 chars), `commit-sha` (string) |
+| Secrets | `repo-token`, `api-key` (DEEPSEEK_API_KEY for GLM passthrough) |
+| Permissions | `contents: read`, `issues: write`, `pull-requests: write` (PRD S1 — NO contents:write) |
+| Runner | `ubuntu-latest` |
+| Caches | none |
+| Idempotency | Re-run on PR synchronize replaces prior verify report; label transition is atomic |
+| Failure | Apply `verify:failed` label; `stage:failed` on infrastructure error; do NOT block downstream modules |
+| Prompt contract | Input: issue body + PR diff + acceptance criteria. Output: JSON `{verify_status, verify_report, failures}` per sealed schema |
+| Label transitions | `verifying` → `verified` (passed) or `verify:failed` (failed) |
 
 ### Module 6 — test (`/.github/actions/test/`)
 

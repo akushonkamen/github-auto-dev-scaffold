@@ -82,6 +82,14 @@ labels:
     color: "1d76db"
     description: "Module 5 self-verify active"
     category: stage
+  - name: verified
+    color: "0e8a16"
+    description: "Module 5 self-verify passed"
+    category: stage
+  - name: "verify:failed"
+    color: "b60205"
+    description: "Module 5 self-verify failed; needs maintainer review"
+    category: stage
   - name: testing
     color: "1d76db"
     description: "Module 6 test active"
