@@ -308,11 +308,130 @@ grep -q "gh issue view.*--json labels" "$ROOT/.github/workflows/clarify-loop.yml
   || fail "clarify-loop.yml: AC-V2-8b label re-fetch missing"
 
 echo ""
+echo "── Branch protection CI check (branch-protection.yml) ──"
+
+# Simulate branch-protection decision: returns "allowed" or "blocked"
+simulate_branch_protection() {
+  local head_ref="$1" labels="$2"
+  # Rule 1: claude/issue-N-* branches are always allowed
+  if echo "$head_ref" | grep -qE '^claude/issue-[0-9]+'; then
+    printf '%s' "allowed"
+    return
+  fi
+  # Rule 2: pipeline-fix label allows
+  if echo "$labels" | grep -qFx 'pipeline-fix'; then
+    printf '%s' "allowed"
+    return
+  fi
+  printf '%s' "blocked"
+}
+
+# claude/issue-N branches pass
+[ "$(simulate_branch_protection "claude/issue-15-dogfood" "")" = "allowed" ] \
+  && pass "claude/issue-15-dogfood → allowed (pipeline branch)" \
+  || fail "claude/issue-15-dogfood → should be allowed"
+
+[ "$(simulate_branch_protection "claude/issue-1-fix-typo" "some-other-label")" = "allowed" ] \
+  && pass "claude/issue-1-fix-typo + other labels → allowed" \
+  || fail "claude/issue-1-fix-typo + other labels → should be allowed"
+
+# pipeline-fix label passes
+[ "$(simulate_branch_protection "fix-workflow-bug" "pipeline-fix")" = "allowed" ] \
+  && pass "fix-workflow-bug + pipeline-fix label → allowed (S7 escape hatch)" \
+  || fail "fix-workflow-bug + pipeline-fix label → should be allowed"
+
+# Non-conforming branch without pipeline-fix is blocked
+[ "$(simulate_branch_protection "feature/foo" "")" = "blocked" ] \
+  && pass "feature/foo (no label) → blocked" \
+  || fail "feature/foo (no label) → should be blocked"
+
+[ "$(simulate_branch_protection "main" "")" = "blocked" ] \
+  && pass "main (direct push attempt) → blocked" \
+  || fail "main (direct push attempt) → should be blocked"
+
+[ "$(simulate_branch_protection "bugfix/unauthorized" "bug,enhancement")" = "blocked" ] \
+  && pass "bugfix/unauthorized + unrelated labels → blocked" \
+  || fail "bugfix/unauthorized + unrelated labels → should be blocked"
+
+# Edge: pipeline-fix label with non-standard branch is allowed
+[ "$(simulate_branch_protection "hotfix/critical" "pipeline-fix")" = "allowed" ] \
+  && pass "hotfix/critical + pipeline-fix → allowed (escape hatch)" \
+  || fail "hotfix/critical + pipeline-fix → should be allowed"
+
+# Edge: claude/issue- prefix but no number → blocked (strict pattern)
+[ "$(simulate_branch_protection "claude/issue-abc" "")" = "blocked" ] \
+  && pass "claude/issue-abc (non-numeric) → blocked (strict pattern)" \
+  || fail "claude/issue-abc → should be blocked (strict pattern requires digits)"
+
+[ "$(simulate_branch_protection "claude/issue-" "")" = "blocked" ] \
+  && pass "claude/issue- (no number) → blocked (strict pattern)" \
+  || fail "claude/issue- → should be blocked (strict pattern requires digits)"
+
+echo ""
 echo "── AC-V2-3c sentinel marker ──"
 
 grep -q "claude-clarify-round-" "$ROOT/.github/workflows/clarify-loop.yml" \
   && pass "clarify-loop.yml: AC-V2-3c sentinel marker re-entrancy guard" \
   || fail "clarify-loop.yml: AC-V2-3c sentinel marker missing"
+
+echo ""
+echo "── Branch protection workflow structure ──"
+
+BP_WF="$ROOT/.github/workflows/branch-protection.yml"
+
+# File exists
+if [ -f "$BP_WF" ]; then
+  pass "branch-protection.yml exists"
+else
+  fail "branch-protection.yml missing"
+fi
+
+# Permissions: contents:read + pull-requests:read only (no writes)
+if grep -A5 "^permissions:" "$BP_WF" | grep -q "contents: write"; then
+  fail "branch-protection.yml: contents:write detected (S1 violation — should be read-only)"
+else
+  pass "branch-protection.yml: no contents:write (S1 OK)"
+fi
+
+if grep -A5 "^permissions:" "$BP_WF" | grep -q "pull-requests: read"; then
+  pass "branch-protection.yml: pull-requests:read present"
+else
+  fail "branch-protection.yml: pull-requests:read missing"
+fi
+
+# Triggers on pull_request targeting dev and main
+if grep -q "pull_request:" "$BP_WF"; then
+  pass "branch-protection.yml: triggers on pull_request"
+else
+  fail "branch-protection.yml: missing pull_request trigger"
+fi
+
+if grep -qE '^\s+-\s+(dev|main)' "$BP_WF"; then
+  pass "branch-protection.yml: targets dev and main branches"
+else
+  fail "branch-protection.yml: missing dev/main branch targets"
+fi
+
+# Contains claude/issue-* pattern check
+if grep -q 'claude/issue-' "$BP_WF"; then
+  pass "branch-protection.yml: enforces claude/issue-* branch pattern"
+else
+  fail "branch-protection.yml: missing claude/issue-* pattern check"
+fi
+
+# Contains pipeline-fix label check
+if grep -q 'pipeline-fix' "$BP_WF"; then
+  pass "branch-protection.yml: pipeline-fix escape hatch referenced"
+else
+  fail "branch-protection.yml: missing pipeline-fix reference"
+fi
+
+# Audit comment on acceptance
+if grep -q "audit comment\|gh pr comment" "$BP_WF"; then
+  pass "branch-protection.yml: posts audit comment on check result"
+else
+  fail "branch-protection.yml: missing audit comment step"
+fi
 
 echo ""
 echo "=== LAYER 3 RESULTS: $PASS passed, $FAIL failed ==="

@@ -1,0 +1,85 @@
+# Branch protection CI check (dogfooding rule enforcement)
+#
+# Every PR targeting dev or main MUST originate from a claude/issue-* branch
+# (autonomous pipeline) OR carry the `pipeline-fix` label (sanctioned bypass,
+# docs/security.md §S7). This CI check is the enforcement mechanism; the
+# companion branch protection ruleset blocks direct pushes at the GitHub level.
+#
+# SECURITY POSTURE (PRD §7):
+#   - permissions: contents: read, pull-requests: read (no writes needed)
+#   - No secrets, no API keys, no token exfiltration surface
+#   - gh CLI uses built-in GITHUB_TOKEN (pull-requests: read scope)
+
+name: branch-protection
+
+on:
+  pull_request:
+    branches:
+      - dev
+      - main
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify branch naming convention or pipeline-fix label
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_REF: ${{ github.head_ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -euo pipefail
+
+          # Rule 1: claude/issue-N-* branches are always allowed (autonomous pipeline)
+          if echo "$HEAD_REF" | grep -qE '^claude/issue-[0-9]+'; then
+            echo "✅ Branch '$HEAD_REF' matches claude/issue-* pattern — allowed."
+            exit 0
+          fi
+
+          # Rule 2: PRs carrying the pipeline-fix label are allowed (S7 escape hatch)
+          labels=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json labels --jq '.labels[].name' 2>/dev/null || echo "")
+          if echo "$labels" | grep -qFx 'pipeline-fix'; then
+            echo "✅ PR #${PR_NUMBER} carries 'pipeline-fix' label — allowed (S7 escape hatch)."
+            exit 0
+          fi
+
+          # Neither condition met — block with audit trail
+          echo "::error::PR from branch '$HEAD_REF' targeting protected branch."
+          echo "::error::Branch must match 'claude/issue-*' OR carry the 'pipeline-fix' label."
+          echo "::error::See docs/security.md §S7 for the pipeline-fix escape hatch rules."
+          exit 1
+
+      - name: Post audit comment (acceptance)
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          # Determine which rule matched and post an audit comment for traceability.
+          labels=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json labels --jq '.labels[].name' 2>/dev/null || echo "")
+          if echo "$labels" | grep -qFx 'pipeline-fix'; then
+            reason="PR carries \`pipeline-fix\` label (S7 escape hatch)."
+          else
+            reason="Branch \`$HEAD_REF\` matches \`claude/issue-*\` convention."
+          fi
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --body "🔒 **Branch protection check passed.** $reason See [docs/security.md §S7](docs/security.md) for the dogfooding rule." \
+            || echo "::warning::Could not post audit comment (non-blocking)."
+
+      - name: Post audit comment (rejection)
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --body "🔒 **Branch protection check failed.** Branch \`$HEAD_REF\` does not match \`claude/issue-*\` and PR does not carry \`pipeline-fix\` label. Either:\n\n1. Close this PR and open an Issue to follow the [autonomous pipeline](docs/architecture.md), or\n2. If the pipeline itself is broken, apply the \`pipeline-fix\` label (maintainer only, scoped to \`.github/workflows/\` + \`.github/actions/\` + \`docs/security.md\`).\n\nSee [docs/security.md §S7](docs/security.md) for the full escape hatch rules." \
+            || echo "::warning::Could not post audit comment (non-blocking)."
