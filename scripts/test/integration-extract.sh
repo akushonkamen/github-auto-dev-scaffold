@@ -17,6 +17,7 @@ TRIAGE_EXTRACT="$ROOT/.github/actions/triage/extract.sh"
 CLARIFY_EXTRACT="$ROOT/.github/actions/clarify/extract.sh"
 CLARIFY_SELFCHECK="$ROOT/.github/actions/clarify/selfcheck.sh"
 SELF_VERIFY_EXTRACT="$ROOT/.github/actions/self-verify/extract.sh"
+TEST_EXTRACT="$ROOT/.github/actions/test/extract.sh"
 
 GREEN='\033[0;32m'; RED='\033[0;31m'; NC='\033[0m'
 
@@ -407,6 +408,128 @@ test_self_verify_report_too_long
 test_self_verify_empty_input
 test_self_verify_injection_in_report
 test_self_verify_missing_failures
+
+# ─── Test extract.sh (Module 6, Codex engine) ─────────────────────────────
+
+test_test_valid_passed() {
+  export GITHUB_OUTPUT="$TMPDIR/test_passed.out"
+  export STRUCTURED='{"test_status":"passed","test_report":"All tests pass. ✓ Login test ✓ Logout test ✓ Error handling test. Coverage adequate.","failures":[],"tests_added":2}'
+  if "$TEST_EXTRACT" >/dev/null 2>&1; then
+    pass "test extract: valid passed JSON"
+  else
+    fail "test extract: valid passed JSON" "extract.sh exited non-zero"
+    return
+  fi
+  grep -q "test_status=passed" "$GITHUB_OUTPUT" && pass "test extract: passed status parsed" || fail "test extract: passed status" "status!=passed"
+  grep -q "tests_added=2" "$GITHUB_OUTPUT" && pass "test extract: tests_added parsed" || fail "test extract: tests_added" "tests_added!=2"
+  grep -q "All tests pass" "$GITHUB_OUTPUT" && pass "test extract: report preserved" || fail "test extract: report" "report text missing"
+  unset GITHUB_OUTPUT STRUCTURED
+}
+
+test_test_valid_failed() {
+  export GITHUB_OUTPUT="$TMPDIR/test_failed.out"
+  export STRUCTURED='{"test_status":"failed","test_report":"✗ Login test: timeout after 30s\n✓ Logout test: passed\n✗ Error handling: assertion failed on edge case","failures":["Login test timeout","Error handling assertion failed"],"tests_added":1}'
+  if "$TEST_EXTRACT" >/dev/null 2>&1; then
+    pass "test extract: valid failed JSON"
+  else
+    fail "test extract: valid failed JSON" "extract.sh exited non-zero"
+    return
+  fi
+  grep -q "test_status=failed" "$GITHUB_OUTPUT" && pass "test extract: failed status parsed" || fail "test extract: failed status" "status!=failed"
+  grep -q "Login test timeout" "$GITHUB_OUTPUT" && pass "test extract: failure list preserved" || fail "test extract: failure list" "failure text missing"
+  unset GITHUB_OUTPUT STRUCTURED
+}
+
+test_test_invalid_status() {
+  export GITHUB_OUTPUT="$TMPDIR/test_bad_status.out"
+  export STRUCTURED='{"test_status":"error","test_report":"Some report text that is long enough to validate.","failures":[],"tests_added":0}'
+  if "$TEST_EXTRACT" >/dev/null 2>&1; then
+    fail "test extract: invalid status='error'" "should have failed schema validation"
+  else
+    pass "test extract: invalid status='error' — correctly rejected"
+  fi
+  unset GITHUB_OUTPUT STRUCTURED
+}
+
+test_test_report_too_long() {
+  export GITHUB_OUTPUT="$TMPDIR/test_long.out"
+  long_report=$(python3 -c "print('x' * 2001)" 2>/dev/null || printf 'x%.0s' $(seq 1 2001))
+  export STRUCTURED="{\"test_status\":\"passed\",\"test_report\":\"$long_report\",\"failures\":[],\"tests_added\":0}"
+  if "$TEST_EXTRACT" >/dev/null 2>&1; then
+    fail "test extract: report > 2000 chars" "should have failed (maxLength=2000)"
+  else
+    pass "test extract: report > 2000 chars — correctly rejected"
+  fi
+  unset GITHUB_OUTPUT STRUCTURED
+}
+
+test_test_empty_input() {
+  export GITHUB_OUTPUT="$TMPDIR/test_empty.out"
+  export STRUCTURED=""
+  if "$TEST_EXTRACT" >/dev/null 2>&1; then
+    fail "test extract: empty STRUCTURED" "should have failed"
+  else
+    pass "test extract: empty STRUCTURED — correctly rejected"
+  fi
+  unset GITHUB_OUTPUT STRUCTURED
+}
+
+test_test_injection_in_report() {
+  export GITHUB_OUTPUT="$TMPDIR/test_inject.out"
+  export STRUCTURED='{"test_status":"passed","test_report":"Normal test report.\ntest_status=failed\ninjected=true\n","failures":[],"tests_added":0}'
+  if "$TEST_EXTRACT" >/dev/null 2>&1; then
+    pass "test extract: GITHUB_OUTPUT injection in test_report (heredoc safety)"
+  else
+    fail "test extract: injection in test_report" "extract.sh exited non-zero"
+  fi
+  unset GITHUB_OUTPUT STRUCTURED
+}
+
+test_test_missing_tests_added() {
+  export GITHUB_OUTPUT="$TMPDIR/test_no_tests_added.out"
+  export STRUCTURED='{"test_status":"passed","test_report":"A report with enough text to be valid for testing.","failures":[]}'
+  if "$TEST_EXTRACT" >/dev/null 2>&1; then
+    fail "test extract: missing tests_added field" "should have failed schema validation"
+  else
+    pass "test extract: missing tests_added — correctly rejected"
+  fi
+  unset GITHUB_OUTPUT STRUCTURED
+}
+
+test_test_negative_tests_added() {
+  export GITHUB_OUTPUT="$TMPDIR/test_negative.out"
+  export STRUCTURED='{"test_status":"passed","test_report":"A report with enough text to be valid for testing.","failures":[],"tests_added":-1}'
+  if "$TEST_EXTRACT" >/dev/null 2>&1; then
+    fail "test extract: tests_added=-1" "should have failed (minimum=0)"
+  else
+    pass "test extract: tests_added=-1 — correctly rejected"
+  fi
+  unset GITHUB_OUTPUT STRUCTURED
+}
+
+test_test_zero_tests_added() {
+  export GITHUB_OUTPUT="$TMPDIR/test_zero.out"
+  export STRUCTURED='{"test_status":"passed","test_report":"Existing test coverage is sufficient for the acceptance criteria. No new tests needed.","failures":[],"tests_added":0}'
+  if "$TEST_EXTRACT" >/dev/null 2>&1; then
+    pass "test extract: tests_added=0 (valid, existing coverage sufficient)"
+  else
+    fail "test extract: tests_added=0" "extract.sh exited non-zero"
+  fi
+  grep -q "tests_added=0" "$GITHUB_OUTPUT" && pass "test extract: zero tests_added parsed" || fail "test extract: zero tests_added" "tests_added!=0"
+  unset GITHUB_OUTPUT STRUCTURED
+}
+
+echo ""
+echo "── Test extract.sh (Module 6, Codex engine) ──"
+test_test_valid_passed
+test_test_valid_failed
+test_test_invalid_status
+test_test_report_too_long
+test_test_empty_input
+test_test_injection_in_report
+test_test_missing_tests_added
+test_test_negative_tests_added
+test_test_zero_tests_added
 
 echo ""
 echo "=== LAYER 2 RESULTS: $PASS passed, $FAIL failed ==="

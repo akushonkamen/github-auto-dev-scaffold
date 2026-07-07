@@ -110,18 +110,23 @@ Every module action shares these inputs and outputs so they compose uniformly. M
 
 ### Module 6 — test (`/.github/actions/test/`)
 
+> **Shipped.** Codex engine composite action with sealed JSON output schema. First Codex integration in the project (PRD §4 out-of-distribution tester).
+
 | Aspect | Value |
 |---|---|
-| Description | Generate test cases (Codex by default), run selective CI |
-| Trigger | Module 5 passed |
-| Inputs | common + `branch-name` (required), `selective-paths` (string) |
-| Outputs | common + `report-path`, `coverage-pct` (float) |
-| Secrets | `repo-token`, `api-key` |
-| Permissions | `contents: read`, `checks: write`, `pull-requests: write` |
-| Runner | larger runner |
-| Caches | `sccache`, `uv`, `cargo` |
-| Idempotency | Re-run replaces report |
-| Failure | Apply `stage:failed` |
+| Description | Run existing test suite + add coverage for acceptance criteria gaps using Codex (out-of-distribution tester per PRD §4) |
+| Trigger | `issues.labeled: verified` (Module 5 passed) |
+| Inputs | common + `issue-number` (required), `pr-url` (required), `pr-number` (required), `head-branch` (required), `base-branch` (required) |
+| Outputs | `test-status` (`passed` \| `failed`), `test-report` (multi-line, max 2000 chars), `commit-sha` (string) |
+| Secrets | `repo-token`, `api-key` (OPENAI_API_KEY — Codex uses OpenAI, not Anthropic) |
+| Permissions | `contents: read`, `issues: write`, `pull-requests: write` (PRD S1 — NO contents:write) |
+| Runner | `ubuntu-latest` |
+| Caches | none |
+| Idempotency | Re-run replaces prior test report; label transition is atomic |
+| Failure | Apply `test:failed` label; `stage:failed` on infrastructure error |
+| Prompt contract | Input: PR diff + acceptance criteria + existing tests. Output: JSON `{test_status, test_report, failures, tests_added}` per sealed schema |
+| Label transitions | `verified` → `testing` → `tested` (passed) or `test:failed` (failed) |
+| S5 enforcement | Codex `permission-profile: workspace-write` (NEVER `danger-full-access`) |
 
 ### Module 7/8 — pr-open + review (`/.github/actions/pr-open/`)
 
