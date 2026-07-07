@@ -183,7 +183,7 @@ jobs:
             --subject "Merge PR #$PR_NUMBER (Module 9 auto-merge)" \
             --body "Auto-merged by Module 9 (merge-queue) on approved + all checks green.
 
-      🤖 Generated with [Claude Code](https://claude.com/claude-code)"
+          🤖 Generated with [Claude Code](https://claude.com/claude-code)"
 
           echo "Merged PR #$PR_NUMBER"
 
@@ -211,19 +211,19 @@ jobs:
 
           # Post audit comment with merge details
           gh issue comment "$NUMBER" --repo "$REPO" --body "$(cat <<AUDIT_EOF
-      ✅ **Merge queue: \`merged\`**
+          ✅ **Merge queue: \`merged\`**
 
-      | Field | Value |
-      |---|---|
-      | PR | $PR_URL |
-      | Merge SHA | \`$merge_sha\` |
-      | Workflow run | $RUN_URL |
+          | Field | Value |
+          |---|---|
+          | PR | $PR_URL |
+          | Merge SHA | \`$merge_sha\` |
+          | Workflow run | $RUN_URL |
 
-      Module 9 auto-merged after CODEOWNERS approval + all checks green.
-      The linked issue is now closed.
+          Module 9 auto-merged after CODEOWNERS approval + all checks green.
+          The linked issue is now closed.
 
-      🤖 Generated with [Claude Code](https://claude.com/claude-code)
-      AUDIT_EOF
+          🤖 Generated with [Claude Code](https://claude.com/claude-code)
+          AUDIT_EOF
           )"
 
   on-failure:
@@ -251,9 +251,9 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(cat <<FAIL_BODY
-      ⚠️ **Merge queue failed.** See [workflow run]($RUN_URL) for details.
-      A maintainer will triage manually.
-      FAIL_BODY
+          ⚠️ **Merge queue failed.** See [workflow run]($RUN_URL) for details.
+          A maintainer will triage manually.
+          FAIL_BODY
           )" || true
 
       - name: Post failure comment + stage:failed on linked issue
@@ -269,8 +269,8 @@ jobs:
           fi
           gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "stage:failed" || true
           gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(cat <<FAIL_BODY
-      ⚠️ **Merge queue failed** for PR #$PR_NUMBER.
-      See [workflow run]($RUN_URL) for details.
-      A maintainer will triage manually.
-      FAIL_BODY
+          ⚠️ **Merge queue failed** for PR #$PR_NUMBER.
+          See [workflow run]($RUN_URL) for details.
+          A maintainer will triage manually.
+          FAIL_BODY
           )" || true
