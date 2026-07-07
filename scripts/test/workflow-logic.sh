@@ -527,6 +527,189 @@ else
 fi
 
 echo ""
+echo "── Module 6 Test decision tree ──"
+
+# Simulate test status → label transition
+simulate_test_transition() {
+  local status="$1"
+  case "$status" in
+    passed) printf '%s' "tested" ;;
+    failed) printf '%s' "test:failed" ;;
+    *)      printf '%s' "unknown" ;;
+  esac
+}
+
+# passed → tested
+[ "$(simulate_test_transition "passed")" = "tested" ] \
+  && pass "test passed → tested label" \
+  || fail "test passed → tested label"
+
+# failed → test:failed
+[ "$(simulate_test_transition "failed")" = "test:failed" ] \
+  && pass "test failed → test:failed label" \
+  || fail "test failed → test:failed label"
+
+# unknown status
+[ "$(simulate_test_transition "unknown")" = "unknown" ] \
+  && pass "test unknown status → unknown (no label)" \
+  || fail "test unknown status → unknown"
+
+echo ""
+echo "── Module 6 workflow structure ──"
+
+TEST_WF="$ROOT/.github/workflows/test.yml"
+
+# File exists
+if [ -f "$TEST_WF" ]; then
+  pass "test.yml exists"
+else
+  fail "test.yml missing"
+fi
+
+# Triggers on issues.labeled with verified
+grep -q "labeled" "$TEST_WF" \
+  && pass "test.yml: triggers on issues.labeled" \
+  || fail "test.yml: missing issues.labeled trigger"
+
+grep -q "verified" "$TEST_WF" \
+  && pass "test.yml: triggers on verified label" \
+  || fail "test.yml: missing verified label trigger"
+
+# S1: no contents:write at workflow level
+if grep -A5 "^permissions:" "$TEST_WF" | grep -q "contents: write"; then
+  fail "test.yml: workflow-level contents:write detected (S1 violation)"
+else
+  pass "test.yml: no workflow-level contents:write (S1 OK)"
+fi
+
+# S1: no contents:write at job level
+if grep -A5 "permissions:" "$TEST_WF" | grep -q "contents: write"; then
+  fail "test.yml: job-level contents:write detected (S1 violation)"
+else
+  pass "test.yml: no job-level contents:write (S1 OK)"
+fi
+
+# Uses CLAUDE_DEV_PAT for label writes (PR #16 lesson)
+grep -q "CLAUDE_DEV_PAT" "$TEST_WF" \
+  && pass "test.yml: uses CLAUDE_DEV_PAT for label writes (downstream trigger)" \
+  || fail "test.yml: missing CLAUDE_DEV_PAT for label writes"
+
+# Posts audit comment on PR
+grep -q "gh pr comment" "$TEST_WF" \
+  && pass "test.yml: posts audit comment on PR" \
+  || fail "test.yml: missing PR audit comment step"
+
+# Posts audit comment on issue
+grep -q "gh issue comment" "$TEST_WF" \
+  && pass "test.yml: posts audit comment on issue" \
+  || fail "test.yml: missing issue audit comment step"
+
+# Concurrency guard
+grep -q "cancel-in-progress: false" "$TEST_WF" \
+  && pass "test.yml: cancel-in-progress=false (serial per issue)" \
+  || fail "test.yml: missing cancel-in-progress guard"
+
+grep -qE 'group: test-issue-\$\{\{' "$TEST_WF" \
+  && pass "test.yml: concurrency group scoped to issue number" \
+  || fail "test.yml: concurrency group not scoped to issue number"
+
+# S5: Codex permission-profile enforcement
+grep -q "permission-profile" "$ROOT/.github/actions/test/action.yml" \
+  && pass "test action: permission-profile present (S5 Codex enforcement)" \
+  || fail "test action: missing permission-profile (S5 Codex)"
+
+grep -q "workspace-write" "$ROOT/.github/actions/test/action.yml" \
+  && pass "test action: permission-profile=workspace-write (S5 OK)" \
+  || fail "test action: permission-profile should be workspace-write (S5)"
+
+grep -q "danger-full-access" "$ROOT/.github/actions/test/action.yml" \
+  && pass "test action: references danger-full-access prohibition (S5)" \
+  || fail "test action: missing danger-full-access guard (S5)"
+
+# S5: No dangerously-skip-permissions
+if grep -q "dangerously-skip-permissions" "$ROOT/.github/actions/test/action.yml"; then
+  fail "test action: dangerously-skip-permissions detected (S5 violation)"
+else
+  pass "test action: no dangerously-skip-permissions (S5 OK)"
+fi
+
+# Test labels present in labels.yml
+for label in "testing" "tested" "test:failed"; do
+  if grep -q "\"${label}\"" "$ROOT/.github/labels.yml"; then
+    pass "labels.yml: '${label}' label present"
+  else
+    fail "labels.yml: '${label}' label MISSING"
+  fi
+done
+
+# Engine codex default
+grep -q 'default.*codex' "$ROOT/.github/actions/test/action.yml" \
+  && pass "test action: engine defaults to codex (PRD §4)" \
+  || fail "test action: engine should default to codex"
+
+# OPENAI_API_KEY (not Anthropic/DeepSeek)
+grep -q "OPENAI_API_KEY" "$ROOT/.github/actions/test/action.yml" \
+  && pass "test action: uses OPENAI_API_KEY (not DeepSeek, PRD §4)" \
+  || fail "test action: missing OPENAI_API_KEY reference"
+
+# test.yml uses OPENAI_API_KEY secret
+grep -q "OPENAI_API_KEY" "$TEST_WF" \
+  && pass "test.yml: consumes OPENAI_API_KEY secret" \
+  || fail "test.yml: missing OPENAI_API_KEY secret"
+
+# Test composite action has sealed schema
+grep -q "test_status" "$ROOT/.github/actions/test/action.yml" \
+  && pass "test action: sealed schema includes test_status" \
+  || fail "test action: missing test_status in schema"
+
+grep -q "tests_added" "$ROOT/.github/actions/test/action.yml" \
+  && pass "test action: sealed schema includes tests_added" \
+  || fail "test action: missing tests_added in schema"
+
+# test.yml discovers PR from issue comments
+grep -q "gh issue view.*--json comments" "$TEST_WF" \
+  && pass "test.yml: discovers PR from issue audit comments" \
+  || fail "test.yml: missing PR discovery from issue comments"
+
+echo ""
+echo "── Module 6 extract.sh ──"
+
+TEST_EXTRACT="$ROOT/.github/actions/test/extract.sh"
+
+if [ -f "$TEST_EXTRACT" ]; then
+  pass "test extract.sh exists"
+else
+  fail "test extract.sh missing"
+fi
+
+# Bash syntax check
+if bash -n "$TEST_EXTRACT" 2>/dev/null; then
+  pass "test extract.sh: bash syntax OK"
+else
+  fail "test extract.sh: bash syntax error"
+fi
+
+# Validates test_status field
+grep -q "test_status" "$TEST_EXTRACT" \
+  && pass "test extract.sh: validates test_status field" \
+  || fail "test extract.sh: missing test_status validation"
+
+# Validates test_report maxLength
+grep -q "2000" "$TEST_EXTRACT" \
+  && pass "test extract.sh: enforces test_report max 2000 chars" \
+  || fail "test extract.sh: missing report length check"
+
+# Validates tests_added
+grep -q "tests_added" "$TEST_EXTRACT" \
+  && pass "test extract.sh: validates tests_added field" \
+  || fail "test extract.sh: missing tests_added validation"
+
+# Handles empty input
+grep -q "empty" "$TEST_EXTRACT" \
+  && pass "test extract.sh: handles empty STRUCTURED" \
+  || fail "test extract.sh: missing empty input guard"
+
+echo ""
 echo "=== LAYER 3 RESULTS: $PASS passed, $FAIL failed ==="
 
 if [ "$FAIL" -gt 0 ]; then

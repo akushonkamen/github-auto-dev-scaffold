@@ -72,6 +72,18 @@ Every AI-calling composite action passes `--disallowedTools` / `--allowedTools` 
 - Claude actions use `--allowedTools` whitelist; never `--dangerously-skip-permissions`.
 - `--bypass-sandbox` style flags are forbidden; a CI lint rejects any workflow containing them.
 
+### Codex engine — S5 enforcement (Module 6)
+
+Module 6 (test) is the first Codex integration in the project (PRD §4 out-of-distribution tester). Specific S5 controls:
+
+- **Permission profile**: `workspace-write` ONLY. This allows Codex to read files, run test commands (`npm test`, `pytest`, `cargo test`, etc.), and write test files. It does NOT grant the ability to modify non-test files or bypass sandbox restrictions.
+- **NEVER `danger-full-access`**: Any use of `danger-full-access` is a red-line violation. The composite action enforces this at the invocation level.
+- **API key**: `secrets.OPENAI_API_KEY` scoped to Module 6 only (S3). Codex uses OpenAI's API directly (not DeepSeek/Anthropic passthrough).
+- **Model**: `gpt-5` family (configurable via `vars.TEST_MODEL`).
+- **Max turns**: Default 10 (lower than develop — Codex is more expensive per turn).
+- **Allowed operations**: read files, run test commands, write test files (within `workspace-write` profile). Codex MUST NOT modify production/source files — only test files.
+- **Verification**: Composite action validates the sealed JSON output schema before emitting results. Schema mismatch triggers `test:failed` label, not a crash.
+
 ## S6 — Personal access token (PAT) handling (v2)
 
 The v2 clarify + develop path uses a fine-grained personal access token `CLAUDE_DEV_PAT` (stored as a repository secret) so that Claude's comments, commits, and PRs appear under a real developer identity rather than `github-actions[bot]`.

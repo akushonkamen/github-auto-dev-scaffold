@@ -94,6 +94,14 @@ labels:
     color: "1d76db"
     description: "Module 6 test active"
     category: stage
+  - name: tested
+    color: "0e8a16"
+    description: "Module 6 test passed"
+    category: stage
+  - name: "test:failed"
+    color: "b60205"
+    description: "Module 6 test failed; needs maintainer review"
+    category: stage
   - name: ready-for-pr
     color: "1d76db"
     description: "Tests passed; PR may be opened"

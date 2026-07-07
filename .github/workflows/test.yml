@@ -1,0 +1,231 @@
+# Module 6 — Test (Codex engine, PRD §4 out-of-distribution tester)
+#
+# Triggers when `verified` label is applied to an issue (Module 5 self-verify
+# passed). Runs the test composite action with Codex engine, posts a test
+# report audit comment on the linked PR, and transitions labels:
+#   verified → testing → tested (passed) or test:failed (failed)
+#
+# SECURITY POSTURE (PRD §7):
+#   - permissions: contents:read + issues:write + pull-requests:write
+#     (S1: NO contents:write — test is read + test execution only)
+#   - S5: Codex permission-profile: workspace-write (NEVER danger-full-access)
+#   - S4: no secrets printed in workflow; OPENAI_API_KEY never printed
+#   - S3: never writes to main
+#   - PR #16 lesson: label writes use CLAUDE_DEV_PAT (so Module 7 pr-open fires)
+#   - On failure: test:failed label + failure comment, stage:failed fallback
+#
+# Triggers:
+#   - issues.labeled with label == verified
+
+name: test
+
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: test-issue-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    if: ${{ github.event.label.name == 'verified' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    timeout-minutes: ${{ fromJSON(vars.TEST_TIME_BUDGET_MIN || '30') }}
+    outputs:
+      test-status: ${{ steps.test.outputs.test-status }}
+      test-report: ${{ steps.test.outputs.test-report }}
+      commit-sha: ${{ steps.test.outputs.commit-sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Discover PR number from issue audit comments
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -eu
+          # Search issue comments for "PR:" link posted by develop workflow.
+          # develop posts "🚀 Development branch pushed... PR: <url>"
+          pr_url=$(gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json comments \
+            --jq '.comments | map(.body) | join("\n")' \
+            | grep -oE 'https://github\.com/[^/]+/[^/]+/pull/[0-9]+' \
+            | head -n 1 || echo "")
+
+          if [ -z "$pr_url" ]; then
+            echo "::error::Could not find PR URL in issue #$NUMBER comments. Has develop (Module 4) run?"
+            exit 1
+          fi
+
+          pr_number=$(printf '%s' "$pr_url" | grep -oE '[0-9]+$' || echo "")
+          if [ -z "$pr_number" ]; then
+            echo "::error::Could not extract PR number from URL: $pr_url"
+            exit 1
+          fi
+
+          # Discover head branch from PR
+          head_branch=$(gh pr view "$pr_number" --repo "$GITHUB_REPOSITORY" --json headRefName --jq '.headRefName' 2>/dev/null || echo "")
+          base_branch=$(gh pr view "$pr_number" --repo "$GITHUB_REPOSITORY" --json baseRefName --jq '.baseRefName' 2>/dev/null || echo "dev")
+
+          echo "pr-url=$pr_url" >> "$GITHUB_OUTPUT"
+          echo "pr-number=$pr_number" >> "$GITHUB_OUTPUT"
+          echo "head-branch=$head_branch" >> "$GITHUB_OUTPUT"
+          echo "base-branch=$base_branch" >> "$GITHUB_OUTPUT"
+
+          echo "Discovered PR: $pr_url (head=$head_branch, base=$base_branch)"
+
+      - name: Apply testing label on issue (Module 6 active)
+        env:
+          GH_TOKEN: ${{ secrets.CLAUDE_DEV_PAT }}
+          NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -eu
+          gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "testing" || true
+
+      - name: Run test composite (Codex engine)
+        id: test
+        uses: ./.github/actions/test
+        with:
+          issue-number: ${{ github.event.issue.number }}
+          pr-url: ${{ steps.pr.outputs.pr-url }}
+          pr-number: ${{ steps.pr.outputs.pr-number }}
+          head-branch: ${{ steps.pr.outputs.head-branch }}
+          base-branch: ${{ steps.pr.outputs.base-branch }}
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          api-key: ${{ secrets.OPENAI_API_KEY }}
+          model: ${{ vars.TEST_MODEL }}
+          max-turns: ${{ vars.TEST_MAX_TURNS || '10' }}
+          context-budget-paths: ${{ vars.TEST_CONTEXT_PATHS || '' }}
+
+      - name: Post test report audit comment on PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.pr.outputs.pr-number }}
+          STATUS: ${{ steps.test.outputs.test-status }}
+          REPORT: ${{ steps.test.outputs.test-report }}
+          SHA: ${{ steps.test.outputs.commit-sha }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -eu
+          icon="✅"
+          if [ "$STATUS" = "failed" ]; then icon="❌"; fi
+
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(cat <<AUDIT_EOF
+          $icon **Test: \`$STATUS\`**
+
+          | Field | Value |
+          |---|---|
+          | Issue | #$ISSUE_NUMBER |
+          | Commit | \`${SHA:0:12}\` |
+          | Workflow run | $RUN_URL |
+
+          ## Test report
+
+          $REPORT
+
+          ---
+          Triggered by test (Module 6) | Engine: Codex (out-of-distribution tester, PRD §4)
+          AUDIT_EOF
+          )"
+
+      - name: Post audit comment on issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NUMBER: ${{ github.event.issue.number }}
+          STATUS: ${{ steps.test.outputs.test-status }}
+          REPORT: ${{ steps.test.outputs.test-report }}
+          PR_URL: ${{ steps.pr.outputs.pr-url }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -eu
+          icon="✅"
+          if [ "$STATUS" = "failed" ]; then icon="❌"; fi
+
+          gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(cat <<AUDIT_EOF
+          $icon **Test: \`$STATUS\`**
+
+          | Field | Value |
+          |---|---|
+          | PR | $PR_URL |
+          | Workflow run | $RUN_URL |
+
+          $REPORT
+          AUDIT_EOF
+          )"
+
+      - name: Transition labels (passed → tested)
+        if: steps.test.outputs.test-status == 'passed'
+        env:
+          GH_TOKEN: ${{ secrets.CLAUDE_DEV_PAT }}
+          NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -eu
+          # PR #16 lesson: use CLAUDE_DEV_PAT so downstream workflows fire.
+          gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "testing" || true
+          gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "tested"
+
+      - name: Transition labels (failed → test:failed)
+        if: steps.test.outputs.test-status == 'failed'
+        env:
+          GH_TOKEN: ${{ secrets.CLAUDE_DEV_PAT }}
+          NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -eu
+          gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "testing" || true
+          gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "test:failed"
+
+      - name: Comment failure details on PR (test:failed)
+        if: steps.test.outputs.test-status == 'failed'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.pr.outputs.pr-number }}
+          REPORT: ${{ steps.test.outputs.test-report }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -eu
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(cat <<PR_BODY
+          ❌ **Test failed**
+
+          The test suite did not pass. See the test report below.
+
+          ## Failures
+
+          $REPORT
+
+          ---
+          [Workflow run]($RUN_URL) | Triggered by test (Module 6)
+          PR_BODY
+          )"
+
+  on-failure:
+    needs: test
+    if: ${{ always() && needs.test.result == 'failure' }}
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Mark stage:failed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NUMBER: ${{ github.event.issue.number }}
+        run: |
+          if [ -z "$NUMBER" ]; then
+            echo "::warning::No issue number on this event."
+            exit 0
+          fi
+          gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "stage:failed" || true
+          gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --body "⚠️ Test job failed (infrastructure/engine error — not a test failure). See [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details. A maintainer will triage manually." || true

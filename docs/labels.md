@@ -31,10 +31,10 @@ stateDiagram-v2
     Accepted --> InDevelopment: develop workflow picks up
     DesignApproved --> InDevelopment
     InDevelopment --> Verifying: branch pushed
-    Verifying --> Testing: self-verify passed
-    Verifying --> InDevelopment: self-verify failed
-    Testing --> ReadyForPR: tests passed
-    Testing --> Verifying: tests failed
+    Verifying --> Testing: self-verify passed (verified)
+    Verifying --> InDevelopment: self-verify failed (verify:failed)
+    Testing --> ReadyForPR: tests passed (tested)
+    Testing --> Testing: tests failed (test:failed → maintainer triage)
     ReadyForPR --> InReview: PR opened
     InReview --> Merged: approved + checks green
     InReview --> ReadyForPR: changes requested
@@ -116,7 +116,9 @@ DENY_LIST, AC-V2-8b race guard, AC-V2-13a log-scan).
 | `verifying` | Module 5 (self-verify) active | self-verify workflow | self-verify workflow | → `verified` \| `verify:failed` |
 | `verified` | Module 5 self-verify passed | self-verify workflow | test workflow | → `testing` |
 | `verify:failed` | Module 5 self-verify failed; needs maintainer review | self-verify workflow | maintainer | → maintainer triage |
-| `testing` | Module 6 (test) active | self-verify workflow | test workflow | — |
+| `testing` | Module 6 (test) active | test workflow | test workflow | → `tested` \| `test:failed` |
+| `tested` | Module 6 test passed | test workflow | pr-open workflow | → `ready-for-pr` |
+| `test:failed` | Module 6 test failed; needs maintainer review | test workflow | maintainer | → maintainer triage |
 | `ready-for-pr` | Tests passed; PR may be opened | test workflow | pr-open workflow | — |
 | `in-review` | PR opened, Module 8 active | pr-open workflow | review workflow | — |
 | `merged` | Module 9 complete | merge-queue workflow | — | Terminal |
