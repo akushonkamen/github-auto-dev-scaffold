@@ -143,110 +143,77 @@ runs:
           echo "context_paths=" >> "$GITHUB_OUTPUT"
         fi
 
-    - name: Run tests via Codex (out-of-distribution tester, PRD §4)
+    - name: Run tests via Codex (PRD §4 out-of-distribution tester)
+      if: inputs.engine == 'codex'
+      id: codex-engine
+      uses: openai/codex-action@v1
+      with:
+        openai_api_key: ${{ inputs.api-key }}
+        github_token: ${{ inputs.repo-token }}
+        permission_profile: workspace-write
+        prompt: |
+          You are the test module of the GithubAutoDev pipeline (Module 6).
+
+          Issue #${{ inputs.issue-number }}: ${{ steps.context.outputs.title }}
+          URL: ${{ steps.context.outputs.url }}
+
+          ## Issue body (acceptance criteria source)
+          ${{ steps.context.outputs.body }}
+
+          ## PR diff (implementation to test)
+          ```diff
+          ${{ steps.context.outputs.diff }}
+          ```
+
+          ## Task
+          Run the existing test suite. If coverage gaps exist for the issue acceptance
+          criteria, ADD tests. Do NOT modify non-test files. Report pass/fail per test.
+
+          ## Hard rules
+          1. Run existing tests first (npm test, pytest, cargo test, etc. — detect the project type).
+          2. If acceptance criteria are not covered by existing tests, write new test files.
+          3. Do NOT modify production/source files — only test files.
+          4. Report each test's status (pass/fail) in the test_report.
+          5. Never print tokens, API keys, or environment variable values (S4).
+          6. MANDATORY: When finished, write the final JSON result to a file named `codex-test-output.json`
+             in the workspace root. This file is the ONLY way the pipeline reads your results.
+             If this file is missing, the pipeline treats the run as a failure.${{ steps.cfg.outputs.context_paths && format('
+          7. Allowed paths: {0}', steps.cfg.outputs.context_paths) || '' }}
+
+          ## Output — write this EXACT JSON to `codex-test-output.json`:
+          {
+            "test_status": "passed" | "failed",
+            "test_report": "<maintainer-readable report, max 2000 chars>",
+            "failures": ["<specific test that failed>", ...],
+            "tests_added": <count of new test files added, 0 if none>
+          }
+
+          After completing all work, write the JSON result to the file `codex-test-output.json`
+          in the workspace root.
+
+    - name: Collect Codex structured output
       if: inputs.engine == 'codex'
       id: codex-run
       shell: bash
-      env:
-        OPENAI_API_KEY: ${{ inputs.api-key }}
-        MODEL: ${{ steps.cfg.outputs.model }}
-        MAX_TURNS: ${{ steps.cfg.outputs.max-turns }}
-        SCHEMA: ${{ steps.cfg.outputs.schema }}
       run: |
         set -euo pipefail
-
-        # Codex CLI invocation (PRD §4 — out-of-distribution tester).
-        # S5: permission-profile: workspace-write. Allows reading files,
-        # running test commands, and writing test files.
-        # NEVER danger-full-access (S5 red line).
-
-        # If Codex CLI is not pre-installed on ubuntu-latest, install it:
-        if ! command -v codex >/dev/null 2>&1; then
-          echo "::notice::Codex CLI not found on runner. Attempting npm install..."
-          npm install -g @openai/codex-cli 2>/dev/null || {
-            echo "::warning::Could not install Codex CLI. The @openai/codex-cli package may not be publicly available yet."
-            echo "::warning::Falling back to a no-op — test passes with a notice to maintainer."
-            cat > /tmp/codex-output.json <<'FALLBACK'
-        {"test_status":"passed","test_report":"Codex CLI not available on runner (npm @openai/codex-cli not found). Manual test run required. No automated tests executed.","failures":[],"tests_added":0}
-        FALLBACK
-            echo "codex-output=$(cat /tmp/codex-output.json)" >> "$GITHUB_OUTPUT"
-            exit 0
-          }
+        if [ -f codex-test-output.json ]; then
+          raw=$(cat codex-test-output.json)
+          if printf '%s' "$raw" | jq -e '
+            (.test_status == "passed" or .test_status == "failed")
+            and (.test_report | type == "string" and length <= 2000)
+            and (.failures | type == "array")
+            and (.tests_added | type == "number" and . >= 0)
+          ' >/dev/null 2>&1; then
+            echo "codex-output=${raw}" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Codex output file did not match the sealed {test_status, test_report, failures, tests_added} schema."
+            echo 'codex-output={"test_status":"failed","test_report":"Codex output schema mismatch — see workflow run logs.","failures":["Schema validation failed"],"tests_added":0}' >> "$GITHUB_OUTPUT"
+          fi
+        else
+          echo "::error::Codex did not produce codex-test-output.json — the test module cannot proceed. Run logs should be inspected for engine errors."
+          echo 'codex-output={"test_status":"failed","test_report":"Codex engine did not produce structured output (codex-test-output.json missing). Manual test run required.","failures":["Codex output file missing"],"tests_added":0}' >> "$GITHUB_OUTPUT"
         fi
-
-        # Build the prompt (embedded in a temp file to avoid shell escaping issues)
-        cat > /tmp/codex-prompt.txt <<'PROMPT_EOF'
-        You are the test module of the GithubAutoDev pipeline (Module 6).
-
-        Issue #${{ inputs.issue-number }}: ${{ steps.context.outputs.title }}
-        URL: ${{ steps.context.outputs.url }}
-
-        ## Issue body (acceptance criteria source)
-        ${{ steps.context.outputs.body }}
-
-        ## PR diff (implementation to test)
-        ```diff
-        ${{ steps.context.outputs.diff }}
-        ```
-
-        ## Task
-        Run the existing test suite. If coverage gaps exist for the issue acceptance
-        criteria, ADD tests. Do NOT modify non-test files. Report pass/fail per test.
-
-        ## Rules
-        1. Run existing tests first (npm test, pytest, cargo test, etc. — detect the project type).
-        2. If acceptance criteria are not covered by existing tests, write new test files.
-        3. Do NOT modify production/source files — only test files.
-        4. Report each test's status (pass/fail) in the test_report.
-        5. Never print tokens, API keys, or environment variable values (S4).
-        ${{ steps.cfg.outputs.context_paths && format('Allowed paths: {0}', steps.cfg.outputs.context_paths) || '' }}
-
-        ## Output ONE JSON object (sealed schema):
-        {
-          "test_status": "passed" | "failed",
-          "test_report": "<maintainer-readable report, max 2000 chars>",
-          "failures": ["<specific test that failed>", ...],
-          "tests_added": <count of new test files added, 0 if none>
-        }
-
-        Respond ONLY with the JSON object. No prose, no markdown fences.
-        PROMPT_EOF
-
-        # Invoke Codex CLI with workspace-write permission profile (S5).
-        # The --permission-profile flag enforces S5: Codex can read files,
-        # run test commands, and write test files. It CANNOT bypass sandbox.
-        output=$(codex \
-          --permission-profile workspace-write \
-          --model "$MODEL" \
-          --max-turns "$MAX_TURNS" \
-          --json-schema "$SCHEMA" \
-          --file /tmp/codex-prompt.txt 2>&1) || {
-            rc=$?
-            echo "::warning::Codex CLI exited with code $rc. Output (first 1000 chars):"
-            printf '%s' "$output" | head -c 1000 | sed 's/^/  codex> /'
-            # Emit a fallback structured output so the pipeline doesn't crash
-            cat > /tmp/codex-output.json <<'FALLBACK'
-        {"test_status":"failed","test_report":"Codex CLI exited with non-zero status. See workflow run logs for details.","failures":["Codex CLI error"],"tests_added":0}
-        FALLBACK
-            echo "codex-output=$(cat /tmp/codex-output.json)" >> "$GITHUB_OUTPUT"
-            exit 0
-          }
-
-        # Extract the JSON from Codex output (may be mixed with log lines)
-        printf '%s' "$output" | jq -e '
-          (.test_status == "passed" or .test_status == "failed")
-          and (.test_report | type == "string" and length <= 2000)
-          and (.failures | type == "array")
-          and (.tests_added | type == "number" and . >= 0)
-        ' > /tmp/codex-output.json 2>/dev/null || {
-          echo "::warning::Codex output did not match schema. Raw output (first 500 chars):"
-          printf '%s' "$output" | head -c 500 | sed 's/^/  raw> /'
-          cat > /tmp/codex-output.json <<'FALLBACK'
-        {"test_status":"failed","test_report":"Codex output did not match the expected JSON schema. See workflow run logs.","failures":["Schema validation failed"],"tests_added":0}
-        FALLBACK
-        }
-
-        echo "codex-output=$(cat /tmp/codex-output.json)" >> "$GITHUB_OUTPUT"
 
     - name: Parse engine output
       id: emit
