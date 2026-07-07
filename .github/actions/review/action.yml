@@ -1,0 +1,257 @@
+# Composite action: Module 8 — Review (AI initial review)
+# PRD §2 module 8: AI initial review posts findings as comment. NEVER approves.
+#
+# Module 8 triggers on pull_request.labeled: in-review. This action runs
+# Claude (DeepSeek passthrough) to review the PR diff against CLAUDE.md,
+# docs/security.md (S1-S7), and docs/composite-action-spec.md. Findings are
+# posted as a PR comment. AI NEVER approves (S1 — final approval is human
+# per PRD §6).
+#
+# REQUIRED PERMISSIONS (caller workflow must grant):
+#   contents:        read        (read PR diff + reference docs)
+#   pull-requests:   write       (post review comment on PR)
+#   issues:          write       (post audit comment on issue)
+#
+# S1: NO contents:write — review is read + PR comment only.
+# S5: claude --allowedTools "Read,Grep,Glob,Bash(gh pr:*)" — no Write, no Edit,
+#     no gh pr merge/approve.
+
+name: "Module 8 — Review"
+description: "AI initial review — post findings as PR comment. NEVER approve (PRD §2 module 8)."
+
+inputs:
+  pr-number:
+    description: "PR number to review"
+    required: true
+  issue-number:
+    description: "Linked Issue number"
+    required: true
+  repo-token:
+    description: "CLAUDE_DEV_PAT for PR comment posting (PR #16 lesson)"
+    required: true
+  api-key:
+    description: "Engine provider API key (DEEPSEEK_API_KEY for GLM passthrough)"
+    required: true
+  anthropic-base-url:
+    description: "Anthropic-compatible API base URL. Empty = Anthropic default."
+    required: false
+    default: ""
+  engine:
+    description: "LLM engine (claude | codex)"
+    required: false
+    default: "claude"
+  model:
+    description: "Model ID override"
+    required: false
+    default: ""
+  max-turns:
+    description: "Agent turn cap"
+    required: false
+    default: "12"
+  context-budget-paths:
+    description: "Path allowlist"
+    required: false
+    default: ""
+  dry-run:
+    description: "If true, do not post comment"
+    required: false
+    default: "false"
+
+outputs:
+  review-status:
+    description: "Review result (posted)"
+    value: ${{ steps.emit.outputs.review-status }}
+  audit-comment-url:
+    description: "URL of the review comment posted on the PR"
+    value: ${{ steps.emit.outputs.audit-comment-url }}
+
+runs:
+  using: composite
+  steps:
+    - name: Fetch PR diff + issue context
+      id: context
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.repo-token }}
+        PR_NUMBER: ${{ inputs.pr-number }}
+        ISSUE_NUMBER: ${{ inputs.issue-number }}
+      run: |
+        set -eu
+
+        # Fetch PR diff (first 10000 lines — cap for context budget)
+        diff=$(gh pr diff "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" 2>/dev/null | head -n 10000 || echo "(diff unavailable)")
+        {
+          echo "diff<<DIFF_EOF"
+          printf '%s\n' "$diff"
+          echo "DIFF_EOF"
+        } >> "$GITHUB_OUTPUT"
+
+        # Fetch PR metadata
+        pr_json=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json title,url,headRefName,baseRefName,body 2>/dev/null || echo "{}")
+        pr_title=$(printf '%s' "$pr_json" | jq -r '.title // "(unknown)"')
+        pr_url=$(printf '%s' "$pr_json" | jq -r '.url // "(unknown)"')
+        pr_head=$(printf '%s' "$pr_json" | jq -r '.headRefName // "(unknown)"')
+        pr_base=$(printf '%s' "$pr_json" | jq -r '.baseRefName // "(unknown)"')
+        pr_body=$(printf '%s' "$pr_json" | jq -r '.body // "(empty)"')
+        {
+          echo "pr-title=$pr_title"
+          echo "pr-url=$pr_url"
+          echo "pr-head=$pr_head"
+          echo "pr-base=$pr_base"
+          echo "pr-body<<PR_BODY_EOF"
+          printf '%s\n' "$pr_body"
+          echo "PR_BODY_EOF"
+        } >> "$GITHUB_OUTPUT"
+
+        # Fetch issue body for acceptance criteria context
+        issue_json=$(gh issue view "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --json title,body,url 2>/dev/null || echo "{}")
+        issue_title=$(printf '%s' "$issue_json" | jq -r '.title // "(unknown)"')
+        issue_body=$(printf '%s' "$issue_json" | jq -r '.body // "(empty)"')
+        issue_url=$(printf '%s' "$issue_json" | jq -r '.url // "(unknown)"')
+        {
+          echo "issue-title=$issue_title"
+          echo "issue-url=$issue_url"
+          echo "issue-body<<ISSUE_BODY_EOF"
+          printf '%s\n' "$issue_body"
+          echo "ISSUE_BODY_EOF"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Review via Claude (DeepSeek passthrough)
+      if: inputs.engine == 'claude'
+      id: claude-run
+      uses: anthropics/claude-code-action@v1
+      env:
+        ANTHROPIC_BASE_URL: ${{ inputs.anthropic-base-url }}
+      with:
+        anthropic_api_key: ${{ inputs.api-key }}
+        github_token: ${{ inputs.repo-token }}
+        prompt: |
+          You are Module 8 (Review) of the GithubAutoDev pipeline — AI initial
+          review.  Your job is to review the PR diff for correctness, security,
+          and compliance against the project's reference documents.  You MUST
+          post your findings as a PR comment.
+
+          ## Critical rules (violating any of these is a pipeline bug)
+
+          1. **NEVER approve the PR.**  Final approval is human per PRD §6.
+             Do not use `gh pr review --approve` or any approval mechanism.
+             You may only comment.
+          2. **NEVER request changes or close the PR.**  You are an advisor,
+             not a gatekeeper.
+          3. **NEVER print tokens, API keys, or environment variable values**
+             (S4).  Any key-like pattern in your output is a pipeline failure.
+
+          ## PR context
+
+          | Field | Value |
+          |---|---|
+          | PR number | #${{ inputs.pr-number }} |
+          | PR title | ${{ steps.context.outputs.pr-title }} |
+          | PR URL | ${{ steps.context.outputs.pr-url }} |
+          | Head branch | `${{ steps.context.outputs.pr-head }}` |
+          | Base branch | `${{ steps.context.outputs.pr-base }}` |
+          | Issue | #${{ inputs.issue-number }} — ${{ steps.context.outputs.issue-title }} |
+
+          ## Issue body (acceptance criteria reference)
+
+          ```
+          ${{ steps.context.outputs.issue-body }}
+          ```
+
+          ## PR diff
+
+          ```diff
+          ${{ steps.context.outputs.diff }}
+          ```
+
+          ## Review process
+
+          1. Read the reference documents:
+             - `CLAUDE.md` — architecture map, module structure, security red lines
+             - `docs/security.md` — S1-S7 red lines (these take precedence over every feature)
+             - `docs/composite-action-spec.md` — composite action interface spec
+
+          2. Check the PR diff against:
+             - **Security (S1-S7):** Does the change respect permissions (S1)?
+               Does it gate on `accepted` label (S2)?  Least privilege secrets (S3)?
+               No token exfiltration (S4)?  No sandbox bypass (S5)?
+               PAT handling per S6?  Pipeline-fix escape hatch rules (S7)?
+             - **Correctness:** Does the implementation satisfy the acceptance
+               criteria in the issue body?
+             - **Compliance:** Does it match the composite action spec interface?
+               Does it follow the module pattern (trigger, permissions, on-failure)?
+
+          3. Post your findings as a PR comment using `gh pr comment`:
+             ```
+             gh pr comment ${{ inputs.pr-number }} --body "..."
+             ```
+
+             The comment body must be a structured review:
+
+             > ## 🤖 AI Initial Review (Module 8)
+             >
+             > | Check | Status | Notes |
+             > |---|---|---|
+             > | S1 (permissions) | ✅ / ⚠️ / ❌ | ... |
+             > | S2 (accepted gate) | ✅ / ⚠️ / ❌ | ... |
+             > | S3 (least privilege) | ✅ / ⚠️ / ❌ | ... |
+             > | S4 (no token leak) | ✅ / ⚠️ / ❌ | ... |
+             > | S5 (no sandbox bypass) | ✅ / ⚠️ / ❌ | ... |
+             > | S6 (PAT handling) | ✅ / ⚠️ / ❌ | ... |
+             > | S7 (pipeline-fix) | ✅ / ⚠️ / ❌ | ... |
+             > | Acceptance criteria | ✅ / ⚠️ / ❌ | ... |
+             > | Composite spec compliance | ✅ / ⚠️ / ❌ | ... |
+             >
+             > ### Summary
+             >
+             > <one-paragraph summary of findings>
+             >
+             > ### Detailed findings
+             >
+             > <per-finding detail: what was checked, what was found, severity>
+             >
+             > ---
+             > ⚠️ This is an AI initial review only.  **Final approval is human** (PRD §6).
+             > A CODEOWNER must review and approve before merge.
+             >
+             > 🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+          4. If `${{ inputs.dry-run }}` is `true`, report what you WOULD do but
+             skip any mutating commands (`gh pr comment`).
+
+          ## Output
+
+          After completing the review and posting the comment, report a one-line
+          summary: "AI review posted on PR #${{ inputs.pr-number }}. Findings: N
+          issues noted."
+        max_turns: ${{ inputs.max-turns }}
+        allowed_tools: "Read,Grep,Glob,Bash(gh pr:*)"
+
+    - name: Review via Codex
+      if: inputs.engine == 'codex'
+      id: codex-run
+      uses: openai/codex-action@v1
+      with:
+        openai_api_key: ${{ inputs.api-key }}
+        github_token: ${{ inputs.repo-token }}
+        prompt: |
+          Module 8 (Review).  Review PR #${{ inputs.pr-number }} (issue #${{ inputs.issue-number }})
+          against CLAUDE.md, docs/security.md (S1-S7), docs/composite-action-spec.md.
+          Post findings as structured comment.  NEVER approve.
+          Dry-run: ${{ inputs.dry-run }}.
+        permission_profile: workspace-write
+
+    - name: Emit outputs
+      id: emit
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.repo-token }}
+        PR_NUMBER: ${{ inputs.pr-number }}
+      run: |
+        echo "review-status=posted" >> "$GITHUB_OUTPUT"
+        # Retrieve the last PR comment URL as the audit-comment-url.
+        # The Claude step above posted the review comment, so the
+        # last comment in the array is the one we just created.
+        COMMENT_URL=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+          --json comments --jq '.comments[-1].url // ""' 2>/dev/null || echo "")
+        echo "audit-comment-url=${COMMENT_URL}" >> "$GITHUB_OUTPUT"

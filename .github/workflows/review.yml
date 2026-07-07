@@ -1,0 +1,224 @@
+# Module 8 — Review (AI initial review, NEVER approve)
+#
+# Triggers when `in-review` label is applied to a PR (by Module 7 pr-open).
+# Runs the review composite action with Claude engine (DeepSeek passthrough)
+# to post an AI initial review comment on the PR. AI NEVER approves —
+# final approval is human per PRD §6.
+#
+# SECURITY POSTURE (PRD §7):
+#   - permissions: contents:read + issues:write + pull-requests:write
+#     (S1: NO contents:write — review is read + PR comment only)
+#   - S5: claude --allowedTools "Read,Grep,Glob,Bash(gh pr:*)" — no Write,
+#     no Edit, no gh pr merge/approve
+#   - S4: no secrets printed in workflow; DEEPSEEK_API_KEY never printed
+#   - S3: never writes to main
+#   - PR #16 lesson: label writes use CLAUDE_DEV_PAT (so downstream workflows fire)
+#   - On failure: stage:failed label + failure comment
+#
+# Triggers:
+#   - pull_request.labeled with label == in-review
+
+name: review
+
+on:
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: review-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    if: ${{ github.event.label.name == 'in-review' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      should-run: ${{ steps.gate.outputs.should-run }}
+      issue-number: ${{ steps.issue.outputs.number }}
+    steps:
+      - name: Gate — PR targets dev + head matches claude/issue-*
+        id: gate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          should_run="true"
+          reason=""
+
+          # Fetch PR metadata
+          pr_json=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json baseRefName,headRefName,state 2>/dev/null || echo "{}")
+          base_ref=$(printf '%s' "$pr_json" | jq -r '.baseRefName // ""')
+          head_ref=$(printf '%s' "$pr_json" | jq -r '.headRefName // ""')
+          pr_state=$(printf '%s' "$pr_json" | jq -r '.state // ""')
+
+          if [ "$base_ref" != "dev" ]; then
+            should_run="false"
+            reason="PR base=$base_ref (not dev)"
+          fi
+
+          if ! printf '%s' "$head_ref" | grep -qE '^claude/issue-'; then
+            should_run="false"
+            reason="PR head=$head_ref (does not match claude/issue-*)"
+          fi
+
+          if [ "$pr_state" != "OPEN" ]; then
+            should_run="false"
+            reason="PR state=$pr_state (not OPEN)"
+          fi
+
+          echo "should-run=$should_run" >> "$GITHUB_OUTPUT"
+          echo "reason=$reason" >> "$GITHUB_OUTPUT"
+          echo "Preflight gate: should-run=$should_run reason=$reason"
+
+      - name: Extract issue number from head ref
+        id: issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -eu
+          head_ref=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json headRefName --jq '.headRefName' 2>/dev/null || echo "")
+          number=$(printf '%s' "$head_ref" | sed -nE 's|^claude/issue-([0-9]+)-.*|\1|p')
+          if [ -z "$number" ]; then
+            echo "::warning::Could not extract issue number from head ref: $head_ref"
+            echo "number=" >> "$GITHUB_OUTPUT"
+          else
+            echo "number=$number" >> "$GITHUB_OUTPUT"
+          fi
+
+  review:
+    needs: preflight
+    if: needs.preflight.outputs.should-run == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    timeout-minutes: ${{ fromJSON(vars.REVIEW_TIME_BUDGET_MIN || '20') }}
+    outputs:
+      review-status: ${{ steps.review.outputs.review-status }}
+      audit-comment-url: ${{ steps.review.outputs.audit-comment-url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Run review composite (Claude engine)
+        id: review
+        uses: ./.github/actions/review
+        with:
+          pr-number: ${{ github.event.pull_request.number }}
+          issue-number: ${{ needs.preflight.outputs.issue-number }}
+          # PR #16 lesson: pass CLAUDE_DEV_PAT so gh pr comment triggers
+          # downstream events and appears under the developer identity.
+          repo-token: ${{ secrets.CLAUDE_DEV_PAT }}
+          api-key: ${{ secrets.DEEPSEEK_API_KEY }}
+          anthropic-base-url: ${{ vars.ANTHROPIC_BASE_URL }}
+          model: ${{ vars.REVIEW_MODEL }}
+          max-turns: ${{ vars.REVIEW_MAX_TURNS || '12' }}
+          context-budget-paths: ${{ vars.REVIEW_CONTEXT_PATHS || '' }}
+
+      - name: Post audit comment on issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NUMBER: ${{ needs.preflight.outputs.issue-number }}
+          STATUS: ${{ steps.review.outputs.review-status }}
+          COMMENT_URL: ${{ steps.review.outputs.audit-comment-url }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -eu
+
+          if [ -z "$NUMBER" ]; then
+            echo "::warning::No issue number — skipping audit comment."
+            exit 0
+          fi
+
+          gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(cat <<AUDIT_EOF
+          🤖 **AI Initial Review: \`$STATUS\`**
+
+          | Field | Value |
+          |---|---|
+          | PR | #$PR_NUMBER |
+          | Review comment | $COMMENT_URL |
+          | Workflow run | $RUN_URL |
+
+          The AI has posted an initial review as a PR comment.  This is an
+          **advisory review only** — AI does NOT approve.  A CODEOWNER must
+          perform the final human review and approve (PRD §6).
+
+          Next: Module 9 (merge queue) triggers on approved + green checks.
+          AUDIT_EOF
+          )"
+
+      - name: Post in-review confirmation on PR
+        env:
+          GH_TOKEN: ${{ secrets.CLAUDE_DEV_PAT }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          ISSUE_NUMBER: ${{ needs.preflight.outputs.issue-number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -eu
+
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(cat <<REVIEW_BODY
+          📋 **Review in progress**
+
+          | Field | Value |
+          |---|---|
+          | Issue | #$ISSUE_NUMBER |
+          | AI initial review | ✅ Posted above |
+          | Human review | ⏳ Pending (CODEOWNERS auto-requested) |
+          | Workflow run | $RUN_URL |
+
+          ---
+          AI review is advisory only.  A human CODEOWNER must approve before
+          merge (PRD §6).
+          REVIEW_BODY
+          )"
+
+  on-failure:
+    needs: [preflight, review]
+    if: ${{ always() && (needs.preflight.result == 'failure' || needs.review.result == 'failure') }}
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Extract issue number from head ref
+        id: issue
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -eu
+          head_ref=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json headRefName --jq '.headRefName' 2>/dev/null || echo "")
+          number=$(printf '%s' "$head_ref" | sed -nE 's|^claude/issue-([0-9]+)-.*|\1|p')
+          if [ -z "$number" ]; then
+            echo "::warning::Could not extract issue number from head ref: $head_ref"
+            echo "number=" >> "$GITHUB_OUTPUT"
+          else
+            echo "number=$number" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Mark stage:failed
+        if: steps.issue.outputs.number != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NUMBER: ${{ steps.issue.outputs.number }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "stage:failed" || true
+          gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --body "⚠️ Review job failed (infrastructure/engine error — not a review rejection). See [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details. A maintainer will triage manually." || true
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --body "⚠️ AI review job failed. A maintainer will review manually. See [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details." || true

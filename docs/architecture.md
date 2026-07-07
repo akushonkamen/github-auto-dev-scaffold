@@ -54,7 +54,7 @@ Issue opened
 | 5 Self-verify | Claude Code (GLM passthrough, v2) | `pull_request.opened` / `.synchronize` on `claude/issue-*` branches targeting `dev` | verify report + `verified` / `verify:failed` label (shipped) |
 | 6 Test | Codex (out-of-distribution tester, PRD §4) | `issues.labeled: verified` | test report + `tested` / `test:failed` label (shipped) |
 | 7 PR open | Claude Code (GLM passthrough) | `issues.labeled: tested` | ready-for-review comment + `in-review` label on PR ✅ LIVE |
-| 8 Review | Claude Code + CODEOWNERS | `pull_request.opened` | Approve / Request changes |
+| 8 Review | Claude Code + CODEOWNERS | `pull_request.labeled: in-review` | AI initial review comment + human approval via CODEOWNERS ✅ LIVE |
 | 9 Merge | GitHub Merge Queue | status checks + approval | Merge + Issue close |
 
 See [`docs/labels.md`](labels.md) for the protocol layer, [`docs/composite-action-spec.md`](composite-action-spec.md) for action interfaces, and `CLAUDE.md` for the AI agent map.
