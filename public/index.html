@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GithubAutoDev</title>
+  <style>
+    :root {
+      --bg: #ffffff;
+      --text: #1a1a2e;
+      --nav-bg: #f8f9fa;
+      --nav-border: #dee2e6;
+      --toggle-bg: #e9ecef;
+      --toggle-hover: #dee2e6;
+      --brand: #4a6cf7;
+    }
+
+    [data-theme="dark"] {
+      --bg: #1a1a2e;
+      --text: #e4e4e7;
+      --nav-bg: #16213e;
+      --nav-border: #2a2a4a;
+      --toggle-bg: #2a2a4a;
+      --toggle-hover: #3a3a5a;
+      --brand: #6d8aff;
+    }
+
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+      background-color: var(--bg);
+      color: var(--text);
+      transition: background-color 0.3s ease, color 0.3s ease;
+      min-height: 100vh;
+    }
+
+    nav {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.75rem 1.5rem;
+      background-color: var(--nav-bg);
+      border-bottom: 1px solid var(--nav-border);
+      transition: background-color 0.3s ease, border-color 0.3s ease;
+    }
+
+    .nav-brand {
+      font-size: 1.25rem;
+      font-weight: 700;
+      color: var(--brand);
+      text-decoration: none;
+    }
+
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 1.5rem;
+      list-style: none;
+    }
+
+    .nav-links a {
+      color: var(--text);
+      text-decoration: none;
+      font-size: 0.95rem;
+      transition: color 0.2s ease;
+    }
+
+    .nav-links a:hover {
+      color: var(--brand);
+    }
+
+    .theme-toggle {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.4rem 0.75rem;
+      border: 1px solid var(--nav-border);
+      border-radius: 1.5rem;
+      background-color: var(--toggle-bg);
+      color: var(--text);
+      cursor: pointer;
+      font-size: 0.85rem;
+      transition: background-color 0.2s ease, border-color 0.2s ease;
+    }
+
+    .theme-toggle:hover {
+      background-color: var(--toggle-hover);
+    }
+
+    .theme-toggle .icon {
+      font-size: 1.1rem;
+      line-height: 1;
+    }
+
+    main {
+      max-width: 800px;
+      margin: 3rem auto;
+      padding: 0 1.5rem;
+      text-align: center;
+    }
+
+    main h1 {
+      font-size: 2rem;
+      margin-bottom: 1rem;
+    }
+
+    main p {
+      font-size: 1.1rem;
+      opacity: 0.8;
+    }
+  </style>
+</head>
+<body>
+  <nav>
+    <a class="nav-brand" href="#">GithubAutoDev</a>
+    <ul class="nav-links">
+      <li><a href="#">Home</a></li>
+      <li><a href="#">Docs</a></li>
+      <li><a href="#">About</a></li>
+      <li>
+        <button class="theme-toggle" id="themeToggle" aria-label="Toggle dark mode" title="Toggle dark mode">
+          <span class="icon" id="toggleIcon">🌙</span>
+          <span id="toggleLabel">Dark</span>
+        </button>
+      </li>
+    </ul>
+  </nav>
+
+  <main>
+    <h1>Welcome to GithubAutoDev</h1>
+    <p>AI-driven Issue → Merge automation pipeline.</p>
+  </main>
+
+  <script>
+    (function () {
+      const html = document.documentElement;
+      const toggle = document.getElementById('themeToggle');
+      const icon = document.getElementById('toggleIcon');
+      const label = document.getElementById('toggleLabel');
+
+      // Load saved preference or default to light
+      const saved = localStorage.getItem('theme');
+      if (saved === 'dark') {
+        html.setAttribute('data-theme', 'dark');
+        icon.textContent = '☀️';
+        label.textContent = 'Light';
+      }
+
+      toggle.addEventListener('click', () => {
+        const current = html.getAttribute('data-theme');
+        if (current === 'dark') {
+          html.setAttribute('data-theme', 'light');
+          icon.textContent = '🌙';
+          label.textContent = 'Dark';
+          localStorage.setItem('theme', 'light');
+        } else {
+          html.setAttribute('data-theme', 'dark');
+          icon.textContent = '☀️';
+          label.textContent = 'Light';
+          localStorage.setItem('theme', 'dark');
+        }
+      });
+    })();
+  </script>
+</body>
+</html>
