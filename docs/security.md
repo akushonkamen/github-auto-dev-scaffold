@@ -111,3 +111,33 @@ If a workflow is observed behaving as if compromised (unexpected PR creation, ma
 2. Revoke the `GITHUB_TOKEN` (auto-rotates, but verify) and any provider API key in the run.
 3. Open a `type:incident` issue linking the run URL.
 4. Post-mortem in `docs/incidents/<date>-<slug>.md`.
+
+## S7 — Pipeline-fix escape hatch (dogfooding rule enforcement)
+
+**Dogfooding rule (PRD §8 item 4 + project spec 2026-07-07):** every change to this repository — including bug fixes, module implementations, docs, and tests — must flow through the Issue → triage → clarify → develop → PR pipeline. No direct pushes to `dev` or `main`, including by maintainers.
+
+**Enforcement:**
+
+- Branch protection on `dev` and `main` (delivered by issue #15) blocks all direct pushes.
+- A CI check on every PR targeting `dev`/`main` verifies head ref matches `claude/issue-*` OR the PR carries the `pipeline-fix` label.
+
+**`pipeline-fix` label (the sanctioned bypass):**
+
+When the pipeline itself is broken (e.g., a runtime bug in triage/clarify/develop prevents the autonomous loop from processing an issue that would fix the loop), the maintainer may open a PR directly with the `pipeline-fix` label. This is the **only** sanctioned bypass.
+
+**Constraints:**
+
+- Maintainer-applied only. Bot/AI cannot apply `pipeline-fix`.
+- PR scope MUST be limited to `.github/workflows/`, `.github/actions/`, or `docs/security.md` (the pipeline itself).
+- Audit comment on the linked issue is mandatory — explains what was broken and why the escape hatch was used.
+- Self-review required (reviewer = PR author); merge requires the `pipeline-fix` label be present at merge time.
+
+**Example recovery scenario:**
+
+> 2026-07-07 — Triage auto-accept used `secrets.GITHUB_TOKEN` to apply the `accepted` label. Per GitHub's hard rule, `GITHUB_TOKEN`-sourced events don't fire downstream workflows, so `develop.yml` never triggered. The dogfood issue #15 was stuck. Pipeline-fix PR #N (this commit) switched lines 116 + 132 to `CLAUDE_DEV_PAT`. After merge, issue #15 was re-triggered via label re-apply and the autonomous loop completed.
+
+**Forbidden:**
+
+- Never use `pipeline-fix` for non-pipeline changes (features, docs polish, tests).
+- Never bypass the audit comment requirement.
+- Never let the `pipeline-fix` label be applied by anyone other than the maintainer of record.
