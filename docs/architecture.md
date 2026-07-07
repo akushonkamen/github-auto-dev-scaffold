@@ -53,7 +53,7 @@ Issue opened
 | 4 Develop | Claude Code (GLM passthrough) | `labeled: accepted` OR `accepted-by-claude` | feature branch + PR (CLAUDE_DEV_PAT as PR opener) |
 | 5 Self-verify | Claude Code (GLM passthrough, v2) | `pull_request.opened` / `.synchronize` on `claude/issue-*` branches targeting `dev` | verify report + `verified` / `verify:failed` label (shipped) |
 | 6 Test | Codex (out-of-distribution tester, PRD §4) | `issues.labeled: verified` | test report + `tested` / `test:failed` label (shipped) |
-| 7 PR open | Claude Code | Module 6 passed | Draft / ready PR |
+| 7 PR open | Claude Code (GLM passthrough) | `issues.labeled: tested` | ready-for-review comment + `in-review` label on PR ✅ LIVE |
 | 8 Review | Claude Code + CODEOWNERS | `pull_request.opened` | Approve / Request changes |
 | 9 Merge | GitHub Merge Queue | status checks + approval | Merge + Issue close |
 
