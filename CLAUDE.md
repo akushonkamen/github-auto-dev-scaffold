@@ -82,6 +82,7 @@ any of them, the red line wins.
 - **S3** — AI code never lands on `main`. Secrets scoped per-module, never workflow-global.
 - **S4** — AI must never print tokens, API keys, or environment values.
 - **S5** — No sandbox bypass. Codex uses `permission-profile: workspace-write` (never `danger-full-access`). Claude uses `--allowedTools` whitelist (never `--dangerously-skip-permissions`).
+- **S6** — Personal access token (PAT) handling. Fine-grained PAT only, single-repo scope, minimal permissions, time-bounded (max 90 days), audit log monitoring. Classic PATs forbidden. See [`docs/security.md`](docs/security.md) §S6.
 - **S7** — Pipeline-fix escape hatch. The dogfooding rule (all changes via Issue→PR pipeline) is enforced by branch protection on `dev`/`main`. The single sanctioned bypass is the `pipeline-fix` label on a direct PR, applied by the maintainer, scoped to `.github/workflows/` + `.github/actions/` + `docs/security.md`, with mandatory audit comment. See [`docs/security.md`](docs/security.md) §S7.
 
 See [`docs/security.md`](docs/security.md) for the operational playbook and incident response.

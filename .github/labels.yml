@@ -148,6 +148,10 @@ labels:
     color: "5319e7"
     description: "Force manual triage mode for this issue (overrides TRIAGE_MODE)"
     category: force
+  - name: pipeline-fix
+    color: "5319e7"
+    description: "Pipeline-fix escape hatch: sanctioned bypass for fixing broken pipeline (maintainer only, S7)"
+    category: force
 
   # ── meta (administrative) ────────────────────────────────────────────────
   - name: "meta:duplicate"

@@ -146,6 +146,7 @@ Auto-applied by Issue Forms. Maintainers may rewrite.
 | Label | Description | Precedence |
 |---|---|---|
 | `force-manual` | Force `manual` triage mode for this issue regardless of `TRIAGE_MODE` repo variable | beats `auto` and `hybrid` global settings (PRD §3) |
+| `pipeline-fix` | Pipeline-fix escape hatch: sanctioned bypass for fixing broken pipeline (maintainer only) | allows direct PR to `dev`/`main` scoped to `.github/workflows/` + `.github/actions/` + `docs/security.md`; audit comment mandatory (S7) |
 
 ### meta:* (administrative)
 
