@@ -128,19 +128,28 @@ Every module action shares these inputs and outputs so they compose uniformly. M
 | Label transitions | `verified` → `testing` → `tested` (passed) or `test:failed` (failed) |
 | S5 enforcement | Codex `permission-profile: workspace-write` (NEVER `danger-full-access`) |
 
-### Module 7/8 — pr-open + review (`/.github/actions/pr-open/`)
+### Module 7 — pr-open (`/.github/actions/pr-open/`)
+
+> **Shipped.** Locates the existing PR (opened by Module 4 develop), posts a ready-for-review comment, and applies `in-review` label. Does NOT create a second PR.
 
 | Aspect | Value |
 |---|---|
-| Description | Open PR with linked-issue body, then run AI initial review |
-| Trigger | Module 6 passed (open); `pull_request.opened` (review) |
-| Inputs | common + `branch-name` (required), `issue-number` (required), `draft` (default `true`) |
+| Description | Locate existing PR, post ready-for-review comment with test workflow run link, apply `in-review` label to the PR |
+| Trigger | `issues.labeled: tested` (Module 6 passed) |
+| Inputs | common + `branch-name` (required), `issue-number` (required), `pr-number` (required), `pr-url` (required), `workflow-run-url` (optional), `anthropic-base-url` (optional) |
 | Outputs | common + `pr-url`, `pr-number` |
-| Secrets | `repo-token`, `api-key` |
-| Permissions | `contents: read`, `pull-requests: write` |
+| Secrets | `repo-token` (CLAUDE_DEV_PAT for downstream workflow triggers per PR #16), `api-key` (DEEPSEEK_API_KEY for GLM passthrough) |
+| Permissions | `contents: read`, `pull-requests: write`, `issues: write` (PRD S1 — NO contents:write) |
 | Runner | `ubuntu-latest` |
-| Idempotency | Re-run edits existing PR body |
-| Failure | Apply `stage:failed` |
+| Caches | none |
+| Idempotency | Re-run reposts ready-for-review comment; `gh pr edit --add-label in-review` is idempotent |
+| Failure | Apply `stage:failed`; comment with run URL |
+| S5 enforcement | Claude `--allowedTools "Read,Grep,Glob,Bash(gh pr:*)"` — no Write, no Edit, no `gh pr create` allowed via prompt guard |
+| Label transitions | Applies `in-review` to the PR (triggers Module 8 review). Issue stays `tested` until merge per `docs/labels.md`. |
+
+### Module 8 — review (out of scope, separate issue)
+
+Module 8 triggers on `pull_request.labeled: in-review` and runs AI initial review + CODEOWNERS human review. Deferred to a separate dogfood issue.
 
 ### Module 9 — merge (workflow only, no composite action)
 

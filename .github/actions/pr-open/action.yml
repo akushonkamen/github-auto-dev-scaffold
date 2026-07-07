@@ -1,29 +1,43 @@
-# Composite action: Module 7/8 (PR open + AI review)
-# PRD §2 modules 7 and 8 combined — both run on PR events and share tokens.
+# Composite action: Module 7 — PR open
+# PRD §2 module 7: locate existing PR, post ready-for-review comment, apply in-review label.
+#
+# Module 8 (AI review) is a separate module triggered by pull_request.labeled: in-review.
+# This action does NOT run initial review — that is deferred to Module 8 per PRD §2.
 #
 # REQUIRED PERMISSIONS (caller workflow must grant):
 #   contents:        read
-#   pull-requests:   write       (open PR, post review findings)
-name: "Modules 7+8 — PR open and AI review"
-description: "Open PR with linked-issue body, then run AI initial review (PRD §2 modules 7+8)."
+#   pull-requests:   write       (post PR comment, apply in-review label)
+#   issues:          write       (post audit comment on issue)
+name: "Module 7 — PR open"
+description: "Locate existing PR, post ready-for-review comment, apply in-review label (PRD §2 module 7)."
 
 inputs:
   branch-name:
-    description: "Feature branch to open PR from"
+    description: "Feature branch of the existing PR (claude/issue-N-…)"
     required: true
   issue-number:
     description: "Linked Issue number"
     required: true
-  draft:
-    description: "Open as draft PR (default true per PRD §6 人工介入点)"
+  pr-number:
+    description: "Existing PR number (discovered by caller workflow)"
+    required: true
+  pr-url:
+    description: "Existing PR URL (discovered by caller workflow)"
+    required: true
+  workflow-run-url:
+    description: "URL of the triggering workflow run (for ready-for-review comment)"
     required: false
-    default: "true"
+    default: ""
   repo-token:
-    description: "GITHUB_TOKEN (pull-requests:write)"
+    description: "CLAUDE_DEV_PAT so gh pr edit --add-label triggers downstream workflows (PR #16 lesson)"
     required: true
   api-key:
-    description: "Engine provider API key"
+    description: "Engine provider API key (DEEPSEEK_API_KEY for GLM passthrough)"
     required: true
+  anthropic-base-url:
+    description: "Anthropic-compatible API base URL. Empty = Anthropic default."
+    required: false
+    default: ""
   engine:
     description: "LLM engine (claude | codex)"
     required: false
@@ -35,13 +49,13 @@ inputs:
   max-turns:
     description: "Agent turn cap"
     required: false
-    default: "12"
+    default: "8"
   context-budget-paths:
     description: "Path allowlist"
     required: false
     default: ""
   dry-run:
-    description: "If true, do not open PR"
+    description: "If true, do not modify PR"
     required: false
     default: "false"
 
@@ -50,49 +64,124 @@ outputs:
     description: "Lifecycle stage reached (in-review)"
     value: ${{ steps.emit.outputs.stage }}
   audit-comment-url:
-    description: "URL of the audit comment"
+    description: "URL of the ready-for-review PR comment"
     value: ${{ steps.emit.outputs.audit-comment-url }}
   pr-url:
-    description: "URL of the opened PR"
+    description: "URL of the PR"
     value: ${{ steps.emit.outputs.pr-url }}
   pr-number:
-    description: "Number of the opened PR"
+    description: "Number of the PR"
     value: ${{ steps.emit.outputs.pr-number }}
 
 runs:
   using: composite
   steps:
-    - name: Open PR + initial review via Claude
+    - name: PR open via Claude
       if: inputs.engine == 'claude'
       id: claude-run
       uses: anthropics/claude-code-action@v1
+      env:
+        ANTHROPIC_BASE_URL: ${{ inputs.anthropic-base-url }}
       with:
         anthropic_api_key: ${{ inputs.api-key }}
         github_token: ${{ inputs.repo-token }}
         prompt: |
-          Open a PR from ${{ inputs.branch-name }} into main.
-          Link Issue #${{ inputs.issue-number }}. Body must contain:
-          Summary, Linked Issue, Test plan (PRD §2 module 7 contract).
-          Then run an initial review against CLAUDE.md and post findings as a comment.
-          Never approve — final approval is human (PRD §6 人工介入点 module 8).
+          You are Module 7 (PR open) of the GithubAutoDev pipeline.
+          Your ONLY job is to mark the EXISTING PR as ready for review.
+
+          ## Critical rules (violating any of these is a pipeline bug)
+
+          1. **DO NOT create or open a new PR.**  A PR already exists for this
+             issue (opened by Module 4 develop).  Opening a second PR corrupts
+             the pipeline.
+          2. **DO NOT use `gh pr create`.**  The command is forbidden in this
+             module.  If you feel tempted to create a PR, stop and report the
+             error instead.
+          3. **Never approve the PR.**  Final approval is human (PRD §6).
+
+          ## Existing PR
+
+          | Field | Value |
+          |---|---|
+          | Branch | `${{ inputs.branch-name }}` |
+          | Expected PR number | #${{ inputs.pr-number }} |
+          | Expected PR URL | ${{ inputs.pr-url }} |
+
+          ## Steps (execute in order)
+
+          1. **Locate the existing PR.**  Run:
+             ```
+             gh pr list --head "${{ inputs.branch-name }}" --json number,url,state --jq '.'
+             ```
+             Confirm exactly ONE PR is returned and it matches the expected
+             #${{ inputs.pr-number }}.  If zero or more than one PR is returned,
+             or the number doesn't match, STOP and report the mismatch — do NOT
+             create a new PR.
+
+          2. **Post the ready-for-review comment.**  Use `gh pr comment`:
+             ```
+             gh pr comment ${{ inputs.pr-number }} --body "..."
+             ```
+             The comment body must be:
+
+             > ## ✅ Ready for Review
+             >
+             > All automated checks have passed.  This PR is ready for human review.
+             >
+             > | Check | Status |
+             > |---|---|
+             > | Self-verify (Module 5) | ✅ Passed |
+             > | Test (Module 6) | ✅ Passed |
+             >
+             > [View workflow run](${{ inputs.workflow-run-url }})
+             >
+             > ---
+             > 🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+          3. **Apply `in-review` label to the PR** (NOT the issue — the issue
+             stays `tested` until merge per `docs/labels.md`):
+             ```
+             gh pr edit ${{ inputs.pr-number }} --add-label "in-review"
+             ```
+
+          4. If `${{ inputs.dry-run }}` is `true`, report what you WOULD do at
+             each step but skip any mutating commands (`gh pr comment`,
+             `gh pr edit`).
+
+          ## Output
+
+          After completing the steps, report a one-line summary:
+          "PR #${{ inputs.pr-number }} marked ready for review. in-review label applied."
         max_turns: ${{ inputs.max-turns }}
         allowed_tools: "Read,Grep,Glob,Bash(gh pr:*)"
 
-    - name: Open PR + initial review via Codex
+    - name: PR open via Codex
       if: inputs.engine == 'codex'
       id: codex-run
       uses: openai/codex-action@v1
       with:
         openai_api_key: ${{ inputs.api-key }}
         github_token: ${{ inputs.repo-token }}
-        prompt: "Open PR from ${{ inputs.branch-name }}; link Issue #${{ inputs.issue-number }}; review."
+        prompt: |
+          Module 7 (PR open).  Locate existing PR #${{ inputs.pr-number }} on
+          branch ${{ inputs.branch-name }}.  DO NOT create a second PR.
+          Post ready-for-review comment, apply in-review label.  Dry-run: ${{ inputs.dry-run }}.
         permission_profile: workspace-write
 
     - name: Emit outputs
       id: emit
       shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.repo-token }}
+        PR_NUMBER: ${{ inputs.pr-number }}
+        PR_URL: ${{ inputs.pr-url }}
       run: |
         echo "stage=in-review" >> "$GITHUB_OUTPUT"
-        echo "audit-comment-url=" >> "$GITHUB_OUTPUT"
-        echo "pr-url=" >> "$GITHUB_OUTPUT"
-        echo "pr-number=" >> "$GITHUB_OUTPUT"
+        echo "pr-url=${PR_URL}" >> "$GITHUB_OUTPUT"
+        echo "pr-number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
+        # Retrieve the last PR comment URL as the audit-comment-url.
+        # The Claude step above posted the ready-for-review comment, so the
+        # last comment in the array is the one we just created.
+        COMMENT_URL=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+          --json comments --jq '.comments[-1].url // ""' 2>/dev/null || echo "")
+        echo "audit-comment-url=${COMMENT_URL}" >> "$GITHUB_OUTPUT"
