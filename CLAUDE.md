@@ -57,7 +57,7 @@ those directories**; the Issue/PR will name the directories that matter.
 | 3.5 | Design review | Claude (+human) | size:XL accepted | `design-approved` |
 | 4 | Develop | Claude (GLM passthrough) | `labeled: accepted` \| `accepted-by-claude` | feature branch + PR |
 | 5 | Self-verify | Claude (GLM passthrough, v2) | branch push (PR opened on claude/issue-*) | verify report + `verified` / `verify:failed` label (shipped) |
-| 6 | Test | Codex + CI | Module 5 passed | test report |
+| 6 | Test | Claude (second isolated process, tool-restricted tester — PRD §4 amendment 2026-07-07) | Module 5 passed | test report |
 | 7 | PR open | Claude | Module 6 passed | Draft/ready PR |
 | 8 | Review | Claude + CODEOWNERS | `pull_request.opened` | Approve / Changes |
 | 9 | Merge | Merge Queue | approved + green | merge + close |

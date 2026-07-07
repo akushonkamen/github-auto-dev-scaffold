@@ -72,17 +72,23 @@ Every AI-calling composite action passes `--disallowedTools` / `--allowedTools` 
 - Claude actions use `--allowedTools` whitelist; never `--dangerously-skip-permissions`.
 - `--bypass-sandbox` style flags are forbidden; a CI lint rejects any workflow containing them.
 
-### Codex engine — S5 enforcement (Module 6)
+### Module 6 — S5 enforcement (Claude engine, v2)
 
-Module 6 (test) is the first Codex integration in the project (PRD §4 out-of-distribution tester). Specific S5 controls:
+Module 6 (test) was originally Codex (PRD §4 out-of-distribution tester). Amended 2026-07-07 to a second isolated Claude Code process with a tool-restricted reviewer profile (see `docs/architecture.md` §"Module 6 engine amendment"). Specific S5 controls:
 
-- **Permission profile**: `workspace-write` ONLY. This allows Codex to read files, run test commands (`npm test`, `pytest`, `cargo test`, etc.), and write test files. It does NOT grant the ability to modify non-test files or bypass sandbox restrictions.
-- **NEVER `danger-full-access`**: Any use of `danger-full-access` is a red-line violation. The composite action enforces this at the invocation level.
-- **API key**: `secrets.OPENAI_API_KEY` scoped to Module 6 only (S3). Codex uses OpenAI's API directly (not DeepSeek/Anthropic passthrough).
-- **Model**: `gpt-5` family (configurable via `vars.TEST_MODEL`).
-- **Max turns**: Default 10 (lower than develop — Codex is more expensive per turn).
-- **Allowed operations**: read files, run test commands, write test files (within `workspace-write` profile). Codex MUST NOT modify production/source files — only test files.
-- **Verification**: Composite action validates the sealed JSON output schema before emitting results. Schema mismatch triggers `test:failed` label, not a crash.
+- **Tool whitelist (allow):** `Read`, `Grep`, `Glob`, `Bash`. Bash is required so the tester can actually run the existing test suite (`npm test`, `pytest`, `cargo test`, etc.).
+- **Tool blacklist (deny):** `Write`, `Edit`. Module 6 v2 does NOT write test files. If a coverage gap is found, it is reported in the `coverage_gaps` array of the sealed output, not patched.
+- **Git mutation guard:** `claude_args --disallowedTools "Write,Edit,Bash(git push*),Bash(git commit*),Bash(git checkout*),Bash(git reset*),Bash(git rebase*)"`. The tester cannot mutate git state.
+- **Process isolation:** Each Module 6 run is a fresh `claude-code-action@v1` invocation with no conversation memory shared with Module 4 (develop) or Module 5 (self-verify).
+- **API key:** `secrets.ANTHROPIC_API_KEY` (or GLM passthrough equivalent). Scoped to Module 6 only (S3). Never printed (S4).
+- **Model:** defaults to engine default; `vars.TEST_MODEL` may override (recommend a different tier than Module 4 to retain partial perspective diversity — e.g. Opus for Module 6 if Module 4 ran Sonnet).
+- **Max turns:** default 10 (configurable via `vars.TEST_MAX_TURNS`).
+- **No sandbox bypass:** no `--dangerously-skip-permissions`. The allow/deny lists enforce the boundary at the action level.
+- **Verification:** Composite action validates the sealed JSON output schema `{test_status, test_report, failures, coverage_gaps}` before emitting results. Schema mismatch triggers `test:failed` label, not a crash.
+
+#### Historical note — original Codex profile
+
+The original Codex profile (`openai/codex-action@v1` with `permission_profile: workspace-write`, `OPENAI_API_KEY` secret) was removed in PR #32 (pipeline-fix, 2026-07-07) because the S4 secret guard correctly aborted on the unconfigured `OPENAI_API_KEY` and the maintainer could not provision one. The Codex profile text is preserved in git history (`dev` branch commit prior to PR #32) should the project regain OpenAI access and wish to restore strict OOD testing.
 
 ## S6 — Personal access token (PAT) handling (v2)
 

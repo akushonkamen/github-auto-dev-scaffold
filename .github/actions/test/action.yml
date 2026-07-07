@@ -1,20 +1,27 @@
-# Composite action: Module 6 (test)
-# PRD §2 module 6 — Codex out-of-distribution tester.
+# Composite action: Module 6 (test, v2)
+# Originally PRD §4 specified Codex as out-of-distribution tester. Amended to a
+# second isolated Claude Code process with tool-restricted reviewer profile
+# (see docs/architecture.md §"Module 6 engine amendment"). Reason: maintainers
+# cannot configure OPENAI_API_KEY (cost / account constraints); ANTHROPIC_API_KEY
+# already configured with GLM passthrough. Strict OOD value is reduced but
+# retained partially via model tier separation + tool whitelist + prompt framing.
 #
-# SECURITY: triggered by `verified` label (Module 5 passed). Codex runs with
-# permission-profile: workspace-write (S5). NEVER danger-full-access.
+# SECURITY: triggered by `verified` label (Module 5 passed). The second Claude
+# process runs with allow: Read/Grep/Glob/Bash and deny: Write/Edit. Bash is
+# permitted so the tester can actually run the existing test suite (npm test,
+# pytest, cargo test). It MUST NOT modify any files (no test generation in v2).
 #
 # REQUIRED PERMISSIONS (caller workflow must grant):
-#   contents:        read        (read PR diff)
+#   contents:        read        (read PR diff + test files)
 #   issues:          write       (post audit comment, apply labels)
 #   pull-requests:   write       (post test report comment on PR)
 #
-# S1: NO contents:write. Test reads source and writes test files via Codex
-# (workspace-write profile), but the action itself is read-only on source.
-# S5: Codex permission-profile: workspace-write (NEVER danger-full-access).
+# S1: NO contents:write. Test reads source + runs test commands but does not
+# write any files (allow list + deny list enforce this at the action level).
+# S5: claude-code-action with explicit tool allow/deny list. No --dangerously-skip-permissions.
 
-name: "Module 6 — Test"
-description: "Run tests via Codex (out-of-distribution tester per PRD §4), emit test report + label transition."
+name: "Module 6 — Test (v2)"
+description: "Run existing tests via a second isolated Claude Code process (tool-restricted reviewer), emit test report + label transition."
 
 inputs:
   issue-number:
@@ -36,18 +43,22 @@ inputs:
     description: "GITHUB_TOKEN (read-only + PR comment + label)"
     required: true
   api-key:
-    description: "OPENAI_API_KEY (Codex uses OpenAI, not Anthropic — PRD §4)"
+    description: "Anthropic-compatible API key (ANTHROPIC_API_KEY or GLM passthrough key)"
     required: true
-  engine:
-    description: "LLM engine (codex). Default: codex (out-of-distribution tester per PRD §4)"
+  anthropic-base-url:
+    description: "Anthropic-compatible API base URL. Empty = Anthropic default. Set for GLM passthrough."
     required: false
-    default: "codex"
+    default: ""
+  engine:
+    description: "LLM engine. Default: claude (v2 amendment — Codex removed for cost reasons)"
+    required: false
+    default: "claude"
   model:
-    description: "Model ID override. Empty = gpt-5 default (vars.TEST_MODEL)."
+    description: "Model ID override. Empty = engine default (recommend Opus tier for thorough review)."
     required: false
     default: ""
   max-turns:
-    description: "Agent turn cap (PRD §5). Default: 10 (lower than develop — Codex is more expensive)"
+    description: "Agent turn cap (PRD §5). Default: 10"
     required: false
     default: "10"
   context-budget-paths:
@@ -101,7 +112,7 @@ runs:
           echo "DIFF_EOF"
         } >> "$GITHUB_OUTPUT"
 
-    - name: Build Codex config (sealed schema + permission-profile)
+    - name: Build Claude config (settings + sealed schema + allowed/disallowed)
       id: cfg
       shell: bash
       env:
@@ -110,26 +121,39 @@ runs:
         CONTEXT_PATHS: ${{ inputs.context-budget-paths }}
       run: |
         set -eu
-        model="${MODEL_INPUT:-gpt-5}"
+        # S5: tool profile for tester role.
+        # allow: Read/Grep/Glob/Bash — Bash so tester can run test commands.
+        # deny:  Write/Edit          — tester cannot modify any file.
+        if [ -n "$MODEL_INPUT" ]; then
+          settings=$(jq -c -n \
+            --arg m "$MODEL_INPUT" \
+            --argjson t "$MAX_TURNS" \
+            '{permissions:{allow:["Read","Grep","Glob","Bash"],deny:["Write","Edit"]}, maxTurns:$t, model:$m}')
+        else
+          settings=$(jq -c -n \
+            --argjson t "$MAX_TURNS" \
+            '{permissions:{allow:["Read","Grep","Glob","Bash"],deny:["Write","Edit"]}, maxTurns:$t}')
+        fi
         {
-          echo "model=$model"
-          echo "max-turns=$MAX_TURNS"
+          echo "settings<<SETTINGS_EOF"
+          echo "$settings"
+          echo "SETTINGS_EOF"
         } >> "$GITHUB_OUTPUT"
 
-        # Sealed JSON output schema for Codex (matches prompt contract).
+        # Sealed JSON output schema — matches prompt contract.
         # test_status: "passed" | "failed"
         # test_report: maintainer-readable, max 2000 chars
         # failures: list of specific tests that didn't pass (empty if passed)
-        # tests_added: count of new test files Codex contributed
+        # coverage_gaps: list of acceptance criteria not covered by existing tests
         schema=$(jq -c . <<'JSON'
         {
           "type": "object",
-          "required": ["test_status", "test_report", "failures", "tests_added"],
+          "required": ["test_status", "test_report", "failures", "coverage_gaps"],
           "properties": {
             "test_status": {"type": "string", "enum": ["passed", "failed"]},
             "test_report": {"type": "string", "maxLength": 2000},
             "failures": {"type": "array", "items": {"type": "string"}},
-            "tests_added": {"type": "integer", "minimum": 0}
+            "coverage_gaps": {"type": "array", "items": {"type": "string"}}
           },
           "additionalProperties": false
         }
@@ -137,28 +161,38 @@ runs:
         )
         echo "schema='${schema}'" >> "$GITHUB_OUTPUT"
 
+        # Disallowed tools string (extra guard beyond settings.deny).
+        # Block git push / commit / branch ops so the tester cannot mutate git state.
+        disallowed="Write,Edit,Bash(git push*),Bash(git commit*),Bash(git checkout*),Bash(git reset*),Bash(git rebase*)"
+        echo "disallowed=${disallowed}" >> "$GITHUB_OUTPUT"
+
         if [ -n "$CONTEXT_PATHS" ]; then
           echo "context_paths=$CONTEXT_PATHS" >> "$GITHUB_OUTPUT"
         else
           echo "context_paths=" >> "$GITHUB_OUTPUT"
         fi
 
-    - name: Run tests via Codex (PRD §4 out-of-distribution tester)
-      if: inputs.engine == 'codex'
-      id: codex-engine
-      uses: openai/codex-action@v1
+    - name: Run tests via Claude (second isolated process, tool-restricted tester)
+      id: claude-run
+      uses: anthropics/claude-code-action@v1
+      env:
+        ANTHROPIC_BASE_URL: ${{ inputs.anthropic-base-url }}
       with:
-        openai_api_key: ${{ inputs.api-key }}
+        anthropic_api_key: ${{ inputs.api-key }}
         github_token: ${{ inputs.repo-token }}
-        permission_profile: workspace-write
         prompt: |
-          You are the test module of the GithubAutoDev pipeline (Module 6).
+          You are the TEST module of the GithubAutoDev pipeline (Module 6, v2).
+          You are a second, isolated Claude Code process — your job is to act as
+          an independent tester reviewing the work that the develop module (Module 4)
+          shipped. You did NOT write this code.
 
           Issue #${{ inputs.issue-number }}: ${{ steps.context.outputs.title }}
           URL: ${{ steps.context.outputs.url }}
 
           ## Issue body (acceptance criteria source)
+          ```
           ${{ steps.context.outputs.body }}
+          ```
 
           ## PR diff (implementation to test)
           ```diff
@@ -166,67 +200,54 @@ runs:
           ```
 
           ## Task
-          Run the existing test suite. If coverage gaps exist for the issue acceptance
-          criteria, ADD tests. Do NOT modify non-test files. Report pass/fail per test.
-
-          ## Hard rules
-          1. Run existing tests first (npm test, pytest, cargo test, etc. — detect the project type).
-          2. If acceptance criteria are not covered by existing tests, write new test files.
-          3. Do NOT modify production/source files — only test files.
-          4. Report each test's status (pass/fail) in the test_report.
+          1. Detect the project's test framework by reading the repo (package.json,
+             pyproject.toml, Cargo.toml, go.mod, etc.).
+          2. Run the existing test suite via Bash (e.g. `npm test`, `pytest`,
+             `cargo test`, `go test ./...`). Capture pass/fail per test.
+          3. For each acceptance criterion in the issue body, decide whether the
+             existing tests cover it. If NOT covered, list it in `coverage_gaps`.
+          4. Do NOT write or modify any file (S5: Write/Edit denied). If you believe
+             a new test file is needed, describe it in `coverage_gaps` instead.
           5. Never print tokens, API keys, or environment variable values (S4).
-          6. MANDATORY: When finished, write the final JSON result to a file named `codex-test-output.json`
-             in the workspace root. This file is the ONLY way the pipeline reads your results.
-             If this file is missing, the pipeline treats the run as a failure.${{ steps.cfg.outputs.context_paths && format('
-          7. Allowed paths: {0}', steps.cfg.outputs.context_paths) || '' }}
 
-          ## Output — write this EXACT JSON to `codex-test-output.json`:
+          ## Decision rule
+          - `test_status` = "passed" if existing tests run cleanly AND every
+            acceptance criterion is covered by at least one test.
+          - `test_status` = "failed" if any existing test fails OR a critical
+            acceptance criterion has zero test coverage.
+
+          ## Output ONE JSON object (sealed schema):
           {
             "test_status": "passed" | "failed",
             "test_report": "<maintainer-readable report, max 2000 chars>",
             "failures": ["<specific test that failed>", ...],
-            "tests_added": <count of new test files added, 0 if none>
+            "coverage_gaps": ["<acceptance criterion not covered by existing tests>", ...]
           }
 
-          After completing all work, write the JSON result to the file `codex-test-output.json`
-          in the workspace root.
+          Rules:
+          - `test_report`: structured summary — list each test run with ✓/✗, then
+            list each acceptance criterion with ✓/✗ coverage.
+          - `failures`: empty if all existing tests pass.
+          - `coverage_gaps`: empty if every acceptance criterion is covered.
+          - Match the natural language of the issue body in the test_report.
+          ${{ steps.cfg.outputs.context_paths && format('Allowed paths: {0}', steps.cfg.outputs.context_paths) || '' }}
 
-    - name: Collect Codex structured output
-      if: inputs.engine == 'codex'
-      id: codex-run
-      shell: bash
-      run: |
-        set -euo pipefail
-        if [ -f codex-test-output.json ]; then
-          raw=$(cat codex-test-output.json)
-          if printf '%s' "$raw" | jq -e '
-            (.test_status == "passed" or .test_status == "failed")
-            and (.test_report | type == "string" and length <= 2000)
-            and (.failures | type == "array")
-            and (.tests_added | type == "number" and . >= 0)
-          ' >/dev/null 2>&1; then
-            echo "codex-output=${raw}" >> "$GITHUB_OUTPUT"
-          else
-            echo "::error::Codex output file did not match the sealed {test_status, test_report, failures, tests_added} schema."
-            echo 'codex-output={"test_status":"failed","test_report":"Codex output schema mismatch — see workflow run logs.","failures":["Schema validation failed"],"tests_added":0}' >> "$GITHUB_OUTPUT"
-          fi
-        else
-          echo "::error::Codex did not produce codex-test-output.json — the test module cannot proceed. Run logs should be inspected for engine errors."
-          echo 'codex-output={"test_status":"failed","test_report":"Codex engine did not produce structured output (codex-test-output.json missing). Manual test run required.","failures":["Codex output file missing"],"tests_added":0}' >> "$GITHUB_OUTPUT"
-        fi
+          Respond ONLY with the JSON object. No prose, no markdown fences.
+        settings: ${{ steps.cfg.outputs.settings }}
+        claude_args: "--json-schema ${{ steps.cfg.outputs.schema }} --disallowedTools '${{ steps.cfg.outputs.disallowed }}'"
 
     - name: Parse engine output
       id: emit
       shell: bash
       env:
-        CODEX_OUTPUT: ${{ steps.codex-run.outputs.codex-output }}
+        STRUCTURED: ${{ steps.claude-run.outputs.structured_output }}
       run: |
         set -euo pipefail
         sha=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
-        raw="${CODEX_OUTPUT:-}"
+        raw="${STRUCTURED:-}"
 
         if [ -z "$raw" ]; then
-          echo "::warning::Codex output is empty — engine may have failed or timed out."
+          echo "::warning::structured_output is empty — engine may have failed or timed out."
           {
             echo "test-status=failed"
             echo "test-report=(engine did not emit structured output; inspect run logs)"
@@ -240,9 +261,9 @@ runs:
           (.test_status == "passed" or .test_status == "failed")
           and (.test_report | type == "string" and length <= 2000)
           and (.failures | type == "array")
-          and (.tests_added | type == "number" and . >= 0)
+          and (.coverage_gaps | type == "array")
         ' >/dev/null 2>&1; then
-          echo "::error::Engine output did not match the {test_status, test_report, failures, tests_added} schema."
+          echo "::error::Engine output did not match the {test_status, test_report, failures, coverage_gaps} schema."
           echo "Raw output (first 500 chars):"
           printf '%s' "$raw" | head -c 500 | sed 's/^/  raw> /'
           {
@@ -255,11 +276,13 @@ runs:
 
         test_status="$(printf '%s' "$raw" | jq -r '.test_status')"
         test_report="$(printf '%s' "$raw" | jq -r '.test_report')"
-        tests_added="$(printf '%s' "$raw" | jq -r '.tests_added')"
+        failures="$(printf '%s' "$raw" | jq -c '.failures // []')"
+        coverage_gaps="$(printf '%s' "$raw" | jq -c '.coverage_gaps // []')"
 
         echo "test-status=$test_status" >> "$GITHUB_OUTPUT"
-        echo "tests-added=$tests_added" >> "$GITHUB_OUTPUT"
         echo "commit-sha=$sha" >> "$GITHUB_OUTPUT"
+        echo "failures=${failures}" >> "$GITHUB_OUTPUT"
+        echo "coverage-gaps=${coverage_gaps}" >> "$GITHUB_OUTPUT"
         {
           echo "test-report<<TEST_REPORT_EOF"
           printf '%s\n' "$test_report"
