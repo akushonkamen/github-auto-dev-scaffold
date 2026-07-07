@@ -144,7 +144,7 @@ Every module action shares these inputs and outputs so they compose uniformly. M
 | Caches | none |
 | Idempotency | Re-run reposts ready-for-review comment; `gh pr edit --add-label in-review` is idempotent |
 | Failure | Apply `stage:failed`; comment with run URL |
-| S5 enforcement | Claude `--allowedTools "Read,Grep,Glob,Bash(gh pr:*)"` — no Write, no Edit, no `gh pr create` allowed via prompt guard |
+| S5 enforcement | `settings.permissions.allow: ["Read","Grep","Glob","Bash(gh pr:*)"]` + deny Write/Edit/push — no `gh pr create` allowed via prompt guard |
 | Label transitions | Applies `in-review` to the PR (triggers Module 8 review). Issue stays `tested` until merge per `docs/labels.md`. |
 
 ### Module 8 — review (`/.github/actions/review/`)
@@ -163,13 +163,84 @@ Every module action shares these inputs and outputs so they compose uniformly. M
 | Caches | none |
 | Idempotency | Re-run posts a new review comment; prior comments remain for audit trail |
 | Failure | Apply `stage:failed` on infrastructure error; `on-failure` job posts comment on issue + PR |
-| S5 enforcement | Claude `--allowedTools "Read,Grep,Glob,Bash(gh pr:*)"` — no Write, no Edit, no `gh pr merge/approve/review` |
+| S5 enforcement | `settings.permissions.allow: ["Read","Grep","Glob","Bash(gh pr:*)"]` + deny Write/Edit/push — no `gh pr merge/approve/review` |
 | Prompt contract | Review PR diff against CLAUDE.md, docs/security.md (S1-S7), docs/composite-action-spec.md. Post structured findings table as comment. NEVER approve. |
 | Label transitions | None (review is read + comment only). Issue stays `tested` until merge per `docs/labels.md`. |
 
 ### Module 9 — merge (workflow only, no composite action)
 
 Module 9 uses GitHub Merge Queue natively. No composite action is defined — the workflow `.github/workflows/merge-queue.yml` (out of scope for this scaffold) gates on `in-review` + checks + approval and uses `gh pr merge`.
+
+## anthropics/claude-code-action@v1 canonical schema
+
+> As of v1.0, `max_turns` and `allowed_tools` are **removed** as direct inputs.
+> They have moved into the `settings` JSON input and `claude_args` CLI flags respectively.
+>
+> **Migration rule:** every composite action that calls `anthropics/claude-code-action@v1`
+> MUST build a `settings` JSON via a preceding shell step and pass `settings` +
+> (optionally) `claude_args`. Raw `max_turns` / `allowed_tools` on the action step
+> are silently ignored by v1 — the module runs with defaults and produces nothing useful.
+
+### Current inputs (v1)
+
+| Input | Type | Required | Description |
+|---|---|---|---|
+| `anthropic_api_key` | string | yes | Anthropic API key (or provider key for passthrough) |
+| `github_token` | string | yes | GitHub token scoped for the module's permissions |
+| `prompt` | string | yes | The prompt / task for Claude Code to execute |
+| `settings` | JSON string | recommended | Permissions + model + maxTurns + other SDK settings |
+| `claude_args` | string | no | Additional CLI flags (`--json-schema`, `--disallowedTools`, etc.) |
+
+### `settings` JSON structure
+
+```json
+{
+  "permissions": {
+    "allow": ["Read", "Grep", "Glob", "Bash(gh pr:*)"],
+    "deny": ["Write", "Edit", "Bash(git push:*)", "Bash(git checkout main*)"]
+  },
+  "maxTurns": 8,
+  "model": "claude-sonnet-4-6"
+}
+```
+
+- `permissions.allow` replaces the old `allowed_tools` input.
+- `permissions.deny` provides belt-and-suspenders blocking of dangerous tools (complements `--disallowedTools` in `claude_args`).
+- `maxTurns` replaces the old `max_turns` input.
+- `model` is optional; omit to use the engine default.
+
+### `claude_args` usage
+
+- `--json-schema '<compact-json>'` — enables structured output; read result from `steps.<id>.outputs.structured_output`.
+- `--disallowedTools 'Bash(git push:*),...'` — defense in depth on top of `settings.permissions.deny`.
+
+### Migration from v0.x
+
+| v0.x input | v1 replacement |
+|---|---|
+| `max_turns` | `settings.maxTurns` (inside JSON passed to `settings` input) |
+| `allowed_tools` | `settings.permissions.allow` (inside JSON passed to `settings` input) |
+| `output_schema` | `--json-schema` flag in `claude_args`; output read from `structured_output` |
+
+### Pattern (used by every composite action)
+
+```yaml
+- name: Build claude config
+  id: cfg
+  shell: bash
+  run: |
+    settings=$(jq -c -n \
+      --argjson t "$MAX_TURNS" \
+      '{permissions:{allow:[...],deny:[...]}, maxTurns:$t}')
+    echo "settings<<SETTINGS_EOF" >> "$GITHUB_OUTPUT"
+    echo "$settings" >> "$GITHUB_OUTPUT"
+    echo "SETTINGS_EOF" >> "$GITHUB_OUTPUT"
+
+- uses: anthropics/claude-code-action@v1
+  with:
+    settings: ${{ steps.cfg.outputs.settings }}
+    claude_args: "--json-schema ${{ steps.cfg.outputs.schema }}"
+```
 
 ## Engine swap
 

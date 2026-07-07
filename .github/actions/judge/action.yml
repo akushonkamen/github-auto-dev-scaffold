@@ -85,8 +85,48 @@ runs:
   steps:
     # Engine dispatch. Both branches produce identical output JSON:
     #   { "decision": "accepted|rejected|needs-info", "confidence": 0.0-1.0, "reason": "..." }
-    # Codex uses --output-schema to enforce the schema; Claude uses --output-schema
-    # via claude-code-action. PRD §4: composite wrapper hides engine difference.
+    # Codex uses --output-schema to enforce the schema; Claude uses --json-schema
+    # via claude-code-action claude_args. PRD §4: composite wrapper hides engine difference.
+
+    - name: Build claude config
+      id: cfg
+      shell: bash
+      env:
+        MODEL_INPUT: ${{ inputs.model }}
+        MAX_TURNS: ${{ inputs.max-turns }}
+      run: |
+        set -eu
+        if [ -n "$MODEL_INPUT" ]; then
+          settings=$(jq -c -n \
+            --arg m "$MODEL_INPUT" \
+            --argjson t "$MAX_TURNS" \
+            '{permissions:{allow:["Read","Grep","Glob","Bash(git log:*)"],deny:["Write","Edit","Bash(git push:*)","Bash(git checkout main*)","Bash(git checkout master*)","Bash(git reset --hard*)"]}, maxTurns:$t, model:$m}')
+        else
+          settings=$(jq -c -n \
+            --argjson t "$MAX_TURNS" \
+            '{permissions:{allow:["Read","Grep","Glob","Bash(git log:*)"],deny:["Write","Edit","Bash(git push:*)","Bash(git checkout main*)","Bash(git checkout master*)","Bash(git reset --hard*)"]}, maxTurns:$t}')
+        fi
+        {
+          echo "settings<<SETTINGS_EOF"
+          echo "$settings"
+          echo "SETTINGS_EOF"
+        } >> "$GITHUB_OUTPUT"
+
+        schema=$(jq -c . <<'JSON'
+        {
+          "type": "object",
+          "required": ["decision", "confidence", "reason"],
+          "properties": {
+            "decision": {"type": "string", "enum": ["accepted", "rejected", "needs-info"]},
+            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+            "reason": {"type": "string", "minLength": 1}
+          },
+          "additionalProperties": false
+        }
+        JSON
+        )
+        echo "schema='${schema}'" >> "$GITHUB_OUTPUT"
+
     - name: Run Claude (engine=claude)
       if: inputs.engine == 'claude'
       id: claude-run
@@ -94,6 +134,8 @@ runs:
       with:
         anthropic_api_key: ${{ inputs.api-key }}
         github_token: ${{ inputs.repo-token }}
+        settings: ${{ steps.cfg.outputs.settings }}
+        claude_args: "--json-schema ${{ steps.cfg.outputs.schema }}"
         prompt: |
           You are the judge module of the GithubAutoDev pipeline.
           Issue #${{ inputs.issue-number }} has been triaged. Decide: accepted | rejected | needs-info.
@@ -103,22 +145,6 @@ runs:
           Never print tokens, API keys, or environment values (PRD §7 S4).
 
           Output JSON: { "decision": "...", "confidence": 0.0-1.0, "reason": "..." }
-        max_turns: ${{ inputs.max-turns }}
-        # S5: no sandbox bypass — explicit allowed-tools whitelist
-        allowed_tools: "Read,Grep,Glob,Bash(git log:*)"
-        # Output schema enforcement
-        output_schema: |
-          {
-            "type": "object",
-            "required": ["decision", "confidence", "reason"],
-            "properties": {
-              "decision": {"type": "string", "enum": ["accepted", "rejected", "needs-info"]},
-              "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-              "reason": {"type": "string", "minLength": 1}
-            },
-            "additionalProperties": false
-          }
-
     - name: Run Codex (engine=codex)
       if: inputs.engine == 'codex'
       id: codex-run
@@ -148,20 +174,20 @@ runs:
       id: collect
       shell: bash
       env:
-        # claude-code-action exposes the assistant response text via `response`.
-        # codex-action exposes the structured --output-schema result via `output`.
-        # Both are strings; the JSON we want is embedded (Claude) or direct (Codex).
-        CLAUDE_RESPONSE: ${{ steps.claude-run.outputs.response }}
+        # claude-code-action exposes structured output via `structured_output` when
+        # --json-schema is in claude_args. codex-action exposes it via `output`.
+        # Both are JSON strings.
+        CLAUDE_OUTPUT: ${{ steps.claude-run.outputs.structured_output }}
         CODEX_OUTPUT: ${{ steps.codex-run.outputs.output }}
       run: |
         set -euo pipefail
         # Pick whichever engine produced output
         raw=""
-        if [ -n "$CLAUDE_RESPONSE" ]; then raw="$CLAUDE_RESPONSE"; fi
-        if [ -n "$CODEX_OUTPUT" ];   then raw="$CODEX_OUTPUT";   fi
+        if [ -n "$CLAUDE_OUTPUT" ]; then raw="$CLAUDE_OUTPUT"; fi
+        if [ -n "$CODEX_OUTPUT" ];  then raw="$CODEX_OUTPUT";   fi
         if [ -z "$raw" ]; then
           echo "::error::No engine output. Verify the engine action's documented output name."
-          echo "::error::claude-code-action output names: response; codex-action output names: output."
+          echo "::error::claude-code-action output names: structured_output; codex-action output names: output."
           exit 1
         fi
         # Extract JSON object: engines may wrap in prose. Find the first {...} block.

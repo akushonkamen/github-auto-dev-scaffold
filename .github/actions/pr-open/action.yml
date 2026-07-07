@@ -76,6 +76,30 @@ outputs:
 runs:
   using: composite
   steps:
+    - name: Build claude config
+      id: cfg
+      shell: bash
+      env:
+        MODEL_INPUT: ${{ inputs.model }}
+        MAX_TURNS: ${{ inputs.max-turns }}
+      run: |
+        set -eu
+        if [ -n "$MODEL_INPUT" ]; then
+          settings=$(jq -c -n \
+            --arg m "$MODEL_INPUT" \
+            --argjson t "$MAX_TURNS" \
+            '{permissions:{allow:["Read","Grep","Glob","Bash(gh pr:*)"],deny:["Write","Edit","Bash(git push:*)","Bash(git checkout main*)","Bash(git checkout master*)","Bash(git reset --hard*)"]}, maxTurns:$t, model:$m}')
+        else
+          settings=$(jq -c -n \
+            --argjson t "$MAX_TURNS" \
+            '{permissions:{allow:["Read","Grep","Glob","Bash(gh pr:*)"],deny:["Write","Edit","Bash(git push:*)","Bash(git checkout main*)","Bash(git checkout master*)","Bash(git reset --hard*)"]}, maxTurns:$t}')
+        fi
+        {
+          echo "settings<<SETTINGS_EOF"
+          echo "$settings"
+          echo "SETTINGS_EOF"
+        } >> "$GITHUB_OUTPUT"
+
     - name: PR open via Claude
       if: inputs.engine == 'claude'
       id: claude-run
@@ -85,6 +109,7 @@ runs:
       with:
         anthropic_api_key: ${{ inputs.api-key }}
         github_token: ${{ inputs.repo-token }}
+        settings: ${{ steps.cfg.outputs.settings }}
         prompt: |
           You are Module 7 (PR open) of the GithubAutoDev pipeline.
           Your ONLY job is to mark the EXISTING PR as ready for review.
@@ -152,9 +177,6 @@ runs:
 
           After completing the steps, report a one-line summary:
           "PR #${{ inputs.pr-number }} marked ready for review. in-review label applied."
-        max_turns: ${{ inputs.max-turns }}
-        allowed_tools: "Read,Grep,Glob,Bash(gh pr:*)"
-
     - name: PR open via Codex
       if: inputs.engine == 'codex'
       id: codex-run
