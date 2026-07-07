@@ -147,9 +147,25 @@ Every module action shares these inputs and outputs so they compose uniformly. M
 | S5 enforcement | Claude `--allowedTools "Read,Grep,Glob,Bash(gh pr:*)"` — no Write, no Edit, no `gh pr create` allowed via prompt guard |
 | Label transitions | Applies `in-review` to the PR (triggers Module 8 review). Issue stays `tested` until merge per `docs/labels.md`. |
 
-### Module 8 — review (out of scope, separate issue)
+### Module 8 — review (`/.github/actions/review/`)
 
-Module 8 triggers on `pull_request.labeled: in-review` and runs AI initial review + CODEOWNERS human review. Deferred to a separate dogfood issue.
+> **Shipped.** Claude engine composite action with DeepSeek passthrough. AI initial review posts findings as PR comment; NEVER approves.
+
+| Aspect | Value |
+|---|---|
+| Description | AI initial review against CLAUDE.md, docs/security.md (S1-S7), docs/composite-action-spec.md. Posts structured findings as PR comment. AI NEVER approves — final approval is human per PRD §6. |
+| Trigger | `pull_request.labeled: in-review` (Module 7 pr-open applied the label) |
+| Inputs | common + `pr-number` (required), `issue-number` (required), `anthropic-base-url` (optional) |
+| Outputs | `review-status` (`posted`), `audit-comment-url` (URL of the review comment) |
+| Secrets | `repo-token` (CLAUDE_DEV_PAT for PR comment — PR #16 lesson), `api-key` (DEEPSEEK_API_KEY for GLM passthrough) |
+| Permissions | `contents: read`, `pull-requests: write`, `issues: write` (S1 — NO contents:write) |
+| Runner | `ubuntu-latest` |
+| Caches | none |
+| Idempotency | Re-run posts a new review comment; prior comments remain for audit trail |
+| Failure | Apply `stage:failed` on infrastructure error; `on-failure` job posts comment on issue + PR |
+| S5 enforcement | Claude `--allowedTools "Read,Grep,Glob,Bash(gh pr:*)"` — no Write, no Edit, no `gh pr merge/approve/review` |
+| Prompt contract | Review PR diff against CLAUDE.md, docs/security.md (S1-S7), docs/composite-action-spec.md. Post structured findings table as comment. NEVER approve. |
+| Label transitions | None (review is read + comment only). Issue stays `tested` until merge per `docs/labels.md`. |
 
 ### Module 9 — merge (workflow only, no composite action)
 
