@@ -1,15 +1,19 @@
-# Module 6 — Test (Codex engine, PRD §4 out-of-distribution tester)
+# Module 6 — Test (v2: second isolated Claude Code process, tool-restricted tester)
 #
-# Triggers when `verified` label is applied to an issue (Module 5 self-verify
-# passed). Runs the test composite action with Codex engine, posts a test
-# report audit comment on the linked PR, and transitions labels:
+# Originally PRD §4 specified Codex as out-of-distribution tester. Amended to a
+# second isolated Claude Code process (see .github/actions/test/action.yml header
+# and docs/architecture.md §"Module 6 engine amendment"). Triggers when `verified`
+# label is applied to an issue (Module 5 self-verify passed). Runs the test
+# composite action, posts a test report audit comment on the linked PR, and
+# transitions labels:
 #   verified → testing → tested (passed) or test:failed (failed)
 #
 # SECURITY POSTURE (PRD §7):
 #   - permissions: contents:read + issues:write + pull-requests:write
 #     (S1: NO contents:write — test is read + test execution only)
-#   - S5: Codex permission-profile: workspace-write (NEVER danger-full-access)
-#   - S4: no secrets printed in workflow; OPENAI_API_KEY never printed
+#   - S5: claude-code-action with allow Read/Grep/Glob/Bash, deny Write/Edit
+#     (NO --dangerously-skip-permissions)
+#   - S4: no secrets printed in workflow; ANTHROPIC_API_KEY never printed
 #   - S3: never writes to main
 #   - PR #16 lesson: label writes use CLAUDE_DEV_PAT (so Module 7 pr-open fires)
 #   - On failure: test:failed label + failure comment, stage:failed fallback
@@ -94,16 +98,16 @@ jobs:
           set -eu
           gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "testing" || true
 
-      - name: "Verify OPENAI_API_KEY secret exists (S4: never print value)"
+      - name: "Verify ANTHROPIC_API_KEY secret exists (S4: never print value)"
         shell: bash
         run: |
-          if [ -z "${{ secrets.OPENAI_API_KEY }}" ]; then
-            echo "::error::OPENAI_API_KEY secret is not set or is empty. Module 6 requires this secret for Codex (PRD §4)."
+          if [ -z "${{ secrets.ANTHROPIC_API_KEY }}" ]; then
+            echo "::error::ANTHROPIC_API_KEY secret is not set or is empty. Module 6 v2 requires this secret (or GLM passthrough equivalent)."
             exit 1
           fi
-          echo "::notice::OPENAI_API_KEY secret is configured (value not printed per S4)."
+          echo "::notice::ANTHROPIC_API_KEY secret is configured (value not printed per S4)."
 
-      - name: Run test composite (Codex engine)
+      - name: Run test composite (Claude engine, v2)
         id: test
         uses: ./.github/actions/test
         with:
@@ -113,8 +117,9 @@ jobs:
           head-branch: ${{ steps.pr.outputs.head-branch }}
           base-branch: ${{ steps.pr.outputs.base-branch }}
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-          api-key: ${{ secrets.OPENAI_API_KEY }}
-          model: ${{ vars.TEST_MODEL }}
+          api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          anthropic-base-url: ${{ vars.ANTHROPIC_BASE_URL || '' }}
+          model: ${{ vars.TEST_MODEL || '' }}
           max-turns: ${{ vars.TEST_MAX_TURNS || '10' }}
           context-budget-paths: ${{ vars.TEST_CONTEXT_PATHS || '' }}
 
@@ -146,7 +151,7 @@ jobs:
           $REPORT
 
           ---
-          Triggered by test (Module 6) | Engine: Codex (out-of-distribution tester, PRD §4)
+          Triggered by test (Module 6, v2) | Engine: Claude (tool-restricted tester, PRD §4 amendment)
           AUDIT_EOF
           )"
 
