@@ -1,0 +1,276 @@
+# Module 9 — Merge Queue
+#
+# Auto-merges PRs that have `in-review` label + CODEOWNERS approval + green
+# required checks (branch-protection, self-verify, test, review).
+# Pure GitHub Actions + gh CLI — no AI engine invocation.
+#
+# SECURITY POSTURE (PRD §7):
+#   - permissions: contents:write (required for merge) + pull-requests:write
+#     + issues:write
+#   - S3: base branch hard-coded to `dev` (AI code never lands on main)
+#   - S4: CLAUDE_DEV_PAT value never echoed; no secrets in log output
+#   - S5: no AI engine — pure gh CLI workflow, no sandbox concerns
+#   - S6: CLAUDE_DEV_PAT used for merge so downstream pull_request.closed
+#     events fire with the PAT owner as the merge author
+#   - On failure: stage:failed label + failure comment on PR + issue
+#
+# Triggers:
+#   - pull_request_review.submitted with state == approved (CODEOWNERS path)
+#   - pull_request.labeled: ready-to-merge (maintainer override path)
+#   - workflow_dispatch (manual testing)
+
+name: merge-queue
+
+on:
+  pull_request_review:
+    types: [submitted]
+  pull_request:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      pr-number:
+        description: 'PR number to merge (must be approved + green)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: merge-pr-${{ github.event.pull_request.number || inputs.pr-number }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    if: |
+      (github.event_name == 'pull_request_review' && github.event.review.state == 'approved') ||
+      (github.event_name == 'pull_request' && github.event.label.name == 'ready-to-merge') ||
+      github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
+    outputs:
+      should-run: ${{ steps.gate.outputs.should-run }}
+      pr-number: ${{ steps.gate.outputs.pr-number }}
+      issue-number: ${{ steps.issue.outputs.number }}
+    steps:
+      - name: Resolve PR number
+        id: pr-num
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "pr=${{ inputs.pr-number }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "pr=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Gate — PR open + in-review + targets dev + mergeable + all checks green
+        id: gate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.pr-num.outputs.pr }}
+        run: |
+          set -euo pipefail
+          should_run="true"
+          reason=""
+
+          # Fetch PR metadata in one call
+          pr_json=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --json baseRefName,headRefName,state,labels,mergeable 2>/dev/null || echo "{}")
+          base_ref=$(printf '%s' "$pr_json" | jq -r '.baseRefName // ""')
+          pr_state=$(printf '%s' "$pr_json" | jq -r '.state // ""')
+          labels=$(printf '%s' "$pr_json" | jq -r '.labels | map(.name) | join(",")')
+          mergeable=$(printf '%s' "$pr_json" | jq -r '.mergeable // ""')
+
+          # 1. PR must be open
+          if [ "$pr_state" != "OPEN" ]; then
+            should_run="false"
+            reason="PR state=$pr_state (not OPEN)"
+          fi
+
+          # 2. Must target dev (S3: never main)
+          if [ "$base_ref" != "dev" ]; then
+            should_run="false"
+            reason="PR base=$base_ref (not dev — S3)"
+          fi
+
+          # 3. Must have in-review label
+          if ! printf ',%s,' "$labels" | grep -q ",in-review,"; then
+            should_run="false"
+            reason="PR missing in-review label"
+          fi
+
+          # 4. Must be mergeable
+          if [ "$mergeable" != "MERGEABLE" ]; then
+            should_run="false"
+            reason="PR mergeable=$mergeable (not MERGEABLE)"
+          fi
+
+          # 5. Required checks must all report SUCCESS
+          #    Check names are the job keys from each module's workflow:
+          #    - branch-protection.yml job: check
+          #    - self-verify.yml    job: self-verify (Module 5)
+          #    - test.yml           job: test        (Module 6)
+          #    - review.yml         job: review      (Module 8)
+          for check_name in "check" "self-verify" "test" "review"; do
+            conclusion=$(gh pr checks "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+              --json name,conclusion \
+              --jq "[.[] | select(.name == \"$check_name\")] | .[0].conclusion // empty" \
+              2>/dev/null || echo "")
+            if [ -z "$conclusion" ]; then
+              should_run="false"
+              reason="Check '$check_name' has not run"
+            elif [ "$conclusion" != "SUCCESS" ]; then
+              should_run="false"
+              reason="Check '$check_name' conclusion=$conclusion (need SUCCESS)"
+            fi
+          done
+
+          echo "should-run=$should_run" >> "$GITHUB_OUTPUT"
+          echo "pr-number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "reason=$reason" >> "$GITHUB_OUTPUT"
+          echo "Preflight gate: should-run=$should_run reason=$reason"
+
+      - name: Extract linked issue from PR body
+        id: issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.pr-num.outputs.pr }}
+        run: |
+          set -eu
+          body=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --json body --jq '.body' 2>/dev/null || echo "")
+          # Parse Closes #N / Fixes #N / Resolves #N from PR body
+          number=$(printf '%s' "$body" \
+            | grep -oE '(Closes|Fixes|Resolves)\s+#[0-9]+' \
+            | head -n 1 \
+            | grep -oE '[0-9]+' || echo "")
+          if [ -z "$number" ]; then
+            echo "::warning::No linked issue found in PR body (Closes/Fixes/Resolves #N). Skipping issue operations."
+            echo "number=" >> "$GITHUB_OUTPUT"
+          else
+            echo "number=$number" >> "$GITHUB_OUTPUT"
+            echo "Linked issue: #$number"
+          fi
+
+  merge:
+    needs: preflight
+    if: needs.preflight.outputs.should-run == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    timeout-minutes: 10
+    steps:
+      - name: Squash-merge PR
+        env:
+          GH_TOKEN: ${{ secrets.CLAUDE_DEV_PAT }}
+          PR_NUMBER: ${{ needs.preflight.outputs.pr-number }}
+        run: |
+          set -euo pipefail
+
+          echo "Squash-merging PR #$PR_NUMBER ..."
+
+          gh pr merge "$PR_NUMBER" \
+            --repo "$GITHUB_REPOSITORY" \
+            --squash \
+            --delete-branch \
+            --subject "Merge PR #$PR_NUMBER (Module 9 auto-merge)" \
+            --body "Auto-merged by Module 9 (merge-queue) on approved + all checks green.
+
+      🤖 Generated with [Claude Code](https://claude.com/claude-code)"
+
+          echo "Merged PR #$PR_NUMBER"
+
+      - name: Apply merged label + audit comment on linked issue
+        if: needs.preflight.outputs.issue-number != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NUMBER: ${{ needs.preflight.outputs.issue-number }}
+          PR_NUMBER: ${{ needs.preflight.outputs.pr-number }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          SERVER_URL: ${{ github.server_url }}
+        run: |
+          set -eu
+
+          PR_URL="$SERVER_URL/$REPO/pull/$PR_NUMBER"
+          RUN_URL="$SERVER_URL/$REPO/actions/runs/$RUN_ID"
+
+          # Get merge SHA from the now-merged PR
+          merge_sha=$(gh pr view "$PR_NUMBER" --repo "$REPO" \
+            --json mergeCommit --jq '.mergeCommit.oid' 2>/dev/null || echo "unknown")
+
+          # Apply merged label (terminal state, per docs/labels.md)
+          gh issue edit "$NUMBER" --repo "$REPO" --add-label "merged" || true
+
+          # Post audit comment with merge details
+          gh issue comment "$NUMBER" --repo "$REPO" --body "$(cat <<AUDIT_EOF
+      ✅ **Merge queue: \`merged\`**
+
+      | Field | Value |
+      |---|---|
+      | PR | $PR_URL |
+      | Merge SHA | \`$merge_sha\` |
+      | Workflow run | $RUN_URL |
+
+      Module 9 auto-merged after CODEOWNERS approval + all checks green.
+      The linked issue is now closed.
+
+      🤖 Generated with [Claude Code](https://claude.com/claude-code)
+      AUDIT_EOF
+          )"
+
+  on-failure:
+    needs: [preflight, merge]
+    if: ${{ always() && (needs.preflight.result == 'failure' || needs.merge.result == 'failure') }}
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Resolve PR number for failure context
+        id: pr-num
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "pr=${{ inputs.pr-number }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "pr=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Post failure comment on PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.pr-num.outputs.pr }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(cat <<FAIL_BODY
+      ⚠️ **Merge queue failed.** See [workflow run]($RUN_URL) for details.
+      A maintainer will triage manually.
+      FAIL_BODY
+          )" || true
+
+      - name: Post failure comment + stage:failed on linked issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NUMBER: ${{ needs.preflight.outputs.issue-number || '' }}
+          PR_NUMBER: ${{ steps.pr-num.outputs.pr }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -z "$NUMBER" ]; then
+            echo "::warning::No linked issue — skipping issue failure comment."
+            exit 0
+          fi
+          gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "stage:failed" || true
+          gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(cat <<FAIL_BODY
+      ⚠️ **Merge queue failed** for PR #$PR_NUMBER.
+      See [workflow run]($RUN_URL) for details.
+      A maintainer will triage manually.
+      FAIL_BODY
+          )" || true
