@@ -126,7 +126,15 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          persist-credentials: true
+          # S7 pipeline-fix (2026-07-07): persist-credentials=true + token=CLAUDE_DEV_PAT
+          # was insufficient — actions/checkout's credential helper does not pass
+          # the classic PAT's `workflow` scope header, so pushes touching
+          # .github/workflows/* were rejected with "refusing to allow a GitHub App
+          # to create or update workflow without workflows permission".
+          # Fix: set persist-credentials=false here, and embed the PAT directly
+          # in the git remote URL via extraheader in the push step below. That
+          # makes the PAT's `workflow` scope actually authenticate.
+          persist-credentials: false
           token: ${{ secrets.CLAUDE_DEV_PAT }}
 
       - name: Create head branch (off base, never main)
@@ -174,12 +182,18 @@ jobs:
         id: pr
         env:
           GH_TOKEN: ${{ secrets.CLAUDE_DEV_PAT }}
+          CLAUDE_DEV_PAT: ${{ secrets.CLAUDE_DEV_PAT }}
           HEAD: ${{ steps.branch.outputs.branch-name }}
           SHA: ${{ steps.develop.outputs.commit-sha }}
           SUMMARY: ${{ steps.develop.outputs.summary }}
           PR_TITLE: ${{ github.event.issue.title }}
         run: |
           set -euo pipefail
+          # S7 pipeline-fix (2026-07-07): embed PAT in extraheader so the classic
+          # PAT's `workflow` scope authenticates the push. actions/checkout's
+          # credential helper does not pass the scope header reliably.
+          git config --local --unset http.https://github.com/.extraheader 2>/dev/null || true
+          git config --local http.https://github.com/.extraheader "Authorization: basic $(printf 'x-access-token:%s' "$CLAUDE_DEV_PAT" | base64)"
           # Push the head branch (no force — claude was blocked from force-push anyway).
           git push origin "$HEAD"
           # Build PR body with disclosure preamble + change summary + test plan stub.
