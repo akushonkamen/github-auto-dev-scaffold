@@ -113,7 +113,10 @@ jobs:
         id: queue-clarify
         if: ${{ steps.triage.outputs.decision == 'work' && (steps.triage.outputs.confidence == '' || fromJSON(steps.triage.outputs.confidence) < fromJSON(vars.TRIAGE_RALPH_THRESHOLD || '0.7')) }}
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # S7 pipeline-fix (2026-07-07): use CLAUDE_DEV_PAT so the
+          # `issues.labeled` event actually triggers clarify-loop.yml.
+          # GITHUB_TOKEN-sourced label events don't fire downstream workflows.
+          GH_TOKEN: ${{ secrets.CLAUDE_DEV_PAT }}
           NUMBER: ${{ steps.resolve-issue.outputs.issue-number }}
         run: |
           gh issue edit "$NUMBER" --add-label needs-clarify
@@ -129,7 +132,10 @@ jobs:
       - name: Auto-accept (S2 opt-in, high-confidence only)
         if: ${{ steps.triage.outputs.decision == 'work' && vars.AUTO_ACCEPT_ENABLED == 'true' && steps.triage.outputs.confidence != '' && fromJSON(steps.triage.outputs.confidence) >= fromJSON(vars.TRIAGE_RALPH_THRESHOLD || '0.7') }}
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # S7 pipeline-fix (2026-07-07): use CLAUDE_DEV_PAT so the
+          # `issues.labeled` event actually triggers develop.yml.
+          # GITHUB_TOKEN-sourced label events don't fire downstream workflows.
+          GH_TOKEN: ${{ secrets.CLAUDE_DEV_PAT }}
           NUMBER: ${{ steps.resolve-issue.outputs.issue-number }}
         run: |
           gh issue edit "$NUMBER" --add-label accepted
