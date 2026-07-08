@@ -1,0 +1,98 @@
+# Notion Sync — mirror GitHub Issue label/status changes to a Notion database.
+#
+# Listens for `issues.labeled` and `issues.unlabeled` events, then dispatches
+# to the notion-sync composite action to apply the delta to the Notion page's
+# Labels multi_select and recomputed Status fields.
+#
+# SECURITY (PRD §7 S1): this workflow only reads issue metadata and passes
+# event data to the action — no repo write access needed.
+#   permissions:
+#     issues: read       (read issue labels)
+#     contents: read     (checkout action code)
+#   NEVER add `contents: write`.
+
+name: notion-sync
+
+on:
+  issues:
+    types: [labeled, unlabeled]
+  workflow_dispatch:
+    inputs:
+      issue-number:
+        description: "Issue number to sync (manual test)"
+        required: true
+        type: string
+      event-type:
+        description: "Event type to simulate (labeled | unlabeled)"
+        required: false
+        default: "labeled"
+        type: string
+      label-name:
+        description: "Label name to simulate"
+        required: false
+        default: "accepted"
+        type: string
+
+permissions:
+  issues: read
+  contents: read
+
+concurrency:
+  group: notion-sync-${{ github.event.issue.number || github.event.inputs.issue-number }}
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # Dispatch to the composite action with label event context.
+      # LABEL_NAME is wired here (Option A — workflow-side; the smallest fix).
+      - name: Sync issue event
+        if: github.event_name == 'issues'
+        uses: ./.github/actions/notion-sync
+        with:
+          issue_number: ${{ github.event.issue.number }}
+          event_type: ${{ github.event.action }}
+        env:
+          NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
+          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+          LABEL_NAME: ${{ github.event.label.name }}
+
+      # Manual dispatch path (for testing).
+      - name: Sync manual event
+        if: github.event_name == 'workflow_dispatch'
+        uses: ./.github/actions/notion-sync
+        with:
+          issue_number: ${{ github.event.inputs.issue-number }}
+          event_type: ${{ github.event.inputs.event-type }}
+        env:
+          NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
+          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+          LABEL_NAME: ${{ github.event.inputs.label-name }}
+
+  on-failure:
+    needs: sync
+    if: ${{ always() && needs.sync.result == 'failure' }}
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Mark stage:failed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NUMBER: ${{ github.event.issue.number || github.event.inputs.issue-number }}
+        run: |
+          if [ -z "$NUMBER" ]; then
+            echo "::warning::No issue number on this event."
+            exit 0
+          fi
+          gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "stage:failed" || true
+          gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --body "⚠️ Notion sync failed. See [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details." || true

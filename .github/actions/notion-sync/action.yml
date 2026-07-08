@@ -1,0 +1,38 @@
+# Composite action: Notion Sync
+# Mirrors GitHub Issue label/status changes to a Notion database by updating
+# the page's Labels multi_select and recomputed Status fields.
+#
+# REQUIRED PERMISSIONS (caller workflow must grant):
+#   - (none beyond the secrets/env passed through)
+#
+# Environment variables (passed by caller workflow):
+#   NOTION_API_KEY      — Notion integration token
+#   NOTION_DATABASE_ID  — target Notion database ID
+#   LABEL_NAME          — the label being added/removed (github.event.label.name)
+
+name: "Notion Sync"
+description: "Sync GitHub Issue label/status changes to a Notion database page."
+
+inputs:
+  issue_number:
+    description: "Issue number (GitHub side)"
+    required: true
+  event_type:
+    description: "GitHub event action (labeled | unlabeled | opened | closed | reopened)"
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Run notion-sync script
+      id: sync
+      shell: bash
+      env:
+        NOTION_API_KEY: ${{ env.NOTION_API_KEY }}
+        NOTION_DATABASE_ID: ${{ env.NOTION_DATABASE_ID }}
+        LABEL_NAME: ${{ env.LABEL_NAME }}
+        ISSUE_NUMBER: ${{ inputs.issue_number }}
+        EVENT_TYPE: ${{ inputs.event_type }}
+      run: |
+        set -euo pipefail
+        node "$GITHUB_ACTION_PATH/sync.mjs"
