@@ -1,6 +1,59 @@
-# oh-my-claudecode internal state — never committed (any nesting level)
+# Build artifacts
+.next/
+out/
+dist/
+build/
+*.tsbuildinfo
+coverage/
+.nyc_output/
+*.lcov
+.cache/
+.parcel-cache/
+.turbo/
+.eslintcache
+
+# Dependencies
+node_modules/
+
+# Framework caches
+.vercel
+.nuxt/
+.svelte-kit/
+.remix/
+
+# Test / coverage caches
+.vitest-cache/
+.vitest/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OMC internal state — never committed (any nesting level)
 **/.omc/state/
 **/.omc/logs/
 **/.omc/research/
+**/.omc/drafts/
+**/.omc/handoffs/
+**/.omc/plans/
+**/.omc/specs/
+**/.omc/sessions/
+**/.omc/project-memory.json
 
 # keep .omc/progress.txt (project progress log) at the root
