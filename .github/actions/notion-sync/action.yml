@@ -1,0 +1,133 @@
+# Composite action: Notion Sync
+#
+# Syncs module summaries from completed workflow runs to a Notion database.
+# Handles `module_summary` (workflow_run trigger) and
+# `module_summary_push_fallback` (push-triggered artifact lookup).
+#
+# Sub-bug fixes per Issue #39:
+#   1. Issue number resolved from workflow-run head_branch when not passed
+#      as input (was undefined → Notion API reject).
+#   2. Artifact lookup uses prefix match `module-summary-*` (was exact
+#      match on `module-summary` → always miss).
+#   3. Artifact JSON is downloaded + unzipped by `gh run download` and
+#      read directly by sync.mjs (was base64(zip_bytes) → garbage in Notion).
+#
+# REQUIRED PERMISSIONS (caller workflow must grant):
+#   contents: read
+#   actions:  read    (list + download artifacts)
+
+name: "Notion Sync"
+description: "Download module-summary artifacts and append to Notion pages."
+
+inputs:
+  notion_token:
+    description: "Notion integration token"
+    required: true
+  notion_db_id:
+    description: "Notion database ID"
+    required: true
+  event_type:
+    description: "module_summary | module_summary_push_fallback"
+    required: true
+  issue_number:
+    description: "Issue number (may be empty — extracted from run head_branch if so)"
+    required: false
+    default: ""
+  source_run_id:
+    description: "Workflow run ID whose artifact to download"
+    required: false
+    default: ""
+  repo:
+    description: "GitHub repository (owner/repo)"
+    required: true
+  repo_token:
+    description: "GITHUB_TOKEN with actions:read"
+    required: true
+  head_branch:
+    description: "Workflow run head_branch (for issue-number extraction)"
+    required: false
+    default: ""
+
+outputs:
+  notion-page-id:
+    description: "Notion page ID that was updated"
+    value: ${{ steps.sync.outputs.notion-page-id }}
+
+runs:
+  using: composite
+  steps:
+    # ── Download module-summary artifact ──────────────────────────────────
+    # Sub-bug 2 fix: prefix match `module-summary-*` instead of exact match.
+    # Sub-bug 3 fix: `gh run download` unzips; sync.mjs reads plain JSON.
+    - name: Download module-summary artifact
+      id: download
+      shell: bash
+      if: ${{ inputs.event_type == 'module_summary' || inputs.event_type == 'module_summary_push_fallback' }}
+      env:
+        GH_TOKEN: ${{ inputs.repo_token }}
+        RUN_ID: ${{ inputs.source_run_id }}
+        REPO: ${{ inputs.repo }}
+      run: |
+        set -euo pipefail
+
+        if [ -z "$RUN_ID" ]; then
+          echo "::warning::SOURCE_RUN_ID is empty — cannot download artifact"
+          exit 0
+        fi
+
+        # List artifacts for this run and find the module-summary-* one.
+        artifacts_json=$(gh api "repos/$REPO/actions/runs/$RUN_ID/artifacts" \
+          --jq '.artifacts' 2>&1) || {
+          echo "::warning::Failed to list artifacts for run $RUN_ID: $artifacts_json"
+          exit 0
+        }
+
+        artifact_name=$(echo "$artifacts_json" | jq -r \
+          '.[] | select(.name | startswith("module-summary-")) | .name' 2>/dev/null || true)
+
+        if [ -z "$artifact_name" ] || [ "$artifact_name" = "null" ]; then
+          echo "::warning::No module-summary-* artifact found in run $RUN_ID (sub-bug 2 condition)"
+          exit 0
+        fi
+
+        echo "Found artifact: $artifact_name"
+
+        # Download + unzip into ARTIFACT_DIR.
+        artifact_dir="/tmp/notion-sync-artifact"
+        rm -rf "$artifact_dir"
+        mkdir -p "$artifact_dir"
+
+        gh run download "$RUN_ID" \
+          --repo "$REPO" \
+          --name "$artifact_name" \
+          --dir "$artifact_dir"
+
+        # Locate the JSON file inside the artifact.
+        json_path=$(find "$artifact_dir" -name 'module-summary.json' -type f 2>/dev/null | head -1)
+        if [ -z "$json_path" ]; then
+          # Maybe it's the only JSON file in the directory.
+          json_path=$(find "$artifact_dir" -name '*.json' -type f 2>/dev/null | head -1)
+        fi
+
+        if [ -z "$json_path" ]; then
+          echo "::warning::Artifact downloaded but no JSON file found inside"
+          exit 0
+        fi
+
+        echo "artifact-json-path=$json_path" >> "$GITHUB_OUTPUT"
+
+    # ── Run sync script ────────────────────────────────────────────────────
+    - name: Run sync.mjs
+      id: sync
+      shell: bash
+      env:
+        NOTION_TOKEN: ${{ inputs.notion_token }}
+        NOTION_DB_ID: ${{ inputs.notion_db_id }}
+        EVENT_TYPE: ${{ inputs.event_type }}
+        ISSUE_NUMBER: ${{ inputs.issue_number }}
+        SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+        REPO: ${{ inputs.repo }}
+        GH_TOKEN: ${{ inputs.repo_token }}
+        ARTIFACT_JSON_PATH: ${{ steps.download.outputs.artifact-json-path }}
+        WORKFLOW_RUN_HEAD_BRANCH: ${{ inputs.head_branch }}
+      run: node "$GITHUB_ACTION_PATH/sync.mjs"
