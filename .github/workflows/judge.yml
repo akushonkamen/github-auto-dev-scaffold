@@ -138,6 +138,30 @@ jobs:
           set -euo pipefail
           ./.github/actions/judge/apply.sh
 
+      # ─── Module summary artifact (Module 10 Notion mirror) ──────────────
+      - name: Emit module-summary artifact
+        if: always()
+        env:
+          DECISION: ${{ needs.judge.outputs.decision }}
+          CONFIDENCE: ${{ needs.judge.outputs.confidence }}
+        run: |
+          set -eu
+          mkdir -p /tmp/module-summary
+          jq -nc \
+            --arg module judge \
+            --arg status "${DECISION:-unknown}" \
+            --arg confidence "${CONFIDENCE:-0}" \
+            '{module: $module, status: $status, confidence: $confidence}' \
+            > /tmp/module-summary/summary.json
+
+      - name: Upload module-summary artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: module-summary-judge
+          path: /tmp/module-summary/summary.json
+          retention-days: 7
+
   # Failure path covers gate, judge, AND apply failures.
   # `if: always()` + per-need result checks is the only reliable pattern when
   # apply (a non-fan-out sibling) can fail.

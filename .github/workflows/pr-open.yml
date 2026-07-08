@@ -166,6 +166,30 @@ jobs:
           AUDIT_EOF
           )"
 
+      # ─── Module summary artifact (Module 10 Notion mirror) ──────────────
+      - name: Emit module-summary artifact
+        if: always()
+        env:
+          STAGE: ${{ steps.composite.outputs.stage }}
+          PR_URL: ${{ steps.composite.outputs.pr-url }}
+        run: |
+          set -eu
+          mkdir -p /tmp/module-summary
+          jq -nc \
+            --arg module pr-open \
+            --arg status "${STAGE:-unknown}" \
+            --arg pr_url "${PR_URL:-}" \
+            '{module: $module, status: $status, pr_url: $pr_url}' \
+            > /tmp/module-summary/summary.json
+
+      - name: Upload module-summary artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: module-summary-pr-open
+          path: /tmp/module-summary/summary.json
+          retention-days: 7
+
   on-failure:
     needs: [preflight, pr-open]
     if: ${{ always() && (needs.preflight.result == 'failure' || needs.pr-open.result == 'failure') }}

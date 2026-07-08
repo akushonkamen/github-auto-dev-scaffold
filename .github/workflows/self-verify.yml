@@ -163,6 +163,32 @@ jobs:
           PR_BODY
           )"
 
+      # ─── Module summary artifact (Module 10 Notion mirror) ──────────────
+      - name: Emit module-summary artifact
+        if: always()
+        env:
+          VERIFY_STATUS: ${{ steps.verify.outputs.verify-status }}
+          REPORT: ${{ steps.verify.outputs.verify-report }}
+        run: |
+          set -eu
+          mkdir -p /tmp/module-summary
+          # Truncate report to 500 chars for artifact (observer picks up full comments separately)
+          short_report=$(printf '%s' "${REPORT:-}" | head -c 500)
+          jq -nc \
+            --arg module self-verify \
+            --arg status "${VERIFY_STATUS:-unknown}" \
+            --arg report "$short_report" \
+            '{module: $module, status: $status, report: $report}' \
+            > /tmp/module-summary/summary.json
+
+      - name: Upload module-summary artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: module-summary-self-verify
+          path: /tmp/module-summary/summary.json
+          retention-days: 7
+
   on-failure:
     needs: self-verify
     if: ${{ always() && needs.self-verify.result == 'failure' }}

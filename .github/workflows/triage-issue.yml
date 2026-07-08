@@ -154,6 +154,30 @@ jobs:
         run: |
           gh issue comment "$NUMBER" --body "📊 Claude recommends entering development (confidence: ${CONFIDENCE}). Maintainer review required — apply \`accepted\` to proceed, or \`rejected\` to close."
 
+      # ─── Module summary artifact (Module 10 Notion mirror) ──────────────
+      - name: Emit module-summary artifact
+        if: always()
+        env:
+          DECISION: ${{ steps.triage.outputs.decision }}
+          CONFIDENCE: ${{ steps.triage.outputs.confidence }}
+        run: |
+          set -eu
+          mkdir -p /tmp/module-summary
+          jq -nc \
+            --arg module triage \
+            --arg status "$DECISION" \
+            --arg confidence "$CONFIDENCE" \
+            '{module: $module, status: $status, confidence: $confidence}' \
+            > /tmp/module-summary/summary.json
+
+      - name: Upload module-summary artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: module-summary-triage
+          path: /tmp/module-summary/summary.json
+          retention-days: 7
+
   # Failure path: post a stage:failed comment and label, do not block other issues.
   # PRD §6 graceful degradation.
   on-failure:

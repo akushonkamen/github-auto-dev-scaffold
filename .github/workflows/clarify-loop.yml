@@ -305,6 +305,28 @@ jobs:
               ;;
           esac
 
+      # ─── Module summary artifact (Module 10 Notion mirror) ──────────────
+      - name: Emit module-summary artifact
+        if: always()
+        env:
+          ACTION: ${{ steps.dispatch.outputs.action }}
+        run: |
+          set -eu
+          mkdir -p /tmp/module-summary
+          jq -nc \
+            --arg module clarify \
+            --arg status "${ACTION:-unknown}" \
+            '{module: $module, status: $status}' \
+            > /tmp/module-summary/summary.json
+
+      - name: Upload module-summary artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: module-summary-clarify
+          path: /tmp/module-summary/summary.json
+          retention-days: 7
+
       - name: AC-V2-13a — log-scan for secret leaks
         if: always()
         env:

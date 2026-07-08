@@ -226,6 +226,29 @@ jobs:
           AUDIT_EOF
           )"
 
+      # ─── Module summary artifact (Module 10 Notion mirror) ──────────────
+      - name: Emit module-summary artifact
+        if: always()
+        env:
+          ISSUE_NUMBER: ${{ needs.preflight.outputs.issue-number }}
+        run: |
+          set -eu
+          mkdir -p /tmp/module-summary
+          jq -nc \
+            --arg module merge-queue \
+            --arg status merged \
+            --arg issue_number "${ISSUE_NUMBER:-}" \
+            '{module: $module, status: $status, issue_number: $issue_number}' \
+            > /tmp/module-summary/summary.json
+
+      - name: Upload module-summary artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: module-summary-merge-queue
+          path: /tmp/module-summary/summary.json
+          retention-days: 7
+
   on-failure:
     needs: [preflight, merge]
     if: ${{ always() && (needs.preflight.result == 'failure' || needs.merge.result == 'failure') }}

@@ -1,0 +1,112 @@
+# Composite action: Notion Issue mirror (Module 10 side integration)
+#
+# Mirrors GitHub Issue state to a Notion database. This is a SIDE INTEGRATION —
+# it observes labels and module completion events but does NOT trigger label
+# transitions (S2 preserved). The observer workflow
+# (.github/workflows/notion-sync.yml) collects module-summary artifacts from
+# the 9 pipeline workflows, calls this action, which invokes sync.mjs to
+# upsert the Notion page.
+#
+# SECURITY POSTURE:
+#   - NOTION_API_KEY scoped per-job in the calling workflow (S3)
+#   - This action does NOT mutate GitHub state — no label transitions (S2)
+#   - No token printing (S4)
+#   - No GitHub token required (read-only Notion API call)
+#
+# REQUIRED PERMISSIONS (calling workflow must grant):
+#   actions: read   (download module-summary artifacts)
+#   contents: read  (checkout for sync.mjs)
+#   issues: write   (read issue body + labels for mirroring)
+#
+# Setup guide: docs/notion-integration.md
+
+name: "Module 10 — Notion Issue mirror (side)"
+description: "Mirrors GitHub Issue state to a Notion database page."
+
+inputs:
+  issue-number:
+    description: "Issue number to mirror"
+    required: true
+  event-type:
+    description: "Triggering event type (issues.opened / labeled / unlabeled / workflow_run.completed / push)"
+    required: true
+  notion-api-key:
+    description: "Notion integration token (NOTION_API_KEY — scoped per-job, S3)"
+    required: true
+  notion-database-id:
+    description: "Notion database ID where issue pages are created"
+    required: true
+  notion-label-name:
+    description: "Name of the Notion label property (optional; defaults to LABEL_NAME env or 'Labels')"
+    required: false
+    default: ""
+
+outputs:
+  notion-page-url:
+    description: "URL of the upserted Notion page (empty on failure)"
+    value: ${{ steps.sync.outputs.notion-page-url }}
+  sync-status:
+    description: "sync | noop | error"
+    value: ${{ steps.sync.outputs.sync-status }}
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Install dependencies
+      shell: bash
+      run: |
+        cd "${{ github.action_path }}"
+        npm ci --silent 2>/dev/null || npm install --silent
+
+    - name: Resolve label property name
+      id: label-name
+      shell: bash
+      env:
+        INPUT_LABEL_NAME: ${{ inputs.notion-label-name }}
+      run: |
+        label="${INPUT_LABEL_NAME:-${LABEL_NAME:-Labels}}"
+        echo "label-name=$label" >> "$GITHUB_OUTPUT"
+
+    - name: Download module-summary artifacts (workflow_run only)
+      id: download-artifacts
+      if: inputs.event-type == 'workflow_run.completed'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        RUN_ID: ${{ github.event.workflow_run.id }}
+        ISSUE_NUMBER: ${{ inputs.issue-number }}
+      run: |
+        set -euo pipefail
+        mkdir -p /tmp/notion-sync-artifacts
+        # Download artifacts matching "module-summary-*" from the triggering run
+        artifacts=$(gh run view "$RUN_ID" --repo "$GITHUB_REPOSITORY" --json artifacts \
+          --jq '.artifacts[] | select(.name | startswith("module-summary-")) | .name + "=" + (.id|tostring)' 2>/dev/null || echo "")
+        echo "artifacts=$artifacts" >> "$GITHUB_OUTPUT"
+        if [ -n "$artifacts" ]; then
+          for entry in $artifacts; do
+            name="${entry%%=*}"
+            id="${entry##*=}"
+            gh run download "$id" --repo "$GITHUB_REPOSITORY" --dir "/tmp/notion-sync-artifacts/$name" 2>/dev/null || true
+          done
+        fi
+
+    - name: Run sync
+      id: sync
+      shell: bash
+      env:
+        NOTION_API_KEY: ${{ inputs.notion-api-key }}
+        NOTION_DATABASE_ID: ${{ inputs.notion-database-id }}
+        LABEL_NAME: ${{ steps.label-name.outputs.label-name }}
+        GH_TOKEN: ${{ github.token }}
+        ISSUE_NUMBER: ${{ inputs.issue-number }}
+        EVENT_TYPE: ${{ inputs.event-type }}
+        ARTIFACTS_DIR: /tmp/notion-sync-artifacts
+        NOTION_SYNC_DIR: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        node "$NOTION_SYNC_DIR/sync.mjs"

@@ -237,6 +237,33 @@ jobs:
           gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "accepted" 2>/dev/null || true
           gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "in-development"
 
+      # ─── Module summary artifact (Module 10 Notion mirror) ──────────────
+      - name: Emit module-summary artifact
+        if: always()
+        env:
+          BRANCH: ${{ needs.preflight.outputs.head-branch }}
+          SHA: ${{ steps.develop.outputs.commit-sha || '' }}
+          SUMMARY: ${{ steps.develop.outputs.summary || '' }}
+        run: |
+          set -eu
+          mkdir -p /tmp/module-summary
+          jq -nc \
+            --arg module develop \
+            --arg status completed \
+            --arg branch "$BRANCH" \
+            --arg sha "$SHA" \
+            --arg summary "$SUMMARY" \
+            '{module: $module, status: $status, branch: $branch, sha: $sha, summary: $summary}' \
+            > /tmp/module-summary/summary.json
+
+      - name: Upload module-summary artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: module-summary-develop
+          path: /tmp/module-summary/summary.json
+          retention-days: 7
+
   on-failure:
     needs: [preflight, develop]
     if: ${{ always() && (needs.preflight.result == 'failure' || needs.develop.result == 'failure') }}

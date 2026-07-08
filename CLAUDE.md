@@ -12,6 +12,10 @@ Issue flows through 10 modules (triage → judgement → design → develop → 
 and Label transitions — they never call each other directly. The Label taxonomy
 is the protocol layer.
 
+Module 10 (Notion Issue mirror) is a **side integration** — it observes labels
+and module completion events but does NOT trigger label transitions (S2/S3
+preserved). See [`docs/notion-integration.md`](docs/notion-integration.md).
+
 Authoritative PRD lives at [`PRD.md`](./PRD.md) (drop it there). Pipeline
 overview at [`docs/architecture.md`](docs/architecture.md).
 
@@ -28,6 +32,7 @@ overview at [`docs/architecture.md`](docs/architecture.md).
     self-verify/    Module 5
     test/           Module 6
     pr-open/        Modules 7+8
+    notion-sync/    Module 10 (side integration — observes, does NOT mutate)
   ISSUE_TEMPLATE/ # structured Issue Forms (Module 1)
   CODEOWNERS      # review ownership (Module 8)
   labels.yml      # machine-readable Label taxonomy
@@ -38,6 +43,7 @@ docs/
   triage-modes.md          # auto/manual/hybrid modes + threshold calibration
   composite-action-spec.md # interface spec for every composite action (PRD §8 item 3)
   security.md              # security red lines operational guide
+  notion-integration.md    # Module 10 setup guide + v1 boundaries
 CLAUDE.md                  # this file
 README.md
 ```
@@ -61,9 +67,11 @@ those directories**; the Issue/PR will name the directories that matter.
 | 7 | PR open | Claude | Module 6 passed | Draft/ready PR |
 | 8 | Review | Claude + CODEOWNERS | `pull_request.opened` | Approve / Changes |
 | 9 | Merge | Merge Queue | approved + green | merge + close |
+| 10 | Notion Issue mirror | Node.js (gh CLI + Notion API) | `issues.opened/labeled/unlabeled`, `workflow_run.completed` (9 modules), `push` to `claude/issue-*` | Notion page upsert (side — NO label transitions) |
 
 Full table + transition rules in [`docs/labels.md`](docs/labels.md) and
 [`docs/architecture.md`](docs/architecture.md).
+Module 10 is a **side integration** — see [`docs/notion-integration.md`](docs/notion-integration.md).
 
 ## Label state machine (5-line summary)
 

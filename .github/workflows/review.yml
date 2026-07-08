@@ -185,6 +185,28 @@ jobs:
           REVIEW_BODY
           )"
 
+      # ─── Module summary artifact (Module 10 Notion mirror) ──────────────
+      - name: Emit module-summary artifact
+        if: always()
+        env:
+          REVIEW_STATUS: ${{ steps.review.outputs.review-status }}
+        run: |
+          set -eu
+          mkdir -p /tmp/module-summary
+          jq -nc \
+            --arg module review \
+            --arg status "${REVIEW_STATUS:-unknown}" \
+            '{module: $module, status: $status}' \
+            > /tmp/module-summary/summary.json
+
+      - name: Upload module-summary artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: module-summary-review
+          path: /tmp/module-summary/summary.json
+          retention-days: 7
+
   on-failure:
     needs: [preflight, review]
     if: ${{ always() && (needs.preflight.result == 'failure' || needs.review.result == 'failure') }}

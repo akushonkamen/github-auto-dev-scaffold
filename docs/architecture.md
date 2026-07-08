@@ -56,6 +56,11 @@ Issue opened
 | 7 PR open | Claude Code (GLM passthrough) | `issues.labeled: tested` | ready-for-review comment + `in-review` label on PR ✅ LIVE |
 | 8 Review | Claude Code + CODEOWNERS | `pull_request.labeled: in-review` | AI initial review comment + human approval via CODEOWNERS ✅ LIVE |
 | 9 Merge | GitHub Merge Queue | status checks + approval | Merge + Issue close |
+| 10 | Notion Issue mirror | Node.js (gh CLI + Notion API, sync.mjs) | `issues.opened/labeled/unlabeled`, `workflow_run.completed` (9 modules), `push` to `claude/issue-*` | Notion page upsert (side integration — NO label transitions, S2 preserved) |
+
+Module 10 is a **side integration**: it observes the pipeline but does NOT
+trigger label transitions. See [`docs/notion-integration.md`](notion-integration.md)
+for the setup guide (4 steps) and v1 boundaries.
 
 See [`docs/labels.md`](labels.md) for the protocol layer, [`docs/composite-action-spec.md`](composite-action-spec.md) for action interfaces, and `CLAUDE.md` for the AI agent map.
 
