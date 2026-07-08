@@ -224,6 +224,28 @@ jobs:
           PR_BODY
           )"
 
+      - name: Emit module summary
+        if: always()
+        run: |
+          set +e
+          mkdir -p ./.notion-out
+          ISSUE_NUM="${{ github.event.issue.number }}"
+          STATUS="${{ steps.test.outputs.test-status }}"
+          REPORT="${{ steps.test.outputs.test-report }}"
+          SUMMARY="Test status: $STATUS. Report: $REPORT"
+          ESCAPED_SUMMARY=$(printf '%s' "$SUMMARY" | jq -Rs .)
+          cat > ./.notion-out/module-summary.json <<EOF
+          { "module_name": "test", "issue_number": "$ISSUE_NUM", "summary": $ESCAPED_SUMMARY, "github_url": "${{ steps.pr.outputs.pr-url }}", "run_id": "${{ github.run_id }}", "timestamp": "$(date -u +%FT%TZ)" }
+          EOF
+        shell: bash
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        continue-on-error: true
+        with:
+          name: module-summary-test-${{ github.run_id }}
+          path: ./.notion-out/module-summary.json
+
   on-failure:
     needs: test
     if: ${{ always() && needs.test.result == 'failure' }}

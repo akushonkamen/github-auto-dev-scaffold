@@ -185,6 +185,28 @@ jobs:
           REVIEW_BODY
           )"
 
+      - name: Emit module summary
+        if: always()
+        run: |
+          set +e
+          mkdir -p ./.notion-out
+          ISSUE_NUM="${{ needs.preflight.outputs.issue-number }}"
+          PR_NUM="${{ github.event.pull_request.number }}"
+          STATUS="${{ steps.review.outputs.review-status }}"
+          SUMMARY="AI review status: $STATUS for PR #$PR_NUM"
+          ESCAPED_SUMMARY=$(printf '%s' "$SUMMARY" | jq -Rs .)
+          cat > ./.notion-out/module-summary.json <<EOF
+          { "module_name": "review", "issue_number": "$ISSUE_NUM", "summary": $ESCAPED_SUMMARY, "github_url": "${{ github.server_url }}/${{ github.repository }}/pull/$PR_NUM", "run_id": "${{ github.run_id }}", "timestamp": "$(date -u +%FT%TZ)" }
+          EOF
+        shell: bash
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        continue-on-error: true
+        with:
+          name: module-summary-review-${{ github.run_id }}
+          path: ./.notion-out/module-summary.json
+
   on-failure:
     needs: [preflight, review]
     if: ${{ always() && (needs.preflight.result == 'failure' || needs.review.result == 'failure') }}

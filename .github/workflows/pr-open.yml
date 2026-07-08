@@ -166,6 +166,28 @@ jobs:
           AUDIT_EOF
           )"
 
+      - name: Emit module summary
+        if: always()
+        run: |
+          set +e
+          mkdir -p ./.notion-out
+          ISSUE_NUM="${{ github.event.issue.number }}"
+          PR_URL="${{ steps.composite.outputs.pr-url }}"
+          if [ -z "$PR_URL" ]; then PR_URL="pr_opened"; fi
+          SUMMARY="PR opened and marked ready for review: $PR_URL"
+          ESCAPED_SUMMARY=$(printf '%s' "$SUMMARY" | jq -Rs .)
+          cat > ./.notion-out/module-summary.json <<EOF
+          { "module_name": "pr-open", "issue_number": "$ISSUE_NUM", "summary": $ESCAPED_SUMMARY, "github_url": "$PR_URL", "run_id": "${{ github.run_id }}", "timestamp": "$(date -u +%FT%TZ)" }
+          EOF
+        shell: bash
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        continue-on-error: true
+        with:
+          name: module-summary-pr-open-${{ github.run_id }}
+          path: ./.notion-out/module-summary.json
+
   on-failure:
     needs: [preflight, pr-open]
     if: ${{ always() && (needs.preflight.result == 'failure' || needs.pr-open.result == 'failure') }}

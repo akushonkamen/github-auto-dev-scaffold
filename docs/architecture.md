@@ -56,6 +56,9 @@ Issue opened
 | 7 PR open | Claude Code (GLM passthrough) | `issues.labeled: tested` | ready-for-review comment + `in-review` label on PR ✅ LIVE |
 | 8 Review | Claude Code + CODEOWNERS | `pull_request.labeled: in-review` | AI initial review comment + human approval via CODEOWNERS ✅ LIVE |
 | 9 Merge | GitHub Merge Queue | status checks + approval | Merge + Issue close |
+| 10 (side) | Notion mirror | webhook + workflow | `issues.opened/labeled/unlabeled`, `workflow_run.completed` (9 module workflows), `push` to `claude/issue-*` | Notion DB entry (Status + module summaries) |
+
+**Note**: Module 10 is a **side integration**, not a pipeline module. It only observes labels and module completion events; it does NOT trigger label transitions. See [`docs/notion-integration.md`](notion-integration.md) for setup.
 
 See [`docs/labels.md`](labels.md) for the protocol layer, [`docs/composite-action-spec.md`](composite-action-spec.md) for action interfaces, and `CLAUDE.md` for the AI agent map.
 

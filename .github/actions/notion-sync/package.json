@@ -1,0 +1,19 @@
+{
+  "name": "notion-sync-action",
+  "version": "1.0.0",
+  "description": "Sync GitHub Issues to Notion database",
+  "type": "module",
+  "main": "sync.mjs",
+  "scripts": {
+    "test": "vitest"
+  },
+  "dependencies": {
+    "@notionhq/client": "^2.2.15"
+  },
+  "devDependencies": {
+    "vitest": "^2.1.9"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

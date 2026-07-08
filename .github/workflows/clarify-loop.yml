@@ -327,6 +327,28 @@ jobs:
             echo "AC-V2-13a: 0 matches"
           fi
 
+      - name: Emit module summary
+        if: always()
+        run: |
+          set +e
+          mkdir -p ./.notion-out
+          ISSUE_NUM="${{ github.event.issue.number }}"
+          ACTION="${{ steps.dispatch.outputs.action }}"
+          if [ -z "$ACTION" ]; then ACTION="clarify_completed"; fi
+          SUMMARY="Clarify loop action: $ACTION"
+          ESCAPED_SUMMARY=$(printf '%s' "$SUMMARY" | jq -Rs .)
+          cat > ./.notion-out/module-summary.json <<EOF
+          { "module_name": "clarify-loop", "issue_number": "$ISSUE_NUM", "summary": $ESCAPED_SUMMARY, "github_url": "${{ github.server_url }}/${{ github.repository }}/issues/$ISSUE_NUM", "run_id": "${{ github.run_id }}", "timestamp": "$(date -u +%FT%TZ)" }
+          EOF
+        shell: bash
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        continue-on-error: true
+        with:
+          name: module-summary-clarify-loop-${{ github.run_id }}
+          path: ./.notion-out/module-summary.json
+
   on-failure:
     needs: [preflight, clarify]
     if: ${{ always() && (needs.preflight.result == 'failure' || needs.clarify.result == 'failure') }}

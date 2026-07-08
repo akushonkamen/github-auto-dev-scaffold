@@ -155,3 +155,25 @@ jobs:
         run: |
           gh issue edit "$NUMBER" --add-label "stage:failed" --remove-label "triage-done" || true
           gh issue comment "$NUMBER" --body "⚠️ Module 3 (judge) failed in mode \`${{ needs.gate.outputs.mode }}\`. See [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details. A maintainer will triage."
+
+      - name: Emit module summary
+        if: always()
+        run: |
+          set +e
+          mkdir -p ./.notion-out
+          ISSUE_NUM="${{ needs.gate.outputs.issue-number }}"
+          DECISION="${{ needs.judge.outputs.decision }}"
+          REASON="${{ needs.judge.outputs.reason }}"
+          SUMMARY="Judge decision: $DECISION. Reason: $REASON"
+          ESCAPED_SUMMARY=$(printf '%s' "$SUMMARY" | jq -Rs .)
+          cat > ./.notion-out/module-summary.json <<EOF
+          { "module_name": "judge", "issue_number": "$ISSUE_NUM", "summary": $ESCAPED_SUMMARY, "github_url": "${{ github.server_url }}/${{ github.repository }}/issues/$ISSUE_NUM", "run_id": "${{ github.run_id }}", "timestamp": "$(date -u +%FT%TZ)" }
+          EOF
+        shell: bash
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        continue-on-error: true
+        with:
+          name: module-summary-judge-${{ github.run_id }}
+          path: ./.notion-out/module-summary.json

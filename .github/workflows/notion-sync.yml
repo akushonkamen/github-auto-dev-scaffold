@@ -1,0 +1,53 @@
+name: notion-sync
+
+on:
+  issues:
+    types: [opened, labeled, unlabeled]
+  workflow_run:
+    workflows: [triage-issue, clarify-loop, judge, develop, self-verify, test, pr-open, review, merge-queue]
+    types: [completed]
+  push:
+    branches: [claude/issue-*]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Sync issue event
+        if: github.event_name == 'issues'
+        uses: ./.github/actions/notion-sync
+        with:
+          issue_number: ${{ github.event.issue.number }}
+          event_type: ${{ github.event.action }}
+        env:
+          NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
+          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+        continue-on-error: true
+      - name: Sync module summary (workflow_run)
+        if: github.event_name == 'workflow_run'
+        uses: ./.github/actions/notion-sync
+        with:
+          event_type: module_summary
+          source_run_id: ${{ github.event.workflow_run.id }}
+        env:
+          NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
+          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+      - name: Sync module summary (push fallback)
+        if: github.event_name == 'push'
+        uses: ./.github/actions/notion-sync
+        with:
+          event_type: module_summary_push_fallback
+          branch: ${{ github.ref }}
+          commit_sha: ${{ github.sha }}
+        env:
+          NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
+          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true

@@ -105,6 +105,10 @@ See [`docs/security.md`](docs/security.md) for the operational playbook and inci
 - Fallback chain: if the chosen model is unavailable, fall back one tier (Opus → Sonnet → Haiku). Document any fallback in the audit comment.
 - API keys per engine: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` — scoped per-job, never workflow-global (S3).
 
+## Side integrations
+
+The Notion Issue mirror ([`docs/notion-integration.md`](docs/notion-integration.md)) is a side integration. It is not a pipeline module; it only observes labels and module completion events. Its only secret `NOTION_API_KEY` is scoped to the `notion-sync.yml` job (S3 compliance). It does NOT trigger label transitions (S2 preserved). S1/S3/S6 red lines apply unchanged.
+
 ## References
 
 - [PRD (drop here as `PRD.md`)](./PRD.md) — authoritative spec

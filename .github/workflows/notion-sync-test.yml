@@ -1,0 +1,43 @@
+name: notion-sync-test
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: 'GitHub Issue number to sync'
+        required: true
+        type: number
+      event_type:
+        description: 'Event type (created, labeled, unlabeled, module_summary)'
+        required: false
+        default: 'created'
+        type: choice
+        options:
+          - created
+          - labeled
+          - unlabeled
+          - module_summary
+      dry_run:
+        description: 'Dry run mode (safely fail by not calling Notion API)'
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  test-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test Notion sync
+        uses: ./.github/actions/notion-sync
+        with:
+          issue_number: ${{ inputs.issue_number }}
+          event_type: ${{ inputs.event_type }}
+        env:
+          NOTION_API_KEY: ${{ inputs.dry_run == '' && secrets.NOTION_API_KEY || '' }}
+          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

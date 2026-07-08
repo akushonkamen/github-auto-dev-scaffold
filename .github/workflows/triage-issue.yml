@@ -154,6 +154,27 @@ jobs:
         run: |
           gh issue comment "$NUMBER" --body "📊 Claude recommends entering development (confidence: ${CONFIDENCE}). Maintainer review required — apply \`accepted\` to proceed, or \`rejected\` to close."
 
+      - name: Emit module summary
+        if: always()
+        run: |
+          set +e
+          mkdir -p ./.notion-out
+          ISSUE_NUM="${{ steps.resolve-issue.outputs.issue-number }}"
+          SUMMARY="${{ steps.triage.outputs.comment_body }}"
+          if [ -z "$SUMMARY" ]; then SUMMARY="triage completed"; fi
+          ESCAPED_SUMMARY=$(printf '%s' "$SUMMARY" | jq -Rs .)
+          cat > ./.notion-out/module-summary.json <<EOF
+          { "module_name": "triage", "issue_number": "$ISSUE_NUM", "summary": $ESCAPED_SUMMARY, "github_url": "${{ github.server_url }}/${{ github.repository }}/issues/$ISSUE_NUM", "run_id": "${{ github.run_id }}", "timestamp": "$(date -u +%FT%TZ)" }
+          EOF
+        shell: bash
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        continue-on-error: true
+        with:
+          name: module-summary-triage-${{ github.run_id }}
+          path: ./.notion-out/module-summary.json
+
   # Failure path: post a stage:failed comment and label, do not block other issues.
   # PRD §6 graceful degradation.
   on-failure:

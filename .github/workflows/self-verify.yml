@@ -163,6 +163,28 @@ jobs:
           PR_BODY
           )"
 
+      - name: Emit module summary
+        if: always()
+        run: |
+          set +e
+          mkdir -p ./.notion-out
+          ISSUE_NUM="${{ steps.issue.outputs.number }}"
+          STATUS="${{ steps.verify.outputs.verify-status }}"
+          REPORT="${{ steps.verify.outputs.verify-report }}"
+          SUMMARY="Self-verify status: $STATUS. Report: $REPORT"
+          ESCAPED_SUMMARY=$(printf '%s' "$SUMMARY" | jq -Rs .)
+          cat > ./.notion-out/module-summary.json <<EOF
+          { "module_name": "self-verify", "issue_number": "$ISSUE_NUM", "summary": $ESCAPED_SUMMARY, "github_url": "${{ github.event.pull_request.html_url }}", "run_id": "${{ github.run_id }}", "timestamp": "$(date -u +%FT%TZ)" }
+          EOF
+        shell: bash
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        continue-on-error: true
+        with:
+          name: module-summary-self-verify-${{ github.run_id }}
+          path: ./.notion-out/module-summary.json
+
   on-failure:
     needs: self-verify
     if: ${{ always() && needs.self-verify.result == 'failure' }}
