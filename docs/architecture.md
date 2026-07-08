@@ -31,7 +31,14 @@ Issue opened
    ▼
 [Module 6] Test (second Claude Code process — tool-restricted tester, v2)
    │
-   ▼
+   ├── passed → tested → [Module 7]
+   │
+   └── failed → test:failed
+                  │
+                  ├── retry N < max (default 3): auto-retry → test:retry-N + accepted
+                  │     └── [Module 4] re-runs with prior test report injected
+                  │
+                  └── retry N ≥ max: stage:failed → maintainer triage
 [Module 7] Open PR (Claude)
    │
    ▼ (pull_request.opened)
@@ -52,7 +59,7 @@ Issue opened
 | 3.5 Design review | Claude Code (+ human) | size threshold hit on `accepted` | Comment + `design-approved` |
 | 4 Develop | Claude Code (GLM passthrough) | `labeled: accepted` OR `accepted-by-claude` | feature branch + PR (CLAUDE_DEV_PAT as PR opener) |
 | 5 Self-verify | Claude Code (GLM passthrough, v2) | `pull_request.opened` / `.synchronize` on `claude/issue-*` branches targeting `dev` | verify report + `verified` / `verify:failed` label (shipped) |
-| 6 Test | Claude Code (second isolated process, tool-restricted tester — PRD §4 amendment) | `issues.labeled: verified` | test report + `tested` / `test:failed` label (shipped, v2) |
+| 6 Test | Claude Code (second isolated process, tool-restricted tester — PRD §4 amendment) | `issues.labeled: verified` | test report + `tested` / `test:failed` label (shipped, v2). On fail: auto-retry Module 4 up to `TEST_RETRY_MAX` times with prior report injected. |
 | 7 PR open | Claude Code (GLM passthrough) | `issues.labeled: tested` | ready-for-review comment + `in-review` label on PR ✅ LIVE |
 | 8 Review | Claude Code + CODEOWNERS | `pull_request.labeled: in-review` | AI initial review comment + human approval via CODEOWNERS ✅ LIVE |
 | 9 Merge | GitHub Merge Queue | status checks + approval | Merge + Issue close |

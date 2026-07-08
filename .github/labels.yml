@@ -102,6 +102,18 @@ labels:
     color: "b60205"
     description: "Module 6 test failed; needs maintainer review"
     category: stage
+  - name: "test:retry-1"
+    color: "fbca04"
+    description: "Auto-retry 1/3: re-running Module 4 with test feedback"
+    category: stage
+  - name: "test:retry-2"
+    color: "fbca04"
+    description: "Auto-retry 2/3: re-running Module 4 with test feedback"
+    category: stage
+  - name: "test:retry-3"
+    color: "fbca04"
+    description: "Auto-retry 3/3: re-running Module 4 with test feedback"
+    category: stage
   - name: ready-for-pr
     color: "1d76db"
     description: "Tests passed; PR may be opened"

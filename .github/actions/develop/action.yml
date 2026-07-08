@@ -63,6 +63,10 @@ inputs:
     description: "Detected dominant natural language of the issue body (e.g. 'zh', 'en')."
     required: false
     default: "en"
+  prior-test-report:
+    description: "Prior Module 6 test report from a previous failed run (retry path). Empty = first attempt."
+    required: false
+    default: ""
 
 outputs:
   branch-name:
@@ -193,6 +197,16 @@ runs:
           ```
           ${{ steps.issue.outputs.body }}
           ```
+          ${{ inputs.prior-test-report != '' && '
+          ## Prior test feedback (retry attempt)
+
+          The previous Module 6 test run on this issue failed. The test report is
+          included below. Review it carefully and fix the issues identified before
+          committing. This is a retry — the prior implementation did not pass tests.
+
+          ---
+
+          ' || '' }}${{ inputs.prior-test-report }}
 
           ## Task
           Implement the issue on the head branch (already checked out for you).
