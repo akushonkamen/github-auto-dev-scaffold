@@ -2,5 +2,57 @@
 **/.omc/state/
 **/.omc/logs/
 **/.omc/research/
+**/.omc/drafts/
+**/.omc/handoffs/
+**/.omc/plans/
+**/.omc/specs/
+**/.omc/sessions/
+**/.omc/project-memory.json
 
 # keep .omc/progress.txt (project progress log) at the root
+
+# Build artifacts
+.next/
+out/
+dist/
+build/
+*.tsbuildinfo
+coverage/
+.nyc_output/
+*.lcov
+.cache/
+.parcel-cache/
+.turbo/
+.eslintcache
+
+# Dependencies
+node_modules/
+
+# Framework caches
+.next/
+.vercel
+.nuxt/
+.svelte-kit/
+.remix/
+
+# Test / coverage
+.vitest-cache/
+.vitest/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# OS / Editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
