@@ -163,6 +163,36 @@ jobs:
           fi
           echo "branch-name=$HEAD" >> "$GITHUB_OUTPUT"
 
+      - name: Read prior Module 6 test report (retry path)
+        id: retry-ctx
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -eu
+          # Check if this is a retry (test:retry-N label present).
+          labels=$(gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json labels --jq '.labels | map(.name) | join(",")')
+          retry_label=$(printf '%s' "$labels" | grep -o 'test:retry-[0-9]' || echo "")
+
+          if [ -n "$retry_label" ]; then
+            # Get the most recent Module 6 test report from issue comments.
+            # Module 6 comments have "**Test:" marker in the body.
+            prior=$(gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json comments \
+              --jq '[.comments[] | select(.body | test("\\*\\*Test:"))] | last | .body' 2>/dev/null || echo "")
+            echo "has-retry=true" >> "$GITHUB_OUTPUT"
+            echo "retry-label=$retry_label" >> "$GITHUB_OUTPUT"
+            {
+              echo "prior-report<<PRIOR_EOF"
+              printf '%s\n' "$prior"
+              echo "PRIOR_EOF"
+            } >> "$GITHUB_OUTPUT"
+            echo "Retry detected: $retry_label, prior report length=$(printf '%s' "$prior" | wc -c)"
+          else
+            echo "has-retry=false" >> "$GITHUB_OUTPUT"
+            echo "prior-report=" >> "$GITHUB_OUTPUT"
+            echo "Not a retry — proceeding with normal develop flow."
+          fi
+
       - name: Run develop composite
         id: develop
         uses: ./.github/actions/develop
@@ -177,6 +207,7 @@ jobs:
           max-turns: ${{ vars.DEVELOP_MAX_TURNS || '20' }}
           context-budget-paths: ${{ vars.DEVELOP_CONTEXT_PATHS || '' }}
           issue-language: ${{ needs.preflight.outputs.issue-language }}
+          prior-test-report: ${{ steps.retry-ctx.outputs.prior-report }}
 
       - name: Push branch + open PR (CLAUDE_DEV_PAT)
         id: pr

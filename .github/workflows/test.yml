@@ -191,15 +191,80 @@ jobs:
           gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "testing" || true
           gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "tested"
 
-      - name: Transition labels (failed → test:failed)
+      - name: Retry or escalate (test:failed → retry N/3 or stage:failed)
+        id: retry
         if: steps.test.outputs.test-status == 'failed'
         env:
           GH_TOKEN: ${{ secrets.CLAUDE_DEV_PAT }}
           NUMBER: ${{ github.event.issue.number }}
+          REPORT: ${{ steps.test.outputs.test-report }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          TEST_RETRY_MAX: ${{ vars.TEST_RETRY_MAX || '3' }}
         run: |
           set -eu
+          # Remove testing label (applied at start of this job).
           gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "testing" || true
-          gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "test:failed"
+
+          # Determine current retry count from test:retry-N labels.
+          labels=$(gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json labels --jq '.labels | map(.name) | join(",")')
+          retry_count=0
+          if printf '%s' "$labels" | grep -q "test:retry-3"; then retry_count=3; fi
+          if [ "$retry_count" -eq 0 ] && printf '%s' "$labels" | grep -q "test:retry-2"; then retry_count=2; fi
+          if [ "$retry_count" -eq 0 ] && printf '%s' "$labels" | grep -q "test:retry-1"; then retry_count=1; fi
+
+          max_retries="${TEST_RETRY_MAX:-3}"
+          echo "retry_count=$retry_count max=$max_retries"
+
+          if [ "$retry_count" -ge "$max_retries" ]; then
+            # Max retries exhausted — escalate to maintainer.
+            echo "decision=escalate" >> "$GITHUB_OUTPUT"
+            gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "stage:failed"
+            gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(cat <<EOF
+          ❌ **Test retries exhausted (${retry_count}/${max_retries})**
+
+          Module 6 failed $retry_count time(s). The pipeline cannot automatically recover.
+          A maintainer must triage manually.
+
+          | Field | Value |
+          |---|---|
+          | Last workflow run | $RUN_URL |
+          | Retry labels | $labels |
+
+          EOF
+          )"
+          else
+            # Retry: remove test:failed (if present), clean up intermediate labels,
+            # add retry counter, add accepted to re-trigger Module 4.
+            next=$((retry_count + 1))
+            echo "decision=retry" >> "$GITHUB_OUTPUT"
+            echo "retry_label=test:retry-${next}" >> "$GITHUB_OUTPUT"
+
+            gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "test:failed" 2>/dev/null || true
+            gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "verified" 2>/dev/null || true
+            gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "test:retry-${next}"
+            gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "accepted"
+
+            # Post audit comment with retry count, failure summary, and run URL.
+            failure_summary="$(printf '%s' "$REPORT" | head -n 6)"
+            gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(cat <<EOF
+          🔄 **Auto-retry ${next}/${max_retries}: re-running Module 4 with test feedback**
+
+          | Field | Value |
+          |---|---|
+          | Retry | ${next} of ${max_retries} |
+          | Prior workflow run | $RUN_URL |
+          | Retry label | test:retry-${next} |
+
+          ## Failure summary (prior Module 6 run)
+
+          ${failure_summary}
+
+          ---
+          Module 4 (develop) has been re-triggered via \`accepted\` label.
+          The prior Module 6 test report has been injected into the develop prompt.
+          EOF
+          )"
+          fi
 
       - name: Comment failure details on PR (test:failed)
         if: steps.test.outputs.test-status == 'failed'

@@ -34,7 +34,8 @@ stateDiagram-v2
     Verifying --> Testing: self-verify passed (verified)
     Verifying --> InDevelopment: self-verify failed (verify:failed)
     Testing --> ReadyForPR: tests passed (tested)
-    Testing --> Testing: tests failed (test:failed → maintainer triage)
+    Testing --> InDevelopment: tests failed (test:failed → auto-retry ≤3)
+    Testing --> Failed: retries exhausted (test:retry-3 + test:failed → stage:failed)
     ReadyForPR --> InReview: PR opened
     InReview --> Merged: approved + checks green
     InReview --> ReadyForPR: changes requested
@@ -101,6 +102,67 @@ See [`docs/security.md#s2-amendment`](security.md#s2-amendment) for the full
 containment list (sealed JSON schema, dispatch shell, `--disallowedTools`,
 DENY_LIST, AC-V2-8b race guard, AC-V2-13a log-scan).
 
+### Auto-retry state machine (Module 6 → Module 4 feedback loop)
+
+When Module 6 test fails, the pipeline automatically retries Module 4 (develop)
+up to `TEST_RETRY_MAX` times (default 3), injecting the prior test report into
+the Module 4 prompt so Claude can fix the identified issues.
+
+**Flow:**
+
+```
+Module 6 test:failed
+  ↓
+test.yml reads retry count from test:retry-N labels
+  ↓
+if count < TEST_RETRY_MAX (default 3):
+  - removes test:failed, verified (if present)
+  - adds test:retry-(N+1)
+  - adds accepted → triggers Module 4 (develop)
+  - posts audit comment with retry count, failure summary, run URL
+  ↓
+Module 4 develop re-runs:
+  - develop.yml detects test:retry-N label
+  - reads most recent Module 6 test report from issue comments
+  - passes as prior-test-report input to composite action
+  - Claude sees "Prior test feedback" section in prompt
+  ↓
+... pipeline continues (verify → test) ...
+  ↓
+if count >= TEST_RETRY_MAX:
+  - adds stage:failed
+  - posts "retries exhausted" comment
+  - stops (maintainer triage required)
+```
+
+**Labels:**
+
+| Label | Meaning | Apply | Remove |
+|---|---|---|---|
+| `test:retry-1` | First auto-retry in progress | test.yml (on fail) | develop.yml on completion (replaced with `in-development`) |
+| `test:retry-2` | Second auto-retry in progress | test.yml (on fail) | develop.yml on completion |
+| `test:retry-3` | Third auto-retry in progress; next fail escalates | test.yml (on fail) | develop.yml on completion; next fail → `stage:failed` |
+
+**Configuration:**
+
+- `TEST_RETRY_MAX` repo var (default 3): maximum retry attempts before escalation
+- Retry labels `test:retry-1/2/3` persist across pipeline cycles as the counter
+- `prior-test-report` input on develop composite action is empty for first attempts
+
+**Idempotency:**
+
+- Retry labels are never removed until Module 4 completes and applies `in-development`
+- On each subsequent Module 6 failure, the next `test:retry-N` label is added
+- The counter is monotonic — it never decreases within a single issue lifecycle
+- `concurrency` group on test.yml prevents race conditions within a single issue
+
+**Security (S2):**
+
+- `test.yml` applies `accepted` as a pipeline-level transition — the same S2
+  semantics as the existing `tested` transition (already sanctioned by S2).
+- Module 4's preflight gate already requires `accepted` OR `accepted-by-claude`,
+  so the retry path flows through the existing security guard.
+
 ### Stage labels (terminal states for the issue lifecycle)
 
 > These are applied by workflows, not humans. PRD §6 failure mode is `stage:failed`.
@@ -118,7 +180,10 @@ DENY_LIST, AC-V2-8b race guard, AC-V2-13a log-scan).
 | `verify:failed` | Module 5 self-verify failed; needs maintainer review | self-verify workflow | maintainer | → maintainer triage |
 | `testing` | Module 6 (test) active | test workflow | test workflow | → `tested` \| `test:failed` |
 | `tested` | Module 6 test passed | test workflow | pr-open workflow | → `ready-for-pr` |
-| `test:failed` | Module 6 test failed; needs maintainer review | test workflow | maintainer | → maintainer triage |
+| `test:failed` | Module 6 test failed; triggers auto-retry or escalation | test workflow | test workflow (auto-retry) or maintainer | → `test:retry-1/2/3` + `accepted` (retry) or `stage:failed` (exhausted) |
+| `test:retry-1` | Auto-retry 1/3: re-running Module 4 with test feedback | test workflow (on fail) | develop workflow on completion | → `in-development` (Module 4 re-runs) |
+| `test:retry-2` | Auto-retry 2/3: re-running Module 4 with test feedback | test workflow (on fail) | develop workflow on completion | → `in-development` (Module 4 re-runs) |
+| `test:retry-3` | Auto-retry 3/3: re-running Module 4 with test feedback; one retry remaining before escalation | test workflow (on fail) | develop workflow on completion; next fail escalates | → `in-development` (Module 4 re-runs) or `stage:failed` (next fail) |
 | `ready-for-pr` | Tests passed; PR may be opened | test workflow | pr-open workflow | — |
 | `in-review` | PR opened, Module 8 active | pr-open workflow | review workflow | — |
 | `merged` | Module 9 complete | merge-queue workflow | — | Terminal |
