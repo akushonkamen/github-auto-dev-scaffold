@@ -150,7 +150,16 @@ jobs:
             echo "::error::Refusing to develop against $BASE (PRD §7 S3)"
             exit 1
           fi
-          if git ls-remote --exit-code --heads origin "$BASE" >/dev/null 2>&1; then
+          # Retry-awareness (issue #51): if the remote head branch already exists
+          # (e.g. test:retry-N re-triggered Module 4 via the #49 auto-retry path),
+          # check out its tip so the new commit fast-forwards cleanly. Without
+          # this, retry regenerates the commit from base and `git push` is
+          # rejected as non-fast-forward.
+          if git ls-remote --exit-code --heads origin "$HEAD" >/dev/null 2>&1; then
+            echo "Remote branch $HEAD exists — checking out tip (likely retry scenario)"
+            git fetch origin "$HEAD" --depth=1
+            git checkout -B "$HEAD" "origin/$HEAD"
+          elif git ls-remote --exit-code --heads origin "$BASE" >/dev/null 2>&1; then
             git checkout -B "$HEAD" "origin/$BASE"
           else
             # Base branch doesn't exist yet; use the repo default but keep the S3 guard.
