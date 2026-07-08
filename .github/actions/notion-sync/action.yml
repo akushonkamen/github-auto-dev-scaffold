@@ -1,0 +1,75 @@
+# Composite action: Notion sync
+# Mirrors GitHub Issues into a Notion database for cross-platform visibility.
+#
+# REQUIRED PERMISSIONS (calling workflow must grant):
+#   contents: read
+#   issues:   write
+
+name: "Notion sync"
+description: "Sync GitHub Issue lifecycle events to a Notion database"
+
+inputs:
+  issue-number:
+    description: "Issue number to sync"
+    required: true
+  repo-token:
+    description: "GITHUB_TOKEN with issues:write"
+    required: true
+  notion-api-key:
+    description: "Notion integration token"
+    required: true
+  notion-database-id:
+    description: "Target Notion database ID"
+    required: true
+
+outputs:
+  notion-url:
+    description: "URL of the synced Notion page"
+    value: ${{ steps.sync.outputs.notion-url }}
+
+runs:
+  using: composite
+  steps:
+    - name: Fetch issue context
+      id: issue
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.repo-token }}
+        NUMBER: ${{ inputs.issue-number }}
+      run: |
+        set -eu
+        json=$(gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json title,body,labels,url,state)
+        title=$(printf '%s' "$json"   | jq -r '.title')
+        url=$(printf '%s' "$json"     | jq -r '.url')
+        state=$(printf '%s' "$json"   | jq -r '.state')
+        body=$(printf '%s' "$json"    | jq -r '.body // "(empty)"')
+        labels=$(printf '%s' "$json"  | jq -r '.labels | map(.name) | join(", ")')
+        if [ -z "$labels" ]; then labels="(none)"; fi
+        {
+          echo "title<<TITLE_EOF"
+          printf '%s\n' "$title"
+          echo "TITLE_EOF"
+          echo "url=$url"
+          echo "state=$state"
+          echo "labels=$labels"
+          echo "body<<BODY_EOF"
+          printf '%s\n' "$body"
+          echo "BODY_EOF"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Sync to Notion
+      id: sync
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.repo-token }}
+        NOTION_API_KEY: ${{ inputs.notion-api-key }}
+        NOTION_DATABASE_ID: ${{ inputs.notion-database-id }}
+        ISSUE_NUMBER: ${{ inputs.issue-number }}
+        ISSUE_TITLE: ${{ steps.issue.outputs.title }}
+        ISSUE_URL: ${{ steps.issue.outputs.url }}
+        ISSUE_STATE: ${{ steps.issue.outputs.state }}
+        ISSUE_LABELS: ${{ steps.issue.outputs.labels }}
+        ISSUE_BODY: ${{ steps.issue.outputs.body }}
+      run: |
+        set -eu
+        node "$GITHUB_ACTION_PATH/sync.mjs"
