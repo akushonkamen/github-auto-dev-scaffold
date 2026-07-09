@@ -1,0 +1,158 @@
+# Module 4 — Code Generate (M4 of pipeline-redesign-v3)
+#
+# Purpose: single-responsibility code generation. Today this logic is the
+# `develop` job in `develop.yml` (lines 112-220). M4 extracts it so the
+# retry wrapper (M2) and engine-dispatch (M1) can compose here cleanly.
+#
+# STATUS: M4 = ADDITIVE ONLY. This workflow has NO automated trigger in M4.
+# It can only run via workflow_dispatch (manual smoke test). M6 will wire
+# the real trigger (workflow_run: completed on develop-gate.yml).
+# The existing `develop.yml` remains authoritative until M6.
+#
+# RESPONSIBILITIES (single):
+#   - Create head branch off base (never main — S3 guard)
+#   - Invoke develop composite action (Claude writes code + commits)
+#   - Emit branch-name + commit-sha for the next workflow (pr-lifecycle)
+#
+# OUTPUTS:
+#   - branch-name, commit-sha, summary
+#
+# SECURITY (S1-S7 preserved):
+#   - permissions: contents:write (branch + commit only — S3: never on main)
+#   - S3 enforced: refuse if base-branch is main/master; claude --disallowedTools
+#     blocks `git push --force*` and `git checkout main*` wholesale
+#   - S5 preserved: no --dangerously-skip-permissions
+#
+# Manual smoke test (requires develop-gate outputs as inputs):
+#   gh workflow run code-generate.yml \
+#     -f issue-number=NN \
+#     -f head-branch=claude/issue-NN-slug \
+#     -f base-branch=dev \
+#     -f issue-language=en
+
+name: code-generate
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue-number:
+        description: "Issue number"
+        required: true
+        type: string
+      head-branch:
+        description: "Head branch to commit onto (from develop-gate)"
+        required: true
+        type: string
+      base-branch:
+        description: "Base branch to develop from (must NOT be main/master)"
+        required: true
+        type: string
+      issue-language:
+        description: "Detected dominant language of the issue body (zh|en|...)"
+        required: false
+        type: string
+        default: "en"
+      prior-test-report:
+        description: "Prior Module 6 test report (retry path). Empty = first attempt."
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: code-generate-issue-${{ inputs.issue-number }}
+  cancel-in-progress: false
+
+jobs:
+  develop:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+    timeout-minutes: ${{ fromJSON(vars.DEVELOP_TIME_BUDGET_MIN || '60') }}
+    outputs:
+      branch-name: ${{ steps.branch.outputs.branch-name }}
+      commit-sha: ${{ steps.develop.outputs.commit-sha }}
+      summary: ${{ steps.develop.outputs.summary }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          token: ${{ secrets.CLAUDE_DEV_PAT }}
+
+      - name: Create head branch (off base, never main)
+        id: branch
+        env:
+          BASE: ${{ inputs.base-branch }}
+          HEAD: ${{ inputs.head-branch }}
+        run: |
+          set -euo pipefail
+          if [ "$BASE" = "main" ] || [ "$BASE" = "master" ]; then
+            echo "::error::Refusing to develop against $BASE (PRD §7 S3)"
+            exit 1
+          fi
+          # Retry-awareness (issue #51): if remote head exists, check out tip.
+          if git ls-remote --exit-code --heads origin "$HEAD" >/dev/null 2>&1; then
+            echo "Remote branch $HEAD exists — checking out tip (likely retry scenario)"
+            git fetch origin "$HEAD" --depth=1
+            git checkout -B "$HEAD" "origin/$HEAD"
+          elif git ls-remote --exit-code --heads origin "$BASE" >/dev/null 2>&1; then
+            git checkout -B "$HEAD" "origin/$BASE"
+          else
+            default=$(git remote show origin | awk '/HEAD branch/ {print $NF}')
+            if [ "$default" = "main" ] || [ "$default" = "master" ]; then
+              echo "::error::Repo default branch is $default and DEV_BASE_BRANCH ($BASE) does not exist."
+              exit 1
+            fi
+            git checkout -B "$HEAD" "origin/$default"
+          fi
+          echo "branch-name=$HEAD" >> "$GITHUB_OUTPUT"
+
+      - name: "Verify DEEPSEEK_API_KEY secret exists (S4: never print value)"
+        shell: bash
+        run: |
+          if [ -z "${{ secrets.DEEPSEEK_API_KEY }}" ]; then
+            echo "::error::DEEPSEEK_API_KEY secret is not set or is empty."
+            exit 1
+          fi
+          echo "::notice::DEEPSEEK_API_KEY secret is configured (value not printed per S4)."
+
+      - name: Run develop composite
+        id: develop
+        uses: ./.github/actions/develop
+        with:
+          issue-number: ${{ inputs.issue-number }}
+          base-branch: ${{ inputs.base-branch }}
+          head-branch: ${{ inputs.head-branch }}
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          api-key: ${{ secrets.DEEPSEEK_API_KEY }}
+          anthropic-base-url: ${{ vars.ANTHROPIC_BASE_URL }}
+          model: ${{ vars.DEVELOP_MODEL }}
+          max-turns: ${{ vars.DEVELOP_MAX_TURNS || '20' }}
+          context-budget-paths: ${{ vars.DEVELOP_CONTEXT_PATHS || '' }}
+          issue-language: ${{ inputs.issue-language }}
+          prior-test-report: ${{ inputs.prior-test-report }}
+
+  on-failure:
+    needs: develop
+    if: ${{ always() && needs.develop.result == 'failure' }}
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Mark stage:failed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NUMBER: ${{ inputs.issue-number }}
+        run: |
+          if [ -z "$NUMBER" ]; then
+            echo "::warning::No issue number on this event."
+            exit 0
+          fi
+          gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "stage:failed" || true
+          gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --body "⚠️ code-generate failed. See [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details. A maintainer will triage manually." || true
