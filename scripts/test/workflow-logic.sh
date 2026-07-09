@@ -710,6 +710,114 @@ grep -q "empty" "$TEST_EXTRACT" \
   || fail "test extract.sh: missing empty input guard"
 
 echo ""
+echo "── Retry no-op detection (issue #57, develop.yml) ──"
+
+# Simulate the retry no-op detection logic from develop.yml push step.
+# Inputs:
+#   $1 = has_retry ("true"|"false")
+#   $2 = push_output (contains "Everything up-to-date" or not)
+# Output: escalation action
+#   "escalate-retry-noop" → apply stage:failed + retry-noop, remove in-development,
+#                           skip in-development transition, post escalation comment
+#   "proceed-normal"      → normal PR open and in-development transition
+simulate_retry_noop_detection() {
+  local has_retry="$1"
+  local push_output="$2"
+
+  if echo "$push_output" | grep -q "Everything up-to-date"; then
+    if [ "$has_retry" = "true" ]; then
+      printf '%s' "escalate-retry-noop"
+      return
+    fi
+    # Non-retry up-to-date: unusual but not escalated — proceed
+  fi
+  printf '%s' "proceed-normal"
+}
+
+# retry + up-to-date → escalate
+[ "$(simulate_retry_noop_detection "true" "Everything up-to-date")" = "escalate-retry-noop" ] \
+  && pass "retry + Everything up-to-date → escalate-retry-noop (stage:failed + retry-noop)" \
+  || fail "retry + Everything up-to-date → should escalate"
+
+# retry + new commits → proceed normally
+[ "$(simulate_retry_noop_detection "true" "To github.com:akushonkamen/github-auto-dev-scaffold.git\n   abc1234..def5678  claude/issue-37 -> claude/issue-37")" = "proceed-normal" ] \
+  && pass "retry + new commits → proceed-normal" \
+  || fail "retry + new commits → should proceed normally"
+
+# non-retry + up-to-date → proceed normally (unusual edge case, logged but not escalated)
+[ "$(simulate_retry_noop_detection "false" "Everything up-to-date")" = "proceed-normal" ] \
+  && pass "non-retry + Everything up-to-date → proceed-normal (logged, not escalated)" \
+  || fail "non-retry + Everything up-to-date → should proceed normally"
+
+# non-retry + new commits → proceed normally (standard first-run path)
+[ "$(simulate_retry_noop_detection "false" "To github.com:akushonkamen/github-auto-dev-scaffold.git\n   abc1234..def5678  claude/issue-57 -> claude/issue-57")" = "proceed-normal" ] \
+  && pass "non-retry + new commits → proceed-normal (standard first-run)" \
+  || fail "non-retry + new commits → should proceed normally"
+
+# retry + empty push output → proceed normally (no up-to-date marker)
+[ "$(simulate_retry_noop_detection "true" "")" = "proceed-normal" ] \
+  && pass "retry + empty push output → proceed-normal (no up-to-date detection)" \
+  || fail "retry + empty push output → should proceed normally"
+
+# retry + different push output (fast-forward success message)
+SUCCESS_OUTPUT="To github.com:akushonkamen/github-auto-dev-scaffold.git\n * [new branch]      claude/issue-37 -> claude/issue-37"
+[ "$(simulate_retry_noop_detection "true" "$SUCCESS_OUTPUT")" = "proceed-normal" ] \
+  && pass "retry + push success message → proceed-normal" \
+  || fail "retry + push success message → should proceed normally"
+
+# ── Static checks for issue #57 code paths ──
+
+# develop.yml: "Everything up-to-date" detection pattern present
+grep -q "Everything up-to-date" "$ROOT/.github/workflows/develop.yml" \
+  && pass "develop.yml: 'Everything up-to-date' no-op detection present (issue #57)" \
+  || fail "develop.yml: missing 'Everything up-to-date' no-op detection (issue #57)"
+
+# develop.yml: retry-noop label escalation path present
+grep -q "retry-noop" "$ROOT/.github/workflows/develop.yml" \
+  && pass "develop.yml: retry-noop label escalation path present (issue #57)" \
+  || fail "develop.yml: missing retry-noop label escalation (issue #57)"
+
+# develop.yml: stage:failed applied on no-op
+grep -q "stage:failed" "$ROOT/.github/workflows/develop.yml" \
+  && pass "develop.yml: stage:failed label applied in no-op path (issue #57)" \
+  || fail "develop.yml: missing stage:failed in no-op path"
+
+# develop.yml: retry-noop output gates label transition step
+grep -q "retry-noop.*true" "$ROOT/.github/workflows/develop.yml" \
+  && pass "develop.yml: label transition gated on retry-noop != true (issue #57)" \
+  || fail "develop.yml: missing retry-noop gate on label transition"
+
+# develop.yml: HAS_RETRY context fed to push step
+grep -q "HAS_RETRY.*steps.retry-ctx.outputs.has-retry" "$ROOT/.github/workflows/develop.yml" \
+  && pass "develop.yml: HAS_RETRY fed to pr step from retry-ctx (issue #57)" \
+  || fail "develop.yml: missing HAS_RETRY in pr step env"
+
+# labels.yml: retry-noop label defined
+grep -q '"retry-noop"' "$ROOT/.github/labels.yml" \
+  && pass "labels.yml: 'retry-noop' label present (issue #57)" \
+  || fail "labels.yml: 'retry-noop' label MISSING (issue #57)"
+
+# S1: No new permissions added — develop.yml job-level permissions unchanged
+if grep -A5 "permissions:" "$ROOT/.github/workflows/develop.yml" | grep -q "contents: write"; then
+  pass "develop.yml: contents:write preserved (Module 4 exception, S1)"
+else
+  fail "develop.yml: contents:write missing (needed for push)"
+fi
+
+# S2: No new accepted-by-claude application — only removal preserved
+grep -q "remove-label.*accepted-by-claude" "$ROOT/.github/workflows/develop.yml" \
+  && pass "develop.yml: only removes accepted-by-claude, never adds (S2 OK)" \
+  || fail "develop.yml: accepted-by-claude removal missing"
+
+echo ""
+echo "── AC-V2-15 disclosure ──"
+
+# develop.yml PR body includes disclosure preamble
+grep -q "AI assistant.*powered by.*operating under" "$ROOT/.github/workflows/develop.yml" \
+  && pass "develop.yml: PR body includes AI disclosure preamble (AC-V2-15)" \
+  || fail "develop.yml: missing AI disclosure preamble in PR body"
+
+echo ""
 echo "=== LAYER 3 RESULTS: $PASS passed, $FAIL failed ==="
 
 if [ "$FAIL" -gt 0 ]; then

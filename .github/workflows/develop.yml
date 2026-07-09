@@ -227,6 +227,9 @@ jobs:
           SHA: ${{ steps.develop.outputs.commit-sha }}
           SUMMARY: ${{ steps.develop.outputs.summary }}
           PR_TITLE: ${{ github.event.issue.title }}
+          HAS_RETRY: ${{ steps.retry-ctx.outputs.has-retry }}
+          RETRY_LABEL: ${{ steps.retry-ctx.outputs.retry-label }}
+          NUMBER: ${{ github.event.issue.number }}
         run: |
           set -euo pipefail
           # S7 pipeline-fix (2026-07-07): embed PAT in extraheader so the classic
@@ -235,7 +238,33 @@ jobs:
           git config --local --unset http.https://github.com/.extraheader 2>/dev/null || true
           git config --local http.https://github.com/.extraheader "Authorization: basic $(printf 'x-access-token:%s' "$CLAUDE_DEV_PAT" | base64)"
           # Push the head branch (no force — claude was blocked from force-push anyway).
-          git push origin "$HEAD"
+          # Capture stderr to detect "Everything up-to-date" (issue #57).
+          push_out=$(git push origin "$HEAD" 2>&1)
+
+          # ── Retry no-op detection (issue #57) ──
+          # When a retry produces no new commits (push says "Everything up-to-date"),
+          # the pipeline stalls because downstream modules fire on push/pull_request
+          # events only. Detect this and escalate explicitly so the issue does not
+          # sit at in-development indefinitely.
+          NOOP="false"
+          if echo "$push_out" | grep -q "Everything up-to-date"; then
+            if [ "$HAS_RETRY" = "true" ]; then
+              NOOP="true"
+              echo "::warning::Retry no-op: push was up-to-date. Claude made no new commits on retry attempt ${RETRY_LABEL:-unknown}. Escalating to maintainer."
+              gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "stage:failed" --add-label "retry-noop"
+              gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "in-development" 2>/dev/null || true
+              gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" \
+                --body "⚠️ **Retry no-op detected** — \`git push\` reported \`Everything up-to-date\` on retry attempt \`${RETRY_LABEL:-unknown}\`. Claude made no new commits because the existing implementation already satisfies the issue requirements or the changes were inconsequential.
+
+          The existing PR remains open and contains the implementation. **Escalating to maintainer** for manual review.
+
+          _Automatic escalation to prevent silent pipeline stalls (issue #57). No downstream modules triggered._"
+            else
+              echo "Push up-to-date but not a retry — proceeding with existing PR."
+            fi
+          fi
+          echo "retry-noop=$NOOP" >> "$GITHUB_OUTPUT"
+
           # Build PR body with disclosure preamble + change summary + test plan stub.
           body=$(cat <<EOF
           I'm an AI assistant (powered by Claude) operating under the GithubAutoDev disclosure policy.
@@ -268,18 +297,31 @@ jobs:
               --title "[Issue #${{ github.event.issue.number }}] ${PR_TITLE}" \
               --body "$body")
             echo "pr-url=$pr_url" >> "$GITHUB_OUTPUT"
-            gh issue comment "${{ github.event.issue.number }}" --repo "$GITHUB_REPOSITORY" \
-              --body "🚀 Development branch pushed: \`$HEAD\` @ \`${SHA:0:12}\`. PR: $pr_url"
+            if [ "$NOOP" = "true" ]; then
+              gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" \
+                --body "⚠️ **Retry no-op**: No new commits landed on \`$HEAD\`. See escalation comment above."
+            else
+              gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" \
+                --body "🚀 Development branch pushed: \`$HEAD\` @ \`${SHA:0:12}\`. PR: $pr_url"
+            fi
           else
             echo "Reusing existing PR: $pr_url"
             echo "pr-url=$pr_url" >> "$GITHUB_OUTPUT"
-            gh pr comment "$pr_url" --repo "$GITHUB_REPOSITORY" \
-              --body "🔄 **Retry attempt** — new push: \`$HEAD\` @ \`${SHA:0:12}\`."
-            gh issue comment "${{ github.event.issue.number }}" --repo "$GITHUB_REPOSITORY" \
-              --body "🔄 Retry push landed on existing PR: \`$HEAD\` @ \`${SHA:0:12}\`. PR: $pr_url"
+            if [ "$NOOP" = "true" ]; then
+              gh pr comment "$pr_url" --repo "$GITHUB_REPOSITORY" \
+                --body "⚠️ **Retry no-op**: This retry produced no new commits (\`Everything up-to-date\`). See issue #$NUMBER for escalation details."
+              gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" \
+                --body "⚠️ **Retry no-op**: No new commits landed on \`$HEAD\`. Existing PR: $pr_url"
+            else
+              gh pr comment "$pr_url" --repo "$GITHUB_REPOSITORY" \
+                --body "🔄 **Retry attempt** — new push: \`$HEAD\` @ \`${SHA:0:12}\`."
+              gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" \
+                --body "🔄 Retry push landed on existing PR: \`$HEAD\` @ \`${SHA:0:12}\`. PR: $pr_url"
+            fi
           fi
 
       - name: Transition issue label (accepted → in-development)
+        if: steps.pr.outputs.retry-noop != 'true'
         env:
           GH_TOKEN: ${{ secrets.CLAUDE_DEV_PAT }}
           NUMBER: ${{ github.event.issue.number }}

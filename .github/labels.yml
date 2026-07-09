@@ -130,6 +130,10 @@ labels:
     color: "b60205"
     description: "A module failed; needs maintainer triage"
     category: stage
+  - name: retry-noop
+    color: "b60205"
+    description: "Retry produced no new commits; escalated to maintainer (issue #57)"
+    category: stage
 
   # ── type labels (intake) ─────────────────────────────────────────────────
   - name: "type:bug"
