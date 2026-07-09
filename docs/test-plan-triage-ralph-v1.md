@@ -1,5 +1,11 @@
 # Test plan — triage-ralph v1 baseline
 
+> **HISTORICAL (pre-M8)** — This document captures the v1 baseline before M8 of
+> pipeline-redesign-v3 shipped. Scenarios referencing `AUTO_ACCEPT_ENABLED` and
+> `accepted` are obsolete: M8 routes by `workload_class` and uses
+> `accepted-by-claude` (not the maintainer-only `accepted`). Retained as a
+> reference for v1 behavior diffing only — do NOT execute as-is.
+
 > Baseline reference for triage-ralph v1 (shipped). Every section maps to a concrete
 > integration point: `.github/actions/triage/action.yml`, `.github/actions/triage/extract.sh`,
 > `.github/workflows/triage-issue.yml`. Foundation against which the triage-clarify-v2
