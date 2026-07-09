@@ -73,11 +73,12 @@ The cloud first-pass emits `decision ∈ {reply, work}` × `confidence ∈ [0,1]
 
 | Cloud decision + confidence | Module 3' routing | Module 3' action | Resulting label |
 |---|---|---|---|
+| `work` + trivial/standard (M8) | triage direct auto-accept | n/a | `accepted-by-claude` (S2 amendment — no clarify loop) |
+| `work` + complex | triage routes to clarify loop | n/a | `needs-clarify` |
 | `work` + low conf | queue clarify loop (`needs-clarify`) | `ask` (round N) | `clarify-r-N` |
 | `work` + low conf | (after round N) | `accept` | `accepted-by-claude` |
 | `work` + low conf | (after round N) | `yield` | `yielded` |
 | `work` + low conf | (rounds exhausted, max-rounds fallback) | n/a — emits `needs-ralph` | `needs-ralph` (the ONLY v2 path that emits `needs-ralph`) |
-| `work` + high conf | auto-accept (no clarify loop) | n/a | `accepted` (maintainer-only via `AUTO_ACCEPT_ENABLED=true`) |
 | `reply` + any conf | v1 maintainer path (no clarify loop) | n/a | maintainer manual |
 
 ### accepted-by-claude state machine (S2 amendment)
@@ -86,17 +87,22 @@ The cloud first-pass emits `decision ∈ {reply, work}` × `confidence ∈ [0,1]
 an issue after the clarify loop reaches clarity, while preserving the
 maintainer-only `accepted` invariant. Rules:
 
-(a) **Applied by** the clarify-loop.yml dispatch shell only, after Claude's
-    sealed JSON returns `action=accept`. Re-fetched label race-check (AC-V2-8b)
-    aborts the apply if `rejected`, `force-manual`, or `accepted` was added by
-    a maintainer during the run.
+(a) **Applied by** either:
+    - **triage-issue.yml** (M8 amendment) when the triage composite returns
+      `decision=work` AND `workload_class ∈ {trivial, standard}` — low-risk
+      self-acceptance that bypasses the clarify loop entirely.
+    - **clarify-loop.yml dispatch shell** after Claude's sealed JSON returns
+      `action=accept`. Re-fetched label race-check (AC-V2-8b) aborts the apply
+      if `rejected`, `force-manual`, or `accepted` was added by a maintainer
+      during the run.
 (b) **Removed by** the develop.yml workflow on branch creation (replaced with
     `in-development`). Maintainers can force removal via `force-manual` or
     `rejected` (both halt the clarify loop in preflight).
-(c) **Coexists with** `accepted`: either label triggers develop.yml (AC-V2-12).
-    A maintainer may apply `accepted` at any time to override the Claude path
-    and force Module 4 entry; the two labels are mutually exclusive in practice
-    (develop.yml removes both on pickup).
+(c) **Coexists with** `accepted`: either label triggers develop-gate.yml
+    (AC-V2-12, M6 — develop.yml was removed in M7). A maintainer may apply
+    `accepted` at any time to override the Claude path and force Module 4
+    entry; the two labels are mutually exclusive in practice (develop-gate
+    removes both on pickup).
 
 See [`docs/security.md#s2-amendment`](security.md#s2-amendment) for the full
 containment list (sealed JSON schema, dispatch shell, `--disallowedTools`,

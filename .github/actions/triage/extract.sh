@@ -46,7 +46,7 @@ suggested_labels="$(printf '%s' "$raw" | jq -r '.suggested_labels | if length ==
 confidence="$(printf '%s' "$raw" | jq -r '.confidence')"
 # M3: workload_class is optional in the schema; default to "standard" if absent.
 # This keeps backwards compatibility with engines that haven't picked up the
-# new field yet. M6 will replace AUTO_ACCEPT_ENABLED with this classification.
+# new field yet. M8 replaces AUTO_ACCEPT_ENABLED with this classification.
 workload_class="$(printf '%s' "$raw" | jq -r '.workload_class // "standard"')"
 case "$workload_class" in
   trivial|standard|complex) ;;

@@ -47,7 +47,7 @@ Every module action shares these inputs and outputs so they compose uniformly. M
 
 > **Wired in this scaffold**: `.github/workflows/triage-issue.yml` calls this action end-to-end with GLM passthrough. See [`docs/quickstart-triage.md`](quickstart-triage.md) for setup.
 
-> **M3 (pipeline-redesign-v3) — `workload_class`**: triage now emits a third classification axis alongside `decision` and `confidence`. M6 will use this to replace the binary `AUTO_ACCEPT_ENABLED` repo var — `trivial`+`standard` may auto-accept, `complex` requires maintainer. Today no consumer reads this field; it is additive. Fixture samples: [`.github/actions/triage/test/fixtures/`](../blob/dev/.github/actions/triage/test/fixtures/).
+> **M3/M8 (pipeline-redesign-v3) — `workload_class`**: triage emits a third classification axis alongside `decision` and `confidence`. M8 consumers: `triage-issue.yml` applies `accepted-by-claude` for `trivial`+`standard` (S2 amendment), routes `complex` to the clarify loop via `needs-clarify`. The legacy `AUTO_ACCEPT_ENABLED` repo var is gone. Fixture samples: [`.github/actions/triage/test/fixtures/`](../blob/dev/.github/actions/triage/test/fixtures/).
 
 ### Module 3 — judge (`/.github/actions/judge/`)
 
