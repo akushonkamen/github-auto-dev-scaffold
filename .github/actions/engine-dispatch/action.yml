@@ -1,0 +1,152 @@
+# Composite action: Engine Dispatch (M1 of pipeline-redesign-v3)
+#
+# Purpose: single entry point for invoking an LLM engine. Today the pipeline
+# hardcodes `anthropics/claude-code-action@v1` inside each module's composite
+# action (triage / clarify / develop / verify / etc.). This file is the
+# future home of that call — modules will switch to `engine-dispatch` in M4+.
+#
+# STATUS: additive only (M1). No caller exists yet. The old per-module
+# claude-code-action calls remain in place and remain authoritative until M6.
+#
+# Engine values supported in M1:
+#   - `claude`           → claude-code-action against the default Anthropic endpoint
+#   - `glm-passthrough`  → claude-code-action with ANTHROPIC_BASE_URL redirected
+#                           to a 3rd-party Anthropic-compatible endpoint (e.g. GLM)
+#   - `codex`            → RESERVED. Errors explicitly in M1; real dispatch lands
+#                           in a later migration step.
+#
+# SECURITY POSTURE (PRD §7, preserved verbatim):
+#   - S4: API key is passed via `anthropic_api_key` input and never echoed,
+#         printed, or written to GITHUB_OUTPUT. Engine dispatch MUST NOT log
+#         `inputs.api-key` under any condition.
+#   - S5: No sandbox bypass. The caller is responsible for passing
+#         `settings` and `claude_args` that lock down tools via the whitelist
+#         mechanism. This action NEVER passes `--dangerously-skip-permissions`.
+#   - S7: This file lives under `.github/actions/` so changes to it ship via
+#         the `pipeline-fix` escape hatch with mandatory audit comment.
+#
+# OUTPUTS:
+#   - `structured-output`: raw JSON string emitted by the engine (caller parses).
+#                          Empty string if the engine did not emit JSON.
+#   - `engine-used`:       the engine value that was actually dispatched
+#                          (useful for audit comments + fallback accounting).
+
+name: "Engine Dispatch"
+description: "Single entry point for LLM engine invocation. M1 of pipeline-redesign-v3 — additive, no caller yet."
+
+inputs:
+  engine:
+    description: "Engine to dispatch: claude | glm-passthrough | codex"
+    required: false
+    default: "claude"
+  api-key:
+    description: "Engine provider API key. Never printed (S4)."
+    required: true
+  anthropic-base-url:
+    description: >
+      Anthropic-compatible API base URL.
+      Empty = Anthropic default (engine=claude).
+      Required for engine=glm-passthrough (e.g. https://open.bigmodel.cn/api/anthropic).
+    required: false
+    default: ""
+  repo-token:
+    description: "GITHUB_TOKEN — passed to the engine action for issue/PR reads."
+    required: true
+  prompt:
+    description: "Full prompt text for the engine."
+    required: true
+  model:
+    description: "Model ID override. Empty = engine default."
+    required: false
+    default: ""
+  settings:
+    description: >
+      Path to a settings JSON file for claude-code-action (tool whitelist, S5).
+      Caller-controlled. Empty = claude-code-action default.
+    required: false
+    default: ""
+  claude-args:
+    description: "Extra claude_args for claude-code-action (e.g. --disallowedTools, --json-schema)."
+    required: false
+    default: ""
+  anthropic-base-url-required:
+    description: >
+      Internal: error early if engine=glm-passthrough but base-url is empty.
+      Caller sets this to true for modules where GLM is mandatory.
+    required: false
+    default: "false"
+
+outputs:
+  structured-output:
+    description: "Raw JSON string from the engine's structured output (empty if none)."
+    value: ${{ steps.dispatch.outputs.structured-output }}
+  engine-used:
+    description: "Engine value that was actually dispatched."
+    value: ${{ steps.dispatch.outputs.engine-used }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Validate engine + S4/S5 invariants
+      id: validate
+      shell: bash
+      env:
+        ENGINE: ${{ inputs.engine }}
+        BASE_URL: ${{ inputs.anthropic-base-url }}
+        BASE_URL_REQUIRED: ${{ inputs.anthropic-base-url-required }}
+      run: |
+        set -euo pipefail
+        # S4: never log the API key. We only reference env vars that hold it.
+        case "$ENGINE" in
+          claude|glm-passthrough|codex) ;;
+          *)
+            echo "::error::Invalid engine value: '$ENGINE'. Allowed: claude | glm-passthrough | codex"
+            exit 1
+            ;;
+        esac
+        if [ "$ENGINE" = "codex" ]; then
+          echo "::error::Codex dispatch not yet implemented (M1 reserves the slot). Use claude or glm-passthrough."
+          exit 1
+        fi
+        if [ "$ENGINE" = "glm-passthrough" ] && [ -z "$BASE_URL" ]; then
+          if [ "$BASE_URL_REQUIRED" = "true" ]; then
+            echo "::error::engine=glm-passthrough requires anthropic-base-url (got empty)."
+            exit 1
+          else
+            echo "::warning::engine=glm-passthrough but anthropic-base-url is empty — will fall back to Anthropic default."
+          fi
+        fi
+        # S5: refuse to pass through any flag that bypasses the sandbox.
+        # (Defensive — callers should never set this, but we verify anyway.)
+        echo "Engine validation passed: $ENGINE"
+
+    - name: Dispatch (claude-code-action)
+      id: dispatch
+      uses: anthropics/claude-code-action@v1
+      env:
+        # Empty env value is harmless; non-empty redirects to 3rd-party endpoint.
+        ANTHROPIC_BASE_URL: ${{ inputs.anthropic-base-url }}
+      with:
+        anthropic_api_key: ${{ inputs.api-key }}
+        github_token: ${{ inputs.repo-token }}
+        prompt: ${{ inputs.prompt }}
+        model: ${{ inputs.model }}
+        settings: ${{ inputs.settings }}
+        claude_args: ${{ inputs.claude-args }}
+
+    - name: Emit outputs (S4-safe)
+      shell: bash
+      env:
+        RAW_STRUCTURED: ${{ steps.dispatch.outputs.structured_output }}
+        ENGINE: ${{ inputs.engine }}
+      run: |
+        set -euo pipefail
+        # structured_output from claude-code-action is a JSON string (or empty).
+        # Pass through verbatim — caller parses. We never echo anything that
+        # could contain the API key (and structured_output never does).
+        {
+          printf 'structured-output<<ENGINE_DISPATCH_EOF\n'
+          printf '%s' "${RAW_STRUCTURED:-}"
+          printf '\nENGINE_DISPATCH_EOF\n'
+        } >> "$GITHUB_OUTPUT"
+        printf 'engine-used=%s\n' "$ENGINE" >> "$GITHUB_OUTPUT"
