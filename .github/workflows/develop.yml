@@ -254,16 +254,33 @@ jobs:
           _Branch: \`$HEAD\` @ \`${SHA:0:12}\`_
           EOF
           )
-          pr_url=$(gh pr create \
+          # Idempotent: look up existing PR for this head branch first (retry path).
+          # If one is already open, reuse it instead of failing on create.
+          pr_url=$(gh pr list \
             --repo "$GITHUB_REPOSITORY" \
-            --base "${{ needs.preflight.outputs.base-branch }}" \
             --head "$HEAD" \
-            --title "[Issue #${{ github.event.issue.number }}] ${PR_TITLE}" \
-            --body "$body")
+            --base "${{ needs.preflight.outputs.base-branch }}" \
+            --state open \
+            --json url --jq '.[0].url' 2>/dev/null || echo "")
+          if [ -z "$pr_url" ]; then
+            pr_url=$(gh pr create \
+              --repo "$GITHUB_REPOSITORY" \
+              --base "${{ needs.preflight.outputs.base-branch }}" \
+              --head "$HEAD" \
+              --title "[Issue #${{ github.event.issue.number }}] ${PR_TITLE}" \
+              --body "$body")
+            created_or_reused="created"
+          else
+            echo "Reusing existing PR: $pr_url"
+            created_or_reused="reused"
+            # On retry, post a brief audit comment on the existing PR noting the new commit.
+            gh pr comment "$pr_url" --repo "$GITHUB_REPOSITORY" \
+              --body "🔄 Retry attempt: pushed commit \`${SHA:0:12}\` to \`$HEAD\`. Reusing this PR." || true
+          fi
           echo "pr-url=$pr_url" >> "$GITHUB_OUTPUT"
           # Post audit comment on the issue (PR opener = PAT owner for traceability).
           gh issue comment "${{ github.event.issue.number }}" --repo "$GITHUB_REPOSITORY" \
-            --body "🚀 Development branch pushed: \`$HEAD\` @ \`${SHA:0:12}\`. PR: $pr_url"
+            --body "🚀 Development branch pushed: \`$HEAD\` @ \`${SHA:0:12}\`. PR (${created_or_reused}): $pr_url"
 
       - name: Transition issue label (accepted → in-development)
         env:
