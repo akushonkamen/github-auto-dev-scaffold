@@ -1,0 +1,353 @@
+# Module 5+6 — Verify (M5 of pipeline-redesign-v3)
+#
+# Purpose: single verification gate with multiple oracles. Collapses what is
+# today two separate workflows (self-verify.yml + test.yml) into one workflow
+# that runs 3 oracles in parallel and aggregates a single verdict.
+#
+# STATUS: M5 = OBSERVER MODE. This workflow runs in parallel with the existing
+# self-verify.yml + test.yml, but applies NO label transitions. It only posts
+# a single summary PR comment so we can compare its verdict to the legacy
+# workflows. M6 will switch the production trigger source; M7 will remove the
+# legacy workflows; until then self-verify.yml + test.yml remain authoritative.
+#
+# ORACLES:
+#   - smoke       : detect manifest (package.json | Cargo.toml) and run its test target
+#   - targeted    : invoke ./.github/actions/self-verify (structured verification)
+#   - integration : invoke ./.github/actions/test (adversarial Claude tester)
+#   - aggregate   : verdict = passed iff all non-skipped oracles pass
+#
+# RETRY STORAGE (spec §4.4):
+#   Read-only in M5: .github/.verify-state.json on head branch carries attempt
+#   count. M5 surfaces it in the summary comment; M6 will be the writer.
+#
+# SECURITY (PRD §7):
+#   - S1: contents:read + issues:write + pull-requests:write (NO contents:write)
+#   - S3: trigger is pull_request on dev only (never main)
+#   - S4: DEEPSEEK_API_KEY never printed (existence check only, like code-generate)
+#   - S5: composite actions enforce their own --allowedTools; no bypass here
+#   - S7: scoped to .github/workflows/verify.yml (pipeline-fix sanctioned)
+#
+# Triggers:
+#   - pull_request opened/synchronize on dev, head matching claude/issue-*
+
+name: verify
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+    branches:
+      - dev
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: verify-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  filter:
+    if: ${{ startsWith(github.head_ref, 'claude/issue-') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      issue-number: ${{ steps.extract.outputs.issue-number }}
+      should-run: ${{ steps.extract.outputs.should-run }}
+      attempt: ${{ steps.state.outputs.attempt }}
+      max: ${{ steps.state.outputs.max }}
+    steps:
+      - name: Extract issue number from head ref
+        id: extract
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          set -eu
+          number=$(printf '%s' "$HEAD_REF" | sed -nE 's|^claude/issue-([0-9]+)-.*|\1|p')
+          if [ -z "$number" ]; then
+            echo "::warning::Head ref does not match claude/issue-N-* pattern: $HEAD_REF"
+            echo "should-run=false" >> "$GITHUB_OUTPUT"
+            echo "issue-number=" >> "$GITHUB_OUTPUT"
+          else
+            echo "should-run=true" >> "$GITHUB_OUTPUT"
+            echo "issue-number=$number" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.extract.outputs.should-run == 'true'
+        with:
+          ref: ${{ github.head_ref }}
+          persist-credentials: false
+
+      - name: "Read retry state (M5: read-only)"
+        id: state
+        if: steps.extract.outputs.should-run == 'true'
+        shell: bash
+        run: |
+          set -eu
+          state_file=".github/.verify-state.json"
+          attempt=1
+          max_attempts=3
+          if [ -f "$state_file" ]; then
+            attempt=$(jq -r '.attempt // 1' "$state_file" 2>/dev/null || echo 1)
+            max_attempts=$(jq -r '.max // 3' "$state_file" 2>/dev/null || echo 3)
+            case "$attempt" in
+              ''|*[!0-9]*) attempt=1 ;;
+            esac
+            case "$max_attempts" in
+              ''|*[!0-9]*) max_attempts=3 ;;
+            esac
+          fi
+          echo "attempt=$attempt" >> "$GITHUB_OUTPUT"
+          echo "max=$max_attempts" >> "$GITHUB_OUTPUT"
+
+  smoke:
+    needs: filter
+    if: needs.filter.outputs.should-run == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      verdict: ${{ steps.run.outputs.verdict }}
+      manifest: ${{ steps.detect.outputs.manifest }}
+      log-tail: ${{ steps.run.outputs.log-tail }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          persist-credentials: false
+
+      - name: Detect project manifest
+        id: detect
+        run: |
+          set -eu
+          manifest="none"
+          if [ -f package.json ]; then manifest="npm"; fi
+          if [ -f Cargo.toml ]; then manifest="cargo"; fi
+          echo "manifest=$manifest" >> "$GITHUB_OUTPUT"
+          echo "Detected manifest: $manifest"
+
+      - name: "Verify DEEPSEEK_API_KEY (S4: never print value)"
+        shell: bash
+        run: |
+          if [ -z "${{ secrets.DEEPSEEK_API_KEY }}" ]; then
+            echo "::warning::DEEPSEEK_API_KEY not set (smoke oracle does not use it, but downstream oracles do)."
+          fi
+
+      - name: Run smoke oracle
+        id: run
+        env:
+          MANIFEST: ${{ steps.detect.outputs.manifest }}
+        run: |
+          set -uo pipefail
+          verdict="skip"
+          log_tail="(no manifest — skipped)"
+          if [ "$MANIFEST" = "npm" ]; then
+            log_file="$(mktemp)"
+            if npm ci --no-audit --no-fund >"$log_file" 2>&1 && npm test >"$log_file" 2>&1; then
+              verdict="pass"
+            else
+              verdict="fail"
+            fi
+            log_tail="$(tail -n 40 "$log_file" || true)"
+            rm -f "$log_file"
+          elif [ "$MANIFEST" = "cargo" ]; then
+            log_file="$(mktemp)"
+            if cargo test --lib >"$log_file" 2>&1; then
+              verdict="pass"
+            else
+              verdict="fail"
+            fi
+            log_tail="$(tail -n 40 "$log_file" || true)"
+            rm -f "$log_file"
+          fi
+          echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
+          {
+            echo "log-tail<<EOF"
+            echo "$log_tail"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+  targeted:
+    needs: filter
+    if: needs.filter.outputs.should-run == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      verdict: ${{ steps.norm.outputs.verdict }}
+      report: ${{ steps.invoke.outputs.verify-report }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          persist-credentials: false
+
+      - name: Invoke self-verify composite
+        id: invoke
+        uses: ./.github/actions/self-verify
+        with:
+          issue-number: ${{ needs.filter.outputs.issue-number }}
+          head-branch: ${{ github.head_ref }}
+          base-branch: ${{ github.base_ref }}
+          pr-url: ${{ github.event.pull_request.html_url }}
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          api-key: ${{ secrets.DEEPSEEK_API_KEY }}
+          anthropic-base-url: ${{ vars.ANTHROPIC_BASE_URL }}
+          model: ${{ vars.SELF_VERIFY_MODEL }}
+          max-turns: ${{ vars.SELF_VERIFY_MAX_TURNS || '10' }}
+          context-budget-paths: ${{ vars.SELF_VERIFY_CONTEXT_PATHS || '' }}
+          issue-language: "en"
+
+      - name: Normalize verdict
+        id: norm
+        env:
+          STATUS: ${{ steps.invoke.outputs.verify-status }}
+        run: |
+          case "$STATUS" in
+            passed) echo "verdict=pass" >> "$GITHUB_OUTPUT" ;;
+            failed) echo "verdict=fail" >> "$GITHUB_OUTPUT" ;;
+            *) echo "::warning::unexpected verify-status '$STATUS'"; echo "verdict=fail" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+  integration:
+    needs: filter
+    if: needs.filter.outputs.should-run == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      verdict: ${{ steps.norm.outputs.verdict }}
+      report: ${{ steps.invoke.outputs.test-report }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          persist-credentials: false
+
+      - name: Invoke test composite (adversarial tester)
+        id: invoke
+        uses: ./.github/actions/test
+        with:
+          issue-number: ${{ needs.filter.outputs.issue-number }}
+          pr-url: ${{ github.event.pull_request.html_url }}
+          pr-number: ${{ github.event.pull_request.number }}
+          head-branch: ${{ github.head_ref }}
+          base-branch: ${{ github.base_ref }}
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          api-key: ${{ secrets.DEEPSEEK_API_KEY }}
+          anthropic-base-url: ${{ vars.ANTHROPIC_BASE_URL || '' }}
+          model: ${{ vars.TEST_MODEL || '' }}
+          max-turns: ${{ vars.TEST_MAX_TURNS || '10' }}
+          context-budget-paths: ${{ vars.TEST_CONTEXT_PATHS || '' }}
+
+      - name: Normalize verdict
+        id: norm
+        env:
+          STATUS: ${{ steps.invoke.outputs.test-status }}
+        run: |
+          case "$STATUS" in
+            passed) echo "verdict=pass" >> "$GITHUB_OUTPUT" ;;
+            failed) echo "verdict=fail" >> "$GITHUB_OUTPUT" ;;
+            *) echo "::warning::unexpected test-status '$STATUS'"; echo "verdict=fail" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+  aggregate:
+    needs: [filter, smoke, targeted, integration]
+    if: always() && needs.filter.outputs.should-run == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    outputs:
+      verdict: ${{ steps.verdict.outputs.verdict }}
+    steps:
+      - name: Compute AND verdict
+        id: verdict
+        env:
+          SMOKE: ${{ needs.smoke.outputs.verdict }}
+          TARGETED: ${{ needs.targeted.outputs.verdict }}
+          INTEGRATION: ${{ needs.integration.outputs.verdict }}
+          SMOKE_RESULT: ${{ needs.smoke.result }}
+          TARGETED_RESULT: ${{ needs.targeted.result }}
+          INTEGRATION_RESULT: ${{ needs.integration.result }}
+        run: |
+          set -u
+          targeted_verdict="${TARGETED:-fail}"
+          integration_verdict="${INTEGRATION:-fail}"
+          if [ "$TARGETED_RESULT" != "success" ]; then targeted_verdict="fail"; fi
+          if [ "$INTEGRATION_RESULT" != "success" ]; then integration_verdict="fail"; fi
+
+          smoke_verdict="${SMOKE:-skip}"
+          if [ "$SMOKE_RESULT" != "success" ]; then smoke_verdict="fail"; fi
+
+          if [ "$targeted_verdict" = "pass" ] && [ "$integration_verdict" = "pass" ] && [ "$smoke_verdict" != "fail" ]; then
+            echo "verdict=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "verdict=failed" >> "$GITHUB_OUTPUT"
+          fi
+          echo "smoke=$smoke_verdict targeted=$targeted_verdict integration=$integration_verdict"
+
+      - name: Post M5 observer summary on PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          VERDICT: ${{ steps.verdict.outputs.verdict }}
+          SMOKE: ${{ needs.smoke.outputs.verdict }}
+          MANIFEST: ${{ needs.smoke.outputs.manifest }}
+          TARGETED: ${{ needs.targeted.outputs.verdict }}
+          INTEGRATION: ${{ needs.integration.outputs.verdict }}
+          ATTEMPT: ${{ needs.filter.outputs.attempt }}
+          MAX: ${{ needs.filter.outputs.max }}
+          ISSUE: ${{ needs.filter.outputs.issue-number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -eu
+          icon="✅"
+          if [ "$VERDICT" = "failed" ]; then icon="❌"; fi
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(cat <<EOF
+          $icon **verify.yml (M5 observer) — \`$VERDICT\`**
+
+          Parallel to legacy self-verify + test. **No label transitions in M5.**
+
+          | Oracle | Verdict |
+          |---|---|
+          | smoke ($MANIFEST) | \`$SMOKE\` |
+          | targeted (self-verify) | \`$TARGETED\` |
+          | integration (test) | \`$INTEGRATION\` |
+
+          | Meta | Value |
+          |---|---|
+          | Issue | #$ISSUE |
+          | Attempt | $ATTEMPT/$MAX (read-only in M5) |
+          | Workflow run | $RUN_URL |
+
+          _M5 of pipeline-redesign-v3 — M6 will wire this as the production gate._
+          EOF
+          )"
+
+  on-failure:
+    needs: [smoke, targeted, integration, aggregate]
+    if: always() && (needs.smoke.result == 'failure' || needs.targeted.result == 'failure' || needs.integration.result == 'failure' || needs.aggregate.result == 'failure')
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Post infrastructure-failure notice on PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -eu
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(cat <<EOF
+          ⚠️ **verify.yml (M5) infrastructure failure**
+
+          One of the oracle jobs failed to execute (engine or composite-action error, not a verdict failure).
+
+          [Workflow run]($RUN_URL)
+          EOF
+          )"
