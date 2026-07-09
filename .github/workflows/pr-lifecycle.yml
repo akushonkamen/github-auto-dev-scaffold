@@ -1,0 +1,157 @@
+# Module 4 — PR Lifecycle (M4 of pipeline-redesign-v3)
+#
+# Purpose: single-responsibility PR push + open/reuse. Today this logic is
+# the `Push branch + open PR` step in `develop.yml` (lines 221-281). M4
+# extracts it so pr-lifecycle becomes the ONLY workflow that touches
+# `gh pr` — removing the architectural class of bug #54 (PR-already-exists
+# on retry) at the source.
+#
+# STATUS: M4 = ADDITIVE ONLY. This workflow has NO automated trigger in M4.
+# It can only run via workflow_dispatch (manual smoke test). M6 will wire
+# the real trigger (workflow_run: completed on code-generate.yml).
+# The existing `develop.yml` remains authoritative until M6.
+#
+# RESPONSIBILITIES (single):
+#   - Push head branch (CLAUDE_DEV_PAT, no force)
+#   - Open PR if none exists, or reuse existing PR (idempotent — issue #54)
+#   - Post audit comment on issue with PR URL
+#
+# SECURITY (S1-S7 preserved):
+#   - S7 pipeline-fix: classic PAT's `workflow` scope authenticates the push
+#     via extraheader (actions/checkout credential helper is insufficient)
+#   - S3: base-branch is never main/master (enforced in code-generate)
+#   - S2: no label application here — label transitions are the caller's job
+#
+# Manual smoke test:
+#   gh workflow run pr-lifecycle.yml \
+#     -f issue-number=NN \
+#     -f head-branch=claude/issue-NN-slug \
+#     -f base-branch=dev \
+#     -f commit-sha=<sha> \
+#     -f summary="<text>"
+
+name: pr-lifecycle
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue-number:
+        description: "Issue number"
+        required: true
+        type: string
+      head-branch:
+        description: "Head branch to push (from code-generate)"
+        required: true
+        type: string
+      base-branch:
+        description: "Base branch (PR target — must NOT be main/master)"
+        required: true
+        type: string
+      commit-sha:
+        description: "Head commit SHA (from code-generate)"
+        required: true
+        type: string
+      summary:
+        description: "Change summary for PR body"
+        required: false
+        type: string
+        default: "(no summary provided)"
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: pr-lifecycle-issue-${{ inputs.issue-number }}
+  cancel-in-progress: false
+
+jobs:
+  push-and-pr:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          token: ${{ secrets.CLAUDE_DEV_PAT }}
+
+      - name: Push branch + open/reuse PR (CLAUDE_DEV_PAT)
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.CLAUDE_DEV_PAT }}
+          CLAUDE_DEV_PAT: ${{ secrets.CLAUDE_DEV_PAT }}
+          HEAD: ${{ inputs.head-branch }}
+          BASE: ${{ inputs.base-branch }}
+          SHA: ${{ inputs.commit-sha }}
+          SUMMARY: ${{ inputs.summary }}
+          NUMBER: ${{ inputs.issue-number }}
+        run: |
+          set -euo pipefail
+          if [ "$BASE" = "main" ] || [ "$BASE" = "master" ]; then
+            echo "::error::Refusing to open PR against $BASE (PRD §7 S3)"
+            exit 1
+          fi
+          # S7 pipeline-fix: embed PAT in extraheader so workflow-scope auth works.
+          git config --local --unset http.https://github.com/.extraheader 2>/dev/null || true
+          git config --local http.https://github.com/.extraheader "Authorization: basic $(printf 'x-access-token:%s' "$CLAUDE_DEV_PAT" | base64)"
+          git push origin "$HEAD"
+
+          body=$(cat <<EOF
+          I'm an AI assistant (powered by Claude) operating under the GithubAutoDev disclosure policy.
+
+          ## Summary
+          $SUMMARY
+
+          ## Issue
+          Closes #$NUMBER
+
+          ## Test plan
+          - [ ] CI green
+          - [ ] Reviewer verifies scope matches issue acceptance criteria
+          - [ ] No regressions in adjacent modules
+
+          _Branch: \`$HEAD\` @ \`${SHA:0:12}\`_
+          EOF
+          )
+
+          # Idempotent PR open (issue #54): on retry the PR already exists.
+          pr_url=$(gh pr list --repo "$GITHUB_REPOSITORY" \
+            --head "$HEAD" --base "$BASE" --state open \
+            --json url --jq '.[0].url' 2>/dev/null || echo "")
+          if [ -z "$pr_url" ]; then
+            pr_url=$(gh pr create \
+              --repo "$GITHUB_REPOSITORY" \
+              --base "$BASE" \
+              --head "$HEAD" \
+              --title "[Issue #$NUMBER]" \
+              --body "$body")
+            echo "pr-url=$pr_url" >> "$GITHUB_OUTPUT"
+            gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" \
+              --body "🚀 Development branch pushed: \`$HEAD\` @ \`${SHA:0:12}\`. PR: $pr_url"
+          else
+            echo "Reusing existing PR: $pr_url"
+            echo "pr-url=$pr_url" >> "$GITHUB_OUTPUT"
+            gh pr comment "$pr_url" --repo "$GITHUB_REPOSITORY" \
+              --body "🔄 **Retry attempt** — new push: \`$HEAD\` @ \`${SHA:0:12}\`."
+          fi
+
+  on-failure:
+    needs: push-and-pr
+    if: ${{ always() && needs.push-and-pr.result == 'failure' }}
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Mark stage:failed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NUMBER: ${{ inputs.issue-number }}
+        run: |
+          gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "stage:failed" || true
+          gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --body "⚠️ pr-lifecycle failed. See [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details." || true

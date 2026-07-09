@@ -1,0 +1,124 @@
+# Module 4 — Develop Gate (M4 of pipeline-redesign-v3)
+#
+# Purpose: single-responsibility preflight for Module 4. Today this logic is
+# embedded as the `preflight` job in `develop.yml`. M4 extracts it into a
+# standalone workflow so the retry/wiring layer (M6) can compose it
+# independently of code generation and PR lifecycle.
+#
+# STATUS: M4 = ADDITIVE ONLY. This workflow has NO automated trigger in M4.
+# It can only run via workflow_dispatch (manual smoke test). M6 will wire
+# the real trigger (workflow_run: completed on clarify-loop.yml + judge.yml).
+# The existing `develop.yml` remains authoritative until M6.
+#
+# RESPONSIBILITIES (single):
+#   - Gate: is the issue open? Are maintainer-override labels absent?
+#   - Compute branch names (slug + head/base)
+#   - Detect issue language
+#   - Emit outputs for the next workflow (code-generate)
+#
+# OUTPUTS:
+#   - should-run: 'true' | 'false'
+#   - head-branch, base-branch, issue-language
+#
+# SECURITY (S1-S7 preserved):
+#   - permissions: contents:read + issues:read (preflight only, no writes)
+#   - S2 preserved: gate does NOT apply any label — that's the caller's job
+#   - S3 preserved: gate does NOT create branches — that's code-generate's job
+#
+# Manual smoke test:
+#   gh workflow run develop-gate.yml -f issue-number=NN
+
+name: develop-gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue-number:
+        description: "Issue number to preflight"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  issues: read
+
+concurrency:
+  group: develop-gate-issue-${{ inputs.issue-number }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read
+    outputs:
+      should-run: ${{ steps.gate.outputs.should-run }}
+      head-branch: ${{ steps.branch.outputs.head-branch }}
+      base-branch: ${{ steps.branch.outputs.base-branch }}
+      issue-language: ${{ steps.lang.outputs.issue-language }}
+    steps:
+      - name: Gate — issue open + no maintainer-block label
+        id: gate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NUMBER: ${{ inputs.issue-number }}
+        run: |
+          set -euo pipefail
+          should_run="true"
+          reason=""
+          json=$(gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json state,labels)
+          state=$(printf '%s' "$json" | jq -r '.state')
+          labels=$(printf '%s' "$json" | jq -r '.labels | map(.name) | join(",")')
+          if [ "$state" != "OPEN" ]; then
+            should_run="false"; reason="issue state=$state (not OPEN)"
+          fi
+          for forbidden in rejected force-manual; do
+            if printf ',%s,' "$labels" | grep -q ",$forbidden,"; then
+              should_run="false"; reason="maintainer override label present: $forbidden"
+            fi
+          done
+          echo "should-run=$should_run" >> "$GITHUB_OUTPUT"
+          echo "reason=$reason" >> "$GITHUB_OUTPUT"
+          echo "Preflight gate: should-run=$should_run reason=$reason"
+
+      - name: Compute branch names
+        id: branch
+        if: steps.gate.outputs.should-run == 'true'
+        env:
+          NUMBER: ${{ inputs.issue-number }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEV_BASE: ${{ vars.DEV_BASE_BRANCH }}
+        run: |
+          set -eu
+          base="${DEV_BASE:-dev}"
+          # Fetch issue title for slug derivation
+          title=$(gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json title --jq '.title')
+          slug=$(printf '%s' "$title" \
+            | tr '[:upper:]' '[:lower:]' \
+            | tr -c '[:alnum:]' '-' \
+            | tr -s '-' \
+            | sed 's/^-//; s/-$//' \
+            | cut -c1-40)
+          if [ -z "$slug" ]; then slug="issue"; fi
+          head="claude/issue-${NUMBER}-${slug}"
+          echo "base-branch=$base" >> "$GITHUB_OUTPUT"
+          echo "head-branch=$head" >> "$GITHUB_OUTPUT"
+
+      - name: Detect issue language
+        id: lang
+        if: steps.gate.outputs.should-run == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NUMBER: ${{ inputs.issue-number }}
+        run: |
+          set -eu
+          body=$(gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json body | jq -r '.body // ""')
+          total=$(printf '%s' "$body" | tr -d '[:space:]' | wc -m | tr -d ' ')
+          cjk=$(printf '%s' "$body" | grep -oE $'[\xe4-\xe9][\x80-\xbf][\x80-\xbf]' | wc -l | tr -d ' ') || cjk=0
+          lang="en"
+          if [ "$total" -gt 0 ] && [ "$cjk" -gt 0 ]; then
+            ratio=$((cjk * 100 / total))
+            if [ "$ratio" -ge 30 ]; then lang="zh"; fi
+          fi
+          echo "issue-language=$lang" >> "$GITHUB_OUTPUT"
