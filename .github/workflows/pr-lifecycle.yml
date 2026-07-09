@@ -197,6 +197,12 @@ jobs:
               --body "🔄 **Retry attempt** — new push: \`$HEAD\` @ \`${SHA:0:12}\`."
           fi
 
+          # Apply `in-review` label so Module 8 (review.yml) and Module 9
+          # (merge-queue.yml) engage. GH_TOKEN is CLAUDE_DEV_PAT (see env above)
+          # — PAT-sourced label events fire downstream workflows, whereas
+          # GITHUB_TOKEN-sourced events do not.
+          gh pr edit "$pr_url" --repo "$GITHUB_REPOSITORY" --add-label "in-review"
+
   on-failure:
     needs: push-and-pr
     if: ${{ always() && needs.push-and-pr.result == 'failure' }}
