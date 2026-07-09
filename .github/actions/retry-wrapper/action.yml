@@ -104,7 +104,7 @@ runs:
 
     - name: Escalate (apply label + post audit comment)
       id: escalate
-      if: inputs.escalate == 'true' && steps.decide.outputs.decision == 'escalate'
+      if: inputs.escalate == 'true'
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.repo-token }}
@@ -114,8 +114,15 @@ runs:
         ATTEMPT_PREV: ${{ steps.decide.outputs.previous-attempt }}
         MAX: ${{ steps.decide.outputs.max-applied }}
         SUMMARY: ${{ inputs.failure-summary }}
+        DECISION: ${{ steps.decide.outputs.decision }}
       run: |
         set -euo pipefail
+        # Caller asked for escalate but decide says we still have retries left.
+        # Warn loudly instead of silently skipping (reviewer feedback on PR #66).
+        if [ "$DECISION" != "escalate" ]; then
+          echo "::warning::escalate=true passed but decision=$DECISION (attempts not yet exhausted); no escalation action taken"
+          exit 0
+        fi
         # Apply escalation label (idempotent).
         gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "$LABEL" 2>/dev/null || true
 
