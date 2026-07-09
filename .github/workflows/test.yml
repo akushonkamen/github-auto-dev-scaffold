@@ -234,7 +234,12 @@ jobs:
           )"
           else
             # Retry: remove test:failed (if present), clean up intermediate labels,
-            # add retry counter, add accepted to re-trigger Module 4.
+            # add retry counter.
+            # S2 (PRD §7): only maintainers may apply `accepted`. The legacy
+            # `--add-label accepted` was removed in this fix — M7 deleted the
+            # develop.yml listener, so that label had zero downstream effect
+            # anyway. Retry now requires maintainer to manually dispatch
+            # code-generate.yml with the prior test report attached.
             next=$((retry_count + 1))
             echo "decision=retry" >> "$GITHUB_OUTPUT"
             echo "retry_label=test:retry-${next}" >> "$GITHUB_OUTPUT"
@@ -247,12 +252,11 @@ jobs:
               gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "test:retry-$old_n" 2>/dev/null || true
             done
             gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "test:retry-${next}"
-            gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "accepted"
 
             # Post audit comment with retry count, failure summary, and run URL.
             failure_summary="$(printf '%s' "$REPORT" | head -n 6)"
             gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(cat <<EOF
-          🔄 **Auto-retry ${next}/${max_retries}: re-running Module 4 with test feedback**
+          🔄 **Auto-retry ${next}/${max_retries}: maintainer action required**
 
           | Field | Value |
           |---|---|
@@ -265,8 +269,9 @@ jobs:
           ${failure_summary}
 
           ---
-          Module 4 (develop) has been re-triggered via \`accepted\` label.
-          The prior Module 6 test report has been injected into the develop prompt.
+          ⚠️ Auto-retry label was applied. S2 forbids AI from applying \`accepted\`.
+          A maintainer must manually re-run Module 4 (code-generate.yml) with this
+          test report as context, or close the issue as \`rejected\`.
           EOF
           )"
           fi
