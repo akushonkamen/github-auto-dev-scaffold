@@ -56,7 +56,7 @@ those directories**; the Issue/PR will name the directories that matter.
 | 3 | Judgement (REMOVED) | — | — | Module 3 workflow + composite action deleted. `needs-ralph` label still used as escalation signal but no cloud workflow fires on it. |
 | 3.5 | Design review | Claude (+human) | size:XL accepted | `design-approved` |
 | 4 | Develop (M4 split) | Claude (GLM passthrough) | `workflow_run: clarify-loop completed` | develop-gate → code-generate → pr-lifecycle |
-| 5 | verify.yml (cutover LIVE) | Claude (3-oracle parallel, GLM passthrough) | branch push (PR opened on claude/issue-*) | verify report + `verified` / `verify:failed` label. self-verify.yml deleted in cutover. |
+| 5 | verify.yml (cutover LIVE) | Claude (2-oracle smoke + targeted, GLM passthrough) | branch push (PR opened on claude/issue-*) | verify report + `verified` / `verify:failed` label. self-verify.yml deleted in cutover. |
 | 6 | Test | Claude (second isolated process, tool-restricted tester — PRD §4 amendment 2026-07-07) | Module 5 passed | test report |
 | 7 | PR open (REMOVED) | — | — | Module 7 v1 deleted. `pr-lifecycle.yml` (M4c) opens PR + applies `in-review` directly. |
 | 8 | Review | Claude + CODEOWNERS | `pull_request.labeled: in-review` | Approve / Changes |

@@ -1,4 +1,4 @@
-# Module 5+6 — Verify (M5 of pipeline-redesign-v3, cutover LIVE)
+# Module 5 — Verify (M5 of pipeline-redesign-v3, cutover LIVE)
 #
 # Purpose: single verification gate with multiple oracles. Replaces the legacy
 # self-verify.yml as the authoritative label owner. test.yml (M6) remains a
@@ -7,7 +7,7 @@
 #
 # STATUS: CUTOVER LIVE. This workflow:
 #   - applies `verifying` at start (replaces self-verify.yml step)
-#   - runs 3 oracles in parallel (smoke + targeted + integration)
+#   - runs 2 oracles in parallel (smoke + targeted)
 #   - aggregates AND verdict
 #   - on pass: applies `verified` (triggers test.yml / Module 6)
 #   - on fail: applies `verify:failed`
@@ -16,13 +16,11 @@
 # ORACLES:
 #   - smoke       : detect manifest (package.json | Cargo.toml) and run its test target
 #   - targeted    : invoke ./.github/actions/self-verify (structured verification)
-#   - integration : invoke ./.github/actions/test (adversarial Claude tester)
-#   - aggregate   : verdict = passed iff all non-skipped oracles pass
+#   - aggregate   : verdict = passed iff targeted passes AND smoke does not fail (smoke may skip)
 #
-# NOTE: integration oracle duplicates work that test.yml (Module 6) will redo
-# after `verified` is applied. Accepted as known tech debt — future work may
-# have verify.yml apply `tested` directly and delete test.yml, but that
-# requires migrating the retry/escalate logic (spec §4.4 full collapse).
+# test.yml (Module 6) owns the full adversarial test composite after `verified`
+# is applied; verify.yml intentionally does NOT call .github/actions/test to
+# avoid duplicate work within a single issue lifecycle.
 #
 # RETRY STORAGE (spec §4.4):
 #   Read-only: .github/.verify-state.json on head branch carries attempt
@@ -231,51 +229,8 @@ jobs:
             *) echo "::warning::unexpected verify-status '$STATUS'"; echo "verdict=fail" >> "$GITHUB_OUTPUT" ;;
           esac
 
-  integration:
-    needs: filter
-    if: needs.filter.outputs.should-run == 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: read
-    outputs:
-      verdict: ${{ steps.norm.outputs.verdict }}
-      report: ${{ steps.invoke.outputs.test-report }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.head_ref }}
-          persist-credentials: false
-
-      - name: Invoke test composite (adversarial tester)
-        id: invoke
-        uses: ./.github/actions/test
-        with:
-          issue-number: ${{ needs.filter.outputs.issue-number }}
-          pr-url: ${{ github.event.pull_request.html_url }}
-          pr-number: ${{ github.event.pull_request.number }}
-          head-branch: ${{ github.head_ref }}
-          base-branch: ${{ github.base_ref }}
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-          api-key: ${{ secrets.DEEPSEEK_API_KEY }}
-          anthropic-base-url: ${{ vars.ANTHROPIC_BASE_URL || '' }}
-          model: ${{ vars.TEST_MODEL || '' }}
-          max-turns: ${{ vars.TEST_MAX_TURNS || '10' }}
-          context-budget-paths: ${{ vars.TEST_CONTEXT_PATHS || '' }}
-
-      - name: Normalize verdict
-        id: norm
-        env:
-          STATUS: ${{ steps.invoke.outputs.test-status }}
-        run: |
-          case "$STATUS" in
-            passed) echo "verdict=pass" >> "$GITHUB_OUTPUT" ;;
-            failed) echo "verdict=fail" >> "$GITHUB_OUTPUT" ;;
-            *) echo "::warning::unexpected test-status '$STATUS'"; echo "verdict=fail" >> "$GITHUB_OUTPUT" ;;
-          esac
-
   aggregate:
-    needs: [filter, smoke, targeted, integration]
+    needs: [filter, smoke, targeted]
     if: always() && needs.filter.outputs.should-run == 'true'
     runs-on: ubuntu-latest
     permissions:
@@ -289,26 +244,22 @@ jobs:
         env:
           SMOKE: ${{ needs.smoke.outputs.verdict }}
           TARGETED: ${{ needs.targeted.outputs.verdict }}
-          INTEGRATION: ${{ needs.integration.outputs.verdict }}
           SMOKE_RESULT: ${{ needs.smoke.result }}
           TARGETED_RESULT: ${{ needs.targeted.result }}
-          INTEGRATION_RESULT: ${{ needs.integration.result }}
         run: |
           set -u
           targeted_verdict="${TARGETED:-fail}"
-          integration_verdict="${INTEGRATION:-fail}"
           if [ "$TARGETED_RESULT" != "success" ]; then targeted_verdict="fail"; fi
-          if [ "$INTEGRATION_RESULT" != "success" ]; then integration_verdict="fail"; fi
 
           smoke_verdict="${SMOKE:-skip}"
           if [ "$SMOKE_RESULT" != "success" ]; then smoke_verdict="fail"; fi
 
-          if [ "$targeted_verdict" = "pass" ] && [ "$integration_verdict" = "pass" ] && [ "$smoke_verdict" != "fail" ]; then
+          if [ "$targeted_verdict" = "pass" ] && [ "$smoke_verdict" != "fail" ]; then
             echo "verdict=passed" >> "$GITHUB_OUTPUT"
           else
             echo "verdict=failed" >> "$GITHUB_OUTPUT"
           fi
-          echo "smoke=$smoke_verdict targeted=$targeted_verdict integration=$integration_verdict"
+          echo "smoke=$smoke_verdict targeted=$targeted_verdict"
 
       - name: Post verify summary on PR
         env:
@@ -318,7 +269,6 @@ jobs:
           SMOKE: ${{ needs.smoke.outputs.verdict }}
           MANIFEST: ${{ needs.smoke.outputs.manifest }}
           TARGETED: ${{ needs.targeted.outputs.verdict }}
-          INTEGRATION: ${{ needs.integration.outputs.verdict }}
           ATTEMPT: ${{ needs.filter.outputs.attempt }}
           MAX: ${{ needs.filter.outputs.max }}
           ISSUE: ${{ needs.filter.outputs.issue-number }}
@@ -334,7 +284,6 @@ jobs:
           |---|---|
           | smoke ($MANIFEST) | \`$SMOKE\` |
           | targeted (self-verify) | \`$TARGETED\` |
-          | integration (test) | \`$INTEGRATION\` |
 
           | Meta | Value |
           |---|---|
@@ -366,8 +315,8 @@ jobs:
           fi
 
   on-failure:
-    needs: [smoke, targeted, integration, aggregate]
-    if: always() && (needs.smoke.result == 'failure' || needs.targeted.result == 'failure' || needs.integration.result == 'failure' || needs.aggregate.result == 'failure')
+    needs: [smoke, targeted, aggregate]
+    if: always() && (needs.smoke.result == 'failure' || needs.targeted.result == 'failure' || needs.aggregate.result == 'failure')
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
