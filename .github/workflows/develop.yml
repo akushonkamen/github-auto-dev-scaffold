@@ -1,27 +1,32 @@
-# Module 4 — Develop (v2)
+# Module 4 — Develop (v2) — LEGACY (disabled in M6 cutover)
 #
-# Triggers when an issue gets `accepted` (maintainer path) OR `accepted-by-claude`
-# (Claude self-acceptance from clarify loop, plan §7 S2 amendment).
-# Creates a `claude/issue-N-<slug>` branch, calls the develop composite action,
-# pushes the branch with CLAUDE_DEV_PAT, opens a PR with CLAUDE_DEV_PAT
-# (PR opener = PAT owner so the PR is "from a real developer").
+# M6 of pipeline-redesign-v3 disabled the label trigger on this workflow.
+# Production now flows through:
+#   clarify-loop.yml/judge.yml (success)
+#     → develop-gate.yml (workflow_run)
+#     → code-generate.yml (workflow_run)
+#     → pr-lifecycle.yml (workflow_run)
+#
+# This file is preserved for one cycle as a rollback safety net. M7 will
+# delete it once the new chain has been validated on real issue traffic.
+# To re-enable in an emergency: restore the `on: issues: [labeled]` block.
 #
 # SECURITY POSTURE (PRD §7 + plan §7):
 #   - permissions: contents:write + issues:write + pull-requests:write
-#     (Module 4 is the ONLY module allowed contents:write per S1)
 #   - All pushes and PR opens use CLAUDE_DEV_PAT
 #   - claude --disallowedTools blocks git push --force* and main/master checkout wholesale
 #   - Base branch is hardcoded to `dev` (or repo var DEV_BASE_BRANCH); never main
 #   - On failure: stage:failed label + failure comment, no main impact
-#
-# Triggers:
-#   - issues.labeled with label == accepted OR accepted-by-claude (AC-V2-12)
 
 name: develop
 
 on:
-  issues:
-    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      issue-number:
+        description: "Manual smoke test only (M6 disabled label trigger)"
+        required: true
+        type: string
 
 permissions:
   contents: write
