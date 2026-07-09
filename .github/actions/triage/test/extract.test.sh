@@ -57,6 +57,26 @@ out4="$TMPDIR/legacy.output"
 GITHUB_OUTPUT="$out4" STRUCTURED="$(cat "$FIXTURES/legacy-no-workload-class.json")" bash "$EXTRACT_SH"
 assert_eq "workload_class default" "standard" "$(grep '^workload_class=' "$out4" | cut -d= -f2)"
 
+echo "Scenario 5: invalid workload_class value (coerce to 'standard' + warning)"
+out5="$TMPDIR/invalid.output"
+log5="$TMPDIR/invalid.log"
+# extract.sh emits ::warning:: to stdout (consistent with its ::error:: usage).
+# Capture full output (stdout+stderr) to a log file; GITHUB_OUTPUT still receives the parsed fields.
+GITHUB_OUTPUT="$out5" STRUCTURED="$(cat "$FIXTURES/invalid-workload-class.json")" bash "$EXTRACT_SH" >"$log5" 2>&1 || true
+assert_eq "invalid coerced" "standard" "$(grep '^workload_class=' "$out5" | cut -d= -f2)"
+if grep -q "::warning::" "$log5"; then
+  printf '  ✓ warning emitted for invalid value\n'
+  PASS=$((PASS + 1))
+else
+  printf '  ✗ warning not emitted for invalid value\n    log:\n%s\n' "$(cat "$log5")"
+  FAIL=$((FAIL + 1))
+fi
+
+echo "Scenario 6: null workload_class (treated as missing → default 'standard')"
+out6="$TMPDIR/null.output"
+GITHUB_OUTPUT="$out6" STRUCTURED="$(cat "$FIXTURES/null-workload-class.json")" bash "$EXTRACT_SH"
+assert_eq "null → default" "standard" "$(grep '^workload_class=' "$out6" | cut -d= -f2)"
+
 echo ""
 echo "Summary: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
