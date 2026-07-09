@@ -78,7 +78,7 @@ outputs:
     description: "float [0,1] — claude's confidence in the decision"
     value: ${{ steps.parse.outputs.confidence }}
   workload_class:
-    description: "M3 (pipeline-redesign-v3): trivial | standard | complex. Defaults to 'standard' if engine omits. M6 will use this to drive auto-accept instead of AUTO_ACCEPT_ENABLED."
+    description: "M3/M8 (pipeline-redesign-v3): trivial | standard | complex. Defaults to 'standard' if engine omits. M8 wires this into triage-issue.yml routing — trivial/standard auto-apply accepted-by-claude (S2 amendment), complex routes to clarify loop."
     value: ${{ steps.parse.outputs.workload_class }}
 
 runs:
@@ -142,10 +142,11 @@ runs:
         } >> "$GITHUB_OUTPUT"
 
         # JSON schema for structured output — compact, single-line
-        # M3 (pipeline-redesign-v3): workload_class is optional (not in `required`)
+        # M3/M8 (pipeline-redesign-v3): workload_class is optional (not in `required`)
         # so older engines that don't emit it still validate; extract.sh defaults
-        # missing values to "standard". M6 will wire workload_class into the
-        # auto-accept decision (replacing the binary AUTO_ACCEPT_ENABLED repo var).
+        # missing values to "standard". M8 wires workload_class into the triage
+        # routing decision in triage-issue.yml (replaced the binary
+        # AUTO_ACCEPT_ENABLED repo var).
         schema=$(jq -c . <<'JSON'
         {
           "type": "object",

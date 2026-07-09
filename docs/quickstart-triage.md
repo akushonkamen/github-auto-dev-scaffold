@@ -11,12 +11,15 @@ This is the first end-to-end runnable flow in the repo. When a new Issue is open
    { "decision": "reply"|"work",
      "comment_body": "...",
      "suggested_labels": [...],
-     "confidence": 0.0–1.0 }
+     "confidence": 0.0–1.0,
+     "workload_class": "trivial"|"standard"|"complex" }
    ```
 4. The workflow posts `comment_body` as a comment on the issue.
 5. The workflow applies the `triage` label.
-6. If `decision == "work"` **and** repo variable `AUTO_ACCEPT_ENABLED == "true"`: applies `accepted` label (which downstream Module 4 — develop — listens for).
-7. Otherwise: claude's recommendation is in the comment; maintainer decides.
+6. M8 routing (per `workload_class`):
+   - `decision == "work"` + `workload_class ∈ {trivial, standard}` → applies `accepted-by-claude` label (Claude self-acceptance, S2 amendment — Module 4 develop-gate picks this up).
+   - `decision == "work"` + `workload_class == complex` → applies `needs-clarify` label (Module 3' clarify loop engages for deeper scoping).
+   - `decision == "reply"` → comment-only, end of pipeline.
 
 ## One-time setup
 
@@ -41,15 +44,17 @@ Set these **repo variables** (Settings → Secrets and variables → Actions →
 
 The `ANTHROPIC_BASE_URL` redirects claude-code-action's Anthropic SDK to DeepSeek's Anthropic-compatible endpoint. `DEEPSEEK_API_KEY` is passed as the bearer token.
 
-### 3. (Optional) Enable auto-accept
+### 3. Routing behavior (no toggle needed)
 
-By default, claude only comments. To let it auto-apply the `accepted` label when it decides `work`, add a third repo variable:
+There is no `AUTO_ACCEPT_ENABLED` repo var anymore (removed in M8). Routing is automatic per issue:
 
-| Name | Value |
-|---|---|
-| `AUTO_ACCEPT_ENABLED` | `true` |
+| `workload_class` | Label applied | Next step |
+|---|---|---|
+| `trivial` / `standard` | `accepted-by-claude` | Module 4 develop-gate triggers |
+| `complex` | `needs-clarify` | Module 3' clarify loop engages |
+| (empty/unset) | `needs-clarify` | Safe default — clarify loop scopes the work |
 
-⚠️ **PRD §7 S2**: enabling this means any issue can be promoted to code-generation without maintainer review. Only enable on private repos or repos with trusted submitters.
+⚠️ **PRD §7 S2 amendment (M8)**: `accepted-by-claude` is now applied by `triage-issue.yml` itself for low-risk (`trivial`/`standard`) classes. Maintainers can override at any time with `rejected`.
 
 ## Testing
 
@@ -65,7 +70,8 @@ Open a test issue with realistic content. Within ~1-2 minutes you should see:
 
 - A comment from `github-actions[bot]` containing claude's analysis.
 - The `triage` label applied.
-- (If `AUTO_ACCEPT_ENABLED=true` and claude said `work`) The `accepted` label applied.
+- (If `decision=work` and `workload_class ∈ {trivial, standard}`) The `accepted-by-claude` label applied — Module 4 engage immediately.
+- (If `workload_class == complex`) The `needs-clarify` label applied — Module 3' clarify loop will ask questions.
 
 ## Troubleshooting
 
@@ -93,20 +99,19 @@ Some versions of claude-code-action hardcode the Anthropic endpoint and ignore `
 
 If the engine returns prose-wrapped JSON (e.g. `Here is my analysis: {...}`), `extract.sh` will fail loudly. The `output_schema` enforcement on the action call should prevent this — if it recurs, the engine may be ignoring the schema. File an issue with the raw output attached.
 
-### `accepted` label not being applied
+### `accepted-by-claude` label not being applied (M8 routing)
 
 Check, in order:
 
-1. The workflow log step "Auto-accept (S2 opt-in)" was reached (decision was `work`).
-2. Repo variable `AUTO_ACCEPT_ENABLED` is set to exactly the string `true` (not "True", "yes", "1").
-3. The `accepted` label exists in `.github/labels.yml` and was synced to the repo.
+1. The workflow log step "Route by workload_class (M8)" was reached (decision was `work`).
+2. The triage composite emitted `workload_class` (check `steps.triage.outputs.workload_class` in the log).
+3. `workload_class` was `trivial` or `standard`. Complex or empty routes to `needs-clarify` instead.
+4. The `accepted-by-claude` label exists in the repo's label list.
 
 ## Disabling
 
-Two kill switches:
-
 - **Disable the workflow**: GitHub → Actions → "triage-issue" → ⋯ → Disable workflow. Existing issues are unaffected.
-- **Disable just auto-accept while keeping triage comments**: delete the `AUTO_ACCEPT_ENABLED` repo variable.
+- **Force every `work` decision to clarify (bypass M8 auto-accept)**: not exposed as a repo var. Edit `.github/workflows/triage-issue.yml` to comment out the `trivial|standard)` case.
 
 ## Two-tier flow with local ralph (deep analysis)
 

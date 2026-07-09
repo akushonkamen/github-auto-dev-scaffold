@@ -94,15 +94,15 @@ The workflows use DeepSeek's Anthropic-compatible endpoint (`https://api.deepsee
 ```
 issue opened
   ↓ (cloud, Module 2)
-triage-issue.yml — single LLM call → {decision, comment_body, ...}
+triage-issue.yml — single LLM call → {decision, comment_body, workload_class, ...}
   ↓
 decision==reply → comment-only (done)
-decision==work (high conf.) + AUTO_ACCEPT_ENABLED=true → accepted → Module 4 develop
-decision==work (low conf.) → needs-clarify
+decision==work + workload_class ∈ {trivial, standard} → accepted-by-claude (M8 S2 amendment) → Module 4 develop-gate
+decision==work + workload_class == complex → needs-clarify
   ↓ (cloud, Module 3')
 clarify-loop.yml — multi-turn with issue author
   ├─ ask → clarify-r-N, wait for author reply
-  ├─ accept → accepted-by-claude → Module 4 develop
+  ├─ accept → accepted-by-claude → Module 4 develop-gate
   ├─ yield → yielded, maintainer decides
   └─ max-rounds → needs-ralph (v1 deep-analysis path only)
   ↓ (cloud, Module 4)

@@ -1,9 +1,12 @@
 # Triage Issue — minimal viable Issue → Claude → Reply/Work loop.
 #
 # Listens for new issues, dispatches claude (or GLM via base-url passthrough)
-# to analyze the issue body, then posts claude's comment verbatim. Optionally
-# auto-applies the `accepted` label when claude's decision is "work" AND the
-# repo variable AUTO_ACCEPT_ENABLED is "true" (PRD §7 S2 — maintainer opt-in).
+# to analyze the issue body, then posts claude's comment verbatim. Routes
+# `work` decisions by `workload_class` (M8 of pipeline-redesign-v3):
+#   - trivial | standard → apply `accepted-by-claude` (S2 amendment, low-risk)
+#   - complex            → apply `needs-clarify`        (clarify loop engages)
+# The legacy `AUTO_ACCEPT_ENABLED` repo var was removed in M8 — routing is now
+# per-issue via workload classification, not a global toggle.
 #
 # SECURITY (PRD §7 S1): this workflow consumes untrusted Issue body content.
 #   permissions:
@@ -95,64 +98,39 @@ jobs:
           NUMBER: ${{ steps.resolve-issue.outputs.issue-number }}
         run: gh issue edit "$NUMBER" --add-label triage
 
-      # ─── Queue clarify loop (cloud → Module 3' clarify handoff, v2) ────────
-      # AC-V2-1 (v2 plan §3 Step 2): route LOW-CONFIDENCE `work` decisions to
-      # the v2 clarify loop instead of v1 ralph. HIGH-CONFIDENCE work is handled
-      # below by auto-accept (AA on) or recommend-acceptance (AA off). REPLY
-      # decisions never enter the clarify loop — they stay on the v1 path
-      # (comment + triage label, end of pipeline).
+      # ─── M8 routing: workload_class drives the path forward ────────────────
+      # Spec pipeline-redesign-v3 §4.3 — trivial/standard are auto-accepted via
+      # the S2 amendment (Claude self-acceptance label); complex goes through
+      # the clarify loop for deeper scoping. AUTO_ACCEPT_ENABLED repo var was
+      # removed entirely; per-issue classification replaces the global toggle.
       #
-      # Low-confidence = (work with empty confidence) OR
-      #                  (work with confidence < TRIAGE_RALPH_THRESHOLD).
-      # Empty confidence on `work` is treated as low (safer to refine).
-      #
-      # v2 lifecycle note: `needs-ralph` is no longer emitted here. The only
-      # emitter of `needs-ralph` after this change is the clarify-loop workflow's
-      # max-rounds fallback (see .github/workflows/clarify-loop.yml).
-      - name: Queue clarify loop
-        id: queue-clarify
-        if: ${{ steps.triage.outputs.decision == 'work' && (steps.triage.outputs.confidence == '' || fromJSON(steps.triage.outputs.confidence) < fromJSON(vars.TRIAGE_RALPH_THRESHOLD || '0.7')) }}
+      # v2 lifecycle note: `needs-ralph` is never emitted here. The only emitter
+      # of `needs-ralph` is clarify-loop's max-rounds fallback.
+      - name: Route by workload_class (M8)
+        if: ${{ steps.triage.outputs.decision == 'work' }}
         env:
-          # S7 pipeline-fix (2026-07-07): use CLAUDE_DEV_PAT so the
-          # `issues.labeled` event actually triggers clarify-loop.yml.
-          # GITHUB_TOKEN-sourced label events don't fire downstream workflows.
+          # S7 pipeline-fix (2026-07-07): use CLAUDE_DEV_PAT so label events
+          # fire downstream workflows (clarify-loop.yml, develop-gate.yml).
           GH_TOKEN: ${{ secrets.CLAUDE_DEV_PAT }}
           NUMBER: ${{ steps.resolve-issue.outputs.issue-number }}
+          WORKLOAD: ${{ steps.triage.outputs.workload_class }}
         run: |
-          gh issue edit "$NUMBER" --add-label needs-clarify
-          gh issue comment "$NUMBER" --body "⏳ Claude needs more information — Module 3' clarify loop will engage and ask follow-up questions."
-
-      # PRD §7 S2: only maintainers may apply `accepted`. AUTO_ACCEPT_ENABLED
-      # is a repo variable (default unset = off). Set it to "true" to enable
-      # full auto-accept when claude's decision is "work".
-      # AC-C7: cloud auto-accept fires ONLY on high-confidence work — confidence
-      # >= TRIAGE_RALPH_THRESHOLD (default 0.7). Low-confidence work goes to
-      # ralph for deeper analysis instead of being auto-accepted. This avoids
-      # the ambiguous "needs-ralph AND auto-accept" coexistence.
-      - name: Auto-accept (S2 opt-in, high-confidence only)
-        if: ${{ steps.triage.outputs.decision == 'work' && vars.AUTO_ACCEPT_ENABLED == 'true' && steps.triage.outputs.confidence != '' && fromJSON(steps.triage.outputs.confidence) >= fromJSON(vars.TRIAGE_RALPH_THRESHOLD || '0.7') }}
-        env:
-          # S7 pipeline-fix (2026-07-07): use CLAUDE_DEV_PAT so the
-          # `issues.labeled` event actually triggers develop.yml.
-          # GITHUB_TOKEN-sourced label events don't fire downstream workflows.
-          GH_TOKEN: ${{ secrets.CLAUDE_DEV_PAT }}
-          NUMBER: ${{ steps.resolve-issue.outputs.issue-number }}
-        run: |
-          gh issue edit "$NUMBER" --add-label accepted
-          gh issue comment "$NUMBER" --body "🤖 Claude recommends acceptance (high-confidence). AUTO_ACCEPT_ENABLED=true → applied \`accepted\` label. Module 4 (develop) will pick this up."
-
-      # Default "work" path: claude recommends but maintainer decides.
-      # AC-C7 paired: fires when work was decided, auto-accept is off, AND
-      # confidence is high (low-confidence work is already queued for ralph
-      # above — we don't double-comment).
-      - name: Recommend acceptance (default)
-        if: ${{ steps.triage.outputs.decision == 'work' && vars.AUTO_ACCEPT_ENABLED != 'true' && steps.triage.outputs.confidence != '' && fromJSON(steps.triage.outputs.confidence) >= fromJSON(vars.TRIAGE_RALPH_THRESHOLD || '0.7') }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NUMBER: ${{ steps.resolve-issue.outputs.issue-number }}
-          CONFIDENCE: ${{ steps.triage.outputs.confidence }}
-        run: |
-          gh issue comment "$NUMBER" --body "📊 Claude recommends entering development (confidence: ${CONFIDENCE}). Maintainer review required — apply \`accepted\` to proceed, or \`rejected\` to close."
+          set -eu
+          case "${WORKLOAD:-standard}" in
+            trivial|standard)
+              gh issue edit "$NUMBER" --add-label accepted-by-claude
+              gh issue comment "$NUMBER" --body "🤖 Claude self-acceptance (M8 workload=$WORKLOAD). \`accepted-by-claude\` applied — Module 4 develop-gate will pick this up. Maintainer may override with \`rejected\`."
+              ;;
+            complex)
+              gh issue edit "$NUMBER" --add-label needs-clarify
+              gh issue comment "$NUMBER" --body "🔬 Claude classified this as **complex** — Module 3' clarify loop will engage to scope the work before acceptance."
+              ;;
+            *)
+              # Fallback for empty/unexpected workload: safer to clarify.
+              gh issue edit "$NUMBER" --add-label needs-clarify
+              gh issue comment "$NUMBER" --body "⏳ Claude recommends development (workload unset). Module 3' clarify loop will engage to confirm scope."
+              ;;
+          esac
 
   # Failure path: post a stage:failed comment and label, do not block other issues.
   # PRD §6 graceful degradation.

@@ -51,7 +51,7 @@ those directories**; the Issue/PR will name the directories that matter.
 | # | Module | Engine | Trigger | Output Label |
 |---|---|---|---|---|
 | 1 | Issue Forms | GitHub native | `issues.opened` | structured Issue |
-| 2 | Triage | Claude (cloud first-pass, GLM passthrough) | Module 1 event | `triage` + conditional `needs-clarify` |
+| 2 | Triage | Claude (cloud first-pass, GLM passthrough) | Module 1 event | `triage` + conditional `accepted-by-claude` (trivial/standard) or `needs-clarify` (complex) |
 | 3' | Clarify loop | Claude (multi-turn, GLM passthrough) | `labeled: needs-clarify` or issue author comment | `accepted-by-claude` \| `yielded` \| `needs-ralph` (max-rounds fallback only) |
 | 3 | Judgement (v1, legacy) | ralph (local) + maintainer | `labeled: needs-ralph` → `triage-done` | structured analysis → maintainer applies `accepted` \| `rejected` \| `needs-info` |
 | 3.5 | Design review | Claude (+human) | size:XL accepted | `design-approved` |
@@ -78,7 +78,7 @@ These take precedence over every feature. If a workflow change conflicts with
 any of them, the red line wins.
 
 - **S1** — Triage/judge workflows: `permissions: contents: read, issues: write`. NEVER `contents: write`. Issue bodies are untrusted input.
-- **S2** — Module 4 (develop) triggers on `labeled: accepted` (maintainer) OR `labeled: accepted-by-claude` (Claude self-acceptance via S2 amendment). Only maintainers may apply `accepted`; only clarify-loop.yml dispatch shell may apply `accepted-by-claude`.
+- **S2** — Module 4 (develop) triggers on `labeled: accepted` (maintainer) OR `labeled: accepted-by-claude` (Claude self-acceptance via S2 amendment). Only maintainers may apply `accepted`; `accepted-by-claude` may be applied by (a) `triage-issue.yml` for `workload_class: trivial|standard` (M8 amendment — low-risk self-acceptance) and (b) `clarify-loop.yml` dispatch shell for any workload class.
 - **S3** — AI code never lands on `main`. Secrets scoped per-module, never workflow-global.
 - **S4** — AI must never print tokens, API keys, or environment values.
 - **S5** — No sandbox bypass. Codex uses `permission-profile: workspace-write` (never `danger-full-access`). Claude uses `--allowedTools` whitelist (never `--dangerously-skip-permissions`).
