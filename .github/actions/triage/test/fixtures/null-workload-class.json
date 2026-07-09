@@ -1,0 +1,7 @@
+{
+  "decision": "work",
+  "comment_body": "Engine emitted workload_class: null. extract.sh should treat null as missing and default to 'standard'.",
+  "suggested_labels": [],
+  "confidence": 0.70,
+  "workload_class": null
+}

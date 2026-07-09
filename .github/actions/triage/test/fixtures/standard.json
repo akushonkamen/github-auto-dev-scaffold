@@ -1,0 +1,7 @@
+{
+  "decision": "work",
+  "comment_body": "Add a new composite action for retry logic. Touches .github/actions/ but follows existing patterns (engine-dispatch, retry-wrapper). Moderate complexity, multi-file but mechanical.",
+  "suggested_labels": ["enhancement"],
+  "confidence": 0.78,
+  "workload_class": "standard"
+}

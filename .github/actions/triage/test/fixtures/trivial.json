@@ -1,0 +1,7 @@
+{
+  "decision": "work",
+  "comment_body": "Straightforward typo fix in README. Single-file change, no architectural impact. Auto-accept is appropriate.",
+  "suggested_labels": ["trivial"],
+  "confidence": 0.92,
+  "workload_class": "trivial"
+}

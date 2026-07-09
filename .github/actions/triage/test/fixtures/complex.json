@@ -1,0 +1,7 @@
+{
+  "decision": "work",
+  "comment_body": "Redesign the pipeline trigger architecture: replace label-based triggers with event-based triggers. This spans Modules 4-9 and requires careful migration. Needs maintainer review and Module 3.5 design-review before acceptance.",
+  "suggested_labels": ["architecture", "needs-design-review"],
+  "confidence": 0.65,
+  "workload_class": "complex"
+}
