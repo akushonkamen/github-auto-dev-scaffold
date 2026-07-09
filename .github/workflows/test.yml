@@ -241,6 +241,11 @@ jobs:
 
             gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "test:failed" 2>/dev/null || true
             gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "verified" 2>/dev/null || true
+            # Clean up any prior test:retry-N labels so only the latest counter remains
+            for old_n in 1 2 3 4 5; do
+              [ "$old_n" = "$next" ] && continue
+              gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "test:retry-$old_n" 2>/dev/null || true
+            done
             gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "test:retry-${next}"
             gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "accepted"
 
