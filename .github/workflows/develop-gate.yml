@@ -7,10 +7,10 @@
 #
 # STATUS: M6 wired. This workflow fires via two triggers:
 #   1. workflow_dispatch (manual smoke test)
-#   2. workflow_run on clarify-loop.yml + judge.yml completion (production)
+#   2. workflow_run on clarify-loop.yml completion (production)
 #
 # When fired via workflow_run, downloads the `issue-context` artifact uploaded
-# by clarify-loop/judge to obtain the issue number.
+# by clarify-loop to obtain the issue number.
 #
 # RESPONSIBILITIES (single):
 #   - Resolve issue number (dispatch input OR workflow_run artifact)

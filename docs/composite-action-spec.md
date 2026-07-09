@@ -49,19 +49,18 @@ Every module action shares these inputs and outputs so they compose uniformly. M
 
 > **M3/M8 (pipeline-redesign-v3) — `workload_class`**: triage emits a third classification axis alongside `decision` and `confidence`. M8 consumers: `triage-issue.yml` applies `accepted-by-claude` for `trivial`+`standard` (S2 amendment), routes `complex` to the clarify loop via `needs-clarify`. The legacy `AUTO_ACCEPT_ENABLED` repo var is gone. Fixture samples: [`.github/actions/triage/test/fixtures/`](../blob/dev/.github/actions/triage/test/fixtures/).
 
-### Module 3 — judge (`/.github/actions/judge/`)
+### Module 3 — judge — **REMOVED**
+
+> Composite action + workflow deleted in pipeline-fix cleanup (PR #76).
+> Superseded by Module 3' clarify loop (cloud) and the local ralph deep-analysis
+> path (escalation only — `needs-ralph` label remains as a signal but no cloud
+> workflow consumes it). Historical spec retained below for traceability.
 
 | Aspect | Value |
 |---|---|
-| Description | Decide `accepted` \| `rejected` \| `needs-info` per mode (auto/manual/hybrid) |
-| Trigger | `issues.labeled: triage-done` |
-| Inputs | common + `issue-number` (required), `mode` (`auto` \| `manual` \| `hybrid`, required), `confidence-threshold` (default `0.7`) |
-| Outputs | common + `decision`, `confidence` (float), `reason` (string) |
-| Secrets | `repo-token`, `api-key` |
-| Permissions | `contents: read`, `issues: write` (PRD S1 — NO `contents: write`) |
-| Runner | `ubuntu-latest` |
-| Idempotency | Re-run overwrites audit comment; label transition is atomic |
-| Failure | Apply `stage:failed`, remove `triage-done`, post error comment |
+| Description | (HISTORICAL) Decide `accepted` \| `rejected` \| `needs-info` per mode (auto/manual/hybrid) |
+| Trigger | (HISTORICAL) `issues.labeled: triage-done` — `triage-done` is no longer applied by any cloud workflow |
+| Status | **DELETED** — see `.github/workflows/clarify-loop.yml` for the live cloud equivalent |
 
 ### Module 3.5 — design-review (`/.github/actions/design-review/`)
 
@@ -130,24 +129,16 @@ Every module action shares these inputs and outputs so they compose uniformly. M
 | Label transitions | `verified` → `testing` → `tested` (passed) or `test:failed` (failed) |
 | S5 enforcement | `settings.permissions.allow: ["Read","Grep","Glob","Bash"]`, `deny: ["Write","Edit"]` + `claude_args --disallowedTools "Write,Edit,Bash(git push*),Bash(git commit*),..."`. No `--dangerously-skip-permissions`. |
 
-### Module 7 — pr-open (`/.github/actions/pr-open/`)
+### Module 7 — pr-open — **REMOVED**
 
-> **Shipped.** Locates the existing PR (opened by Module 4 develop), posts a ready-for-review comment, and applies `in-review` label. Does NOT create a second PR.
+> Composite action + workflow deleted in pipeline-fix cleanup (PR #76).
+> Fully superseded by Module 4c `pr-lifecycle.yml` which opens the PR **and**
+> applies `in-review` in one step — before `test.yml` runs. The v1 path
+> (`issues.labeled: tested` → open PR) was dead code after M8 routing shipped.
 
 | Aspect | Value |
 |---|---|
-| Description | Locate existing PR, post ready-for-review comment with test workflow run link, apply `in-review` label to the PR |
-| Trigger | `issues.labeled: tested` (Module 6 passed) |
-| Inputs | common + `branch-name` (required), `issue-number` (required), `pr-number` (required), `pr-url` (required), `workflow-run-url` (optional), `anthropic-base-url` (optional) |
-| Outputs | common + `pr-url`, `pr-number` |
-| Secrets | `repo-token` (CLAUDE_DEV_PAT for downstream workflow triggers per PR #16), `api-key` (DEEPSEEK_API_KEY for GLM passthrough) |
-| Permissions | `contents: read`, `pull-requests: write`, `issues: write` (PRD S1 — NO contents:write) |
-| Runner | `ubuntu-latest` |
-| Caches | none |
-| Idempotency | Re-run reposts ready-for-review comment; `gh pr edit --add-label in-review` is idempotent |
-| Failure | Apply `stage:failed`; comment with run URL |
-| S5 enforcement | `settings.permissions.allow: ["Read","Grep","Glob","Bash(gh pr:*)"]` + deny Write/Edit/push — no `gh pr create` allowed via prompt guard |
-| Label transitions | Applies `in-review` to the PR (triggers Module 8 review). Issue stays `tested` until merge per `docs/labels.md`. |
+| Status | **DELETED** — see `.github/workflows/pr-lifecycle.yml` for the live equivalent (combines push + PR open + `in-review` label) |
 
 ### Module 8 — review (`/.github/actions/review/`)
 
@@ -156,7 +147,7 @@ Every module action shares these inputs and outputs so they compose uniformly. M
 | Aspect | Value |
 |---|---|
 | Description | AI initial review against CLAUDE.md, docs/security.md (S1-S7), docs/composite-action-spec.md. Posts structured findings as PR comment. AI NEVER approves — final approval is human per PRD §6. |
-| Trigger | `pull_request.labeled: in-review` (Module 7 pr-open applied the label) |
+| Trigger | `pull_request.labeled: in-review` (Module 4c pr-lifecycle applied the label) |
 | Inputs | common + `pr-number` (required), `issue-number` (required), `anthropic-base-url` (optional) |
 | Outputs | `review-status` (`posted`), `audit-comment-url` (URL of the review comment) |
 | Secrets | `repo-token` (CLAUDE_DEV_PAT for PR comment — PR #16 lesson), `api-key` (DEEPSEEK_API_KEY for GLM passthrough) |
@@ -264,6 +255,6 @@ Every composite action follows the same failure pattern:
 1. Catch the error.
 2. Apply `stage:failed` label (or post a comment if labels are unavailable).
 3. Post an audit comment with: error class, failing step, log URL, run URL.
-4. Exit non-zero so the workflow's `on-failure` job takes over (see `judge.yml`).
+4. Exit non-zero so the workflow's `on-failure` job takes over (see any module workflow, e.g. `clarify-loop.yml`).
 
 This guarantees PRD §6 失败降级 (graceful degradation) — a failing module never blocks other issues.

@@ -1,5 +1,22 @@
 # Triage modes & confidence threshold
 
+> **HISTORICAL (v1 — pre-M8)** — This document describes the v1 model where a
+> `judge.yml` workflow consumed `TRIAGE_MODE` (`auto` \| `manual` \| `hybrid`)
+> and `HYBRID_CONFIDENCE_THRESHOLD` to decide whether to auto-apply
+> `accepted` / `rejected`. **judge.yml was deleted in PR #76** (pipeline-fix
+> cleanup) — the cloud flow no longer applies maintainer-only state labels.
+>
+> The post-M8 pipeline uses:
+> - `triage-issue.yml` to apply `accepted-by-claude` (Claude self-acceptance,
+>   S2 amendment) for `workload_class ∈ {trivial, standard}`.
+> - `clarify-loop.yml` for `workload_class == complex`, with `accepted-by-claude`
+>   emitted only after the author satisfies the multi-turn clarify loop.
+> - `accepted` / `rejected` / `needs-info` remain maintainer-only (S2).
+>
+> The threshold-calibration methodology in §3 below is still valid for future
+> tuning of triage confidence reporting; the workflow mechanics described here
+> are not. Retained for traceability — do NOT execute as-is.
+
 > PRD §3 (mode switch), PRD §8 item 5 (threshold calibration). This document is the source of truth for the `TRIAGE_MODE` and `HYBRID_CONFIDENCE_THRESHOLD` knobs.
 
 ## The three modes

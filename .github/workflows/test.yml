@@ -15,7 +15,7 @@
 #     (NO --dangerously-skip-permissions)
 #   - S4: no secrets printed in workflow; DEEPSEEK_API_KEY never printed
 #   - S3: never writes to main
-#   - PR #16 lesson: label writes use CLAUDE_DEV_PAT (so Module 7 pr-open fires)
+#   - PR #16 lesson: label writes use CLAUDE_DEV_PAT (so downstream workflows fire)
 #   - On failure: test:failed label + failure comment, stage:failed fallback
 #
 # Triggers:
