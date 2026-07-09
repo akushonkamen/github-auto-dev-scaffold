@@ -40,7 +40,7 @@ on:
         required: true
         type: string
   workflow_run:
-    workflows: [clarify-loop, judge]
+    workflows: [clarify-loop]
     types: [completed]
 
 permissions:
