@@ -114,6 +114,7 @@ jobs:
           persist-credentials: false
 
       - name: Run Notion sync
+        id: sync
         uses: ./.github/actions/notion-sync
         with:
           issue-number: ${{ needs.resolve-issue.outputs.issue-number }}
