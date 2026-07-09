@@ -1,6 +1,6 @@
 # Module 8 — Review (AI initial review, NEVER approve)
 #
-# Triggers when `in-review` label is applied to a PR (by Module 7 pr-open).
+# Triggers when `in-review` label is applied to a PR (by Module 4c pr-lifecycle).
 # Runs the review composite action with Claude engine (DeepSeek passthrough)
 # to post an AI initial review comment on the PR. AI NEVER approves —
 # final approval is human per PRD §6.

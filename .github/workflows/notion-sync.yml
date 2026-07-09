@@ -23,13 +23,13 @@ on:
   workflow_run:
     workflows:
       - triage-issue
-      - develop
       - self-verify
       - test
-      - pr-open
       - review
-      - judge
       - clarify-loop
+      - develop-gate
+      - code-generate
+      - pr-lifecycle
       - merge-queue
     types: [completed]
 

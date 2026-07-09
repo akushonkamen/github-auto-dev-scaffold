@@ -22,9 +22,9 @@ stateDiagram-v2
     Triaging --> NeedsRalph: cloud first-pass flags deep analysis
     NeedsRalph --> Triaged: local ralph finishes (triage-done applied)
     Triaging --> Triaged: triage-done applied (high-confidence cloud decision)
-    Triaged --> Accepted: judge (auto) or maintainer (manual)
-    Triaged --> Rejected: judge or maintainer
-    Triaged --> NeedsInfo: judge or maintainer
+    Triaged --> Accepted: maintainer (manual) — accepted-by-claude (Claude self-acceptance) is applied earlier by triage/clarify-loop
+    Triaged --> Rejected: maintainer
+    Triaged --> NeedsInfo: maintainer
     NeedsInfo --> Triaging: author replies (re-triggers)
     Accepted --> DesignReview: size:XL hit
     DesignReview --> DesignApproved: design-approved
@@ -175,23 +175,22 @@ if count >= TEST_RETRY_MAX:
 
 | Label | Description | Apply | Remove | Notes |
 |---|---|---|---|---|
-| `accepted` | Issue accepted for development | judge (auto mode) or maintainer (manual mode) | develop workflow on pickup | Triggers Module 4 |
-| `rejected` | Issue will not be worked | judge or maintainer | maintainer only | Terminal |
-| `needs-info` | Author must clarify | judge or maintainer | triage bot on new comment | Re-enters funnel |
-| `design-review` | Needs design proposal first | judge workflow on `size:XL` + `accepted` | design-review workflow on completion | Triggers Module 3.5 |
+| `accepted` | Issue accepted for development (maintainer only) | maintainer | develop-gate workflow on pickup | Triggers Module 4 (M4a). AI cannot apply this (S2). |
+| `accepted-by-claude` | Claude self-acceptance (S2 amendment) | triage-issue workflow (trivial/standard) or clarify-loop workflow (any class) | develop-gate workflow on pickup | Triggers Module 4 (M4a) |
+| `rejected` | Issue will not be worked | maintainer | maintainer only | Terminal |
+| `needs-info` | Author must clarify | maintainer | triage bot on new comment | Re-enters funnel |
+| `design-review` | Needs design proposal first | maintainer on `size:XL` + accepted | design-review workflow on completion | Triggers Module 3.5 (not yet wired) |
 | `design-approved` | Design accepted, may develop | design-review workflow | — | Unlocks Module 4 |
-| `in-development` | Module 4 active | develop workflow | develop workflow on push | — |
 | `verifying` | Module 5 (self-verify) active | self-verify workflow | self-verify workflow | → `verified` \| `verify:failed` |
 | `verified` | Module 5 self-verify passed | self-verify workflow | test workflow | → `testing` |
 | `verify:failed` | Module 5 self-verify failed; needs maintainer review | self-verify workflow | maintainer | → maintainer triage |
 | `testing` | Module 6 (test) active | test workflow | test workflow | → `tested` \| `test:failed` |
-| `tested` | Module 6 test passed | test workflow | pr-open workflow | → `ready-for-pr` |
-| `test:failed` | Module 6 test failed; triggers auto-retry or escalation | test workflow | test workflow (auto-retry) or maintainer | → `test:retry-1/2/3` + `accepted` (retry) or `stage:failed` (exhausted) |
-| `test:retry-1` | Auto-retry 1/3: re-running Module 4 with test feedback | test workflow (on fail) | develop workflow on completion | → `in-development` (Module 4 re-runs) |
-| `test:retry-2` | Auto-retry 2/3: re-running Module 4 with test feedback | test workflow (on fail) | develop workflow on completion | → `in-development` (Module 4 re-runs) |
-| `test:retry-3` | Auto-retry 3/3: re-running Module 4 with test feedback; one retry remaining before escalation | test workflow (on fail) | develop workflow on completion; next fail escalates | → `in-development` (Module 4 re-runs) or `stage:failed` (next fail) |
-| `ready-for-pr` | Tests passed; PR may be opened | test workflow | pr-open workflow | — |
-| `in-review` | PR opened, Module 8 active | pr-open workflow | review workflow | — |
+| `tested` | Module 6 test passed | test workflow | — | PR already has `in-review` from pr-lifecycle (M4c) |
+| `test:failed` | Module 6 test failed; maintainer dispatches retry | test workflow | maintainer | → `test:retry-1/2/3` or `stage:failed` (exhausted). S2: AI no longer applies `accepted`. |
+| `test:retry-1` | Retry 1/3: maintainer re-dispatches code-generate with test report | test workflow (on fail) | maintainer (manual code-generate dispatch) | Maintainer manually re-runs Module 4 |
+| `test:retry-2` | Retry 2/3: maintainer re-dispatches code-generate with test report | test workflow (on fail) | maintainer (manual code-generate dispatch) | Maintainer manually re-runs Module 4 |
+| `test:retry-3` | Retry 3/3: maintainer re-dispatches code-generate with test report; next fail escalates | test workflow (on fail) | maintainer; next fail escalates | → `stage:failed` on next fail |
+| `in-review` | PR opened, Module 8 active | pr-lifecycle workflow (M4c) | review workflow | Applied with `CLAUDE_DEV_PAT` so downstream fires |
 | `merged` | Module 9 complete | merge-queue workflow | — | Terminal |
 | `stage:failed` | A module failed; needs maintainer triage | any failing workflow | maintainer | PRD §6 失败降级 |
 

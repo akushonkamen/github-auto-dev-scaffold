@@ -31,7 +31,7 @@ Issue opened
                                   (ONLY emitter after v2; maintainer
                                    dispatches local ralph deep analysis)
    │
-   ▼ (workflow_run: clarify-loop OR judge completed — M6 wiring)
+   ▼ (workflow_run: clarify-loop completed — M6 wiring)
 [Module 4 — develop-gate] preflight
    │  • resolve issue from issue-context artifact
    │  • gate: issue OPEN + no rejected/force-manual + accepted/accepted-by-claude present
@@ -68,10 +68,7 @@ Issue opened
                 │
                 └─ retry N ≥ max: stage:failed → maintainer triage
    │
-   ▼ (issues.labeled: tested — v1 path; M8 path skips this via pr-lifecycle)
-[Module 7] pr-open (v1) OR pr-lifecycle (M4) — PR is open + in-review label
-   │
-   ▼ (pull_request.labeled: in-review)
+   ▼ (PR already has in-review label from pr-lifecycle)
 [Module 8] Review (Claude initial + CODEOWNERS human final)
    │
    ▼ (approved + checks green)
@@ -82,8 +79,8 @@ Issue opened
 
 | Path | When | Clarify loop? | Module 4 entry |
 |---|---|---|---|
-| **A — Fast** | `workload_class ∈ {trivial, standard}` | Skipped — triage applies `accepted-by-claude` directly | `workflow_run: clarify-loop\|judge` → develop-gate |
-| **B — Clarify** | `workload_class == complex` (or unset) | Engaged — asks rounds, then accepts/yields/escalates | Same `workflow_run` trigger fires when clarify-loop concludes `accept` |
+| **A — Fast** | `workload_class ∈ {trivial, standard}` | Skipped — triage applies `accepted-by-claude` directly | `workflow_run: clarify-loop` → develop-gate |
+| **B — Clarify** | `workload_class == complex` (or unset) | Engaged — asks rounds, then accepts/yields/escalates | `workflow_run: clarify-loop` (accept conclusion) → develop-gate |
 | **C — Reply** | `decision == reply` | n/a | Pipeline ends at triage comment |
 
 Both A and B converge on the same `workflow_run` chain (develop-gate → code-generate → pr-lifecycle). Maintainer can override either path at any time by applying `rejected` or `force-manual`.
@@ -95,16 +92,16 @@ Both A and B converge on the same `workflow_run` chain (develop-gate → code-ge
 | 1 Issue Forms | GitHub native | `issues.opened` | structured Issue body |
 | 2 Triage | Claude Code (cloud first-pass, GLM passthrough) | Module 1 event | Comment + `triage`; routes `work` by `workload_class` → `accepted-by-claude` (trivial/standard) or `needs-clarify` (complex) |
 | 3' Clarify loop | Claude Code (multi-turn, GLM passthrough) | `labeled: needs-clarify` or `issue_comment` (author reply) | `accepted-by-claude` \| `yielded` \| `needs-ralph` (max-rounds fallback only) |
-| 3 Judgement (v1, legacy) | ralph (local) + maintainer | `labeled: needs-ralph` → local poll.sh → `triage-done` | structured analysis JSON → maintainer applies `accepted` / `rejected` / `needs-info`. **Cloud flow does not fire this** — only local ralph or manual dispatch. |
+| 3 Judgement (REMOVED) | — | — | Module 3 workflow + composite action deleted. `needs-ralph` label remains as escalation signal for local ralph deep analysis only (no cloud workflow fires). |
 | 3.5 Design review | Claude Code (+ human) | size threshold hit on `accepted` | Comment + `design-approved` |
-| 4 Develop (M4 split into 3 workflows) | Claude Code (GLM passthrough) | `workflow_run: clarify-loop\|judge completed` | develop-gate → code-generate → pr-lifecycle (chain via cross-workflow artifacts) |
+| 4 Develop (M4 split into 3 workflows) | Claude Code (GLM passthrough) | `workflow_run: clarify-loop completed` | develop-gate → code-generate → pr-lifecycle (chain via cross-workflow artifacts) |
 | 4a develop-gate | (preflight, no LLM) | `workflow_run` or `workflow_dispatch` | `develop-gate-outputs` artifact {issue_number, head_branch, base_branch, issue_language} |
 | 4b code-generate | Claude Code (GLM passthrough) | `workflow_run: develop-gate completed` | branch push + `code-generate-outputs` artifact {branch_name, commit_sha, summary} |
 | 4c pr-lifecycle | (glue, no LLM) | `workflow_run: code-generate completed` | Push (CLAUDE_DEV_PAT) + idempotent PR open + `in-review` label |
 | 5 Self-verify (v1) | Claude Code (GLM passthrough) | `pull_request.opened` / `.synchronize` targeting `dev` | verify report + `verifying` → `verified` / `verify:failed` |
 | 5' verify.yml (M5, observer mode) | Claude Code (3-oracle parallel) | same as 5 | smoke + targeted + integration comments; **no label transitions** (cutover pending) |
 | 6 Test | Claude Code (second isolated process, tool-restricted tester — PRD §4 amendment) | `issues.labeled: verified` | test report + `tested` / `test:failed`; on fail: `test:retry-N` (maintainer manually re-dispatches code-generate — S2 fix) |
-| 7 PR open (v1, label-driven) | Claude Code (GLM passthrough) | `issues.labeled: tested` | ready-for-review comment + `in-review` label on PR |
+| 7 PR open (REMOVED) | — | — | Module 7 v1 workflow + composite action deleted. `pr-lifecycle.yml` (M4c) opens the PR and applies `in-review` directly; the `tested → in-review` handoff is no longer needed. |
 | 8 Review | Claude Code + CODEOWNERS | `pull_request.labeled: in-review` | AI initial review comment + human approval via CODEOWNERS |
 | 9 Merge | GitHub Merge Queue | `pull_request_review: approved` + status checks green | Merge + Issue close + `merged` label |
 
