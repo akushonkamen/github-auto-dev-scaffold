@@ -53,7 +53,7 @@ jobs:
       suggested-labels: ${{ steps.triage.outputs.suggested_labels }}
       confidence: ${{ steps.triage.outputs.confidence }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 

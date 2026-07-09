@@ -50,7 +50,7 @@ jobs:
       test-report: ${{ steps.test.outputs.test-report }}
       commit-sha: ${{ steps.test.outputs.commit-sha }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 

@@ -108,7 +108,7 @@ jobs:
       review-status: ${{ steps.review.outputs.review-status }}
       audit-comment-url: ${{ steps.review.outputs.audit-comment-url }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 

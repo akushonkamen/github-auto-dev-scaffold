@@ -67,7 +67,7 @@ jobs:
       issue-language: ${{ steps.lang.outputs.issue-language }}
       issue-number: ${{ steps.resolve-issue.outputs.issue-number }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 

@@ -81,7 +81,7 @@ jobs:
             echo "issue-number=$number" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: steps.extract.outputs.should-run == 'true'
         with:
           ref: ${{ github.head_ref }}
@@ -130,7 +130,7 @@ jobs:
       manifest: ${{ steps.detect.outputs.manifest }}
       log-tail: ${{ steps.run.outputs.log-tail }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.head_ref }}
           persist-credentials: false
@@ -197,7 +197,7 @@ jobs:
       verdict: ${{ steps.norm.outputs.verdict }}
       report: ${{ steps.invoke.outputs.verify-report }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.head_ref }}
           persist-credentials: false
