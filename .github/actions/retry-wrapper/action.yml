@@ -1,0 +1,150 @@
+# Composite action: Retry Wrapper (M2 of pipeline-redesign-v3)
+#
+# Purpose: cross-cutting retry decision helper. Today each module
+# (develop.yml, test.yml) re-implements retry logic inline — this is the
+# root cause of bugs #60 and #61 (test:retry-N label accumulation +
+# multi-line GITHUB_OUTPUT breakage). retry-wrapper is the single source
+# of truth for "should I retry? should I escalate?".
+#
+# STATUS: additive only (M2). No caller exists yet. Existing per-module
+# inline retry logic (develop.yml retry-context step, test.yml retry-or-escalate
+# step) remains in place and authoritative until M6.
+#
+# DESIGN NOTES:
+#   - Composite actions CANNOT invoke other workflows. So retry-wrapper is
+#     a *decision helper*, not a literal wrapper. The caller is responsible
+#     for:
+#       (1) invoking retry-wrapper to get {attempt, should-retry, decision}
+#       (2) if retry: invoking the real work + committing the updated state file
+#       (3) if escalate: passing `escalate: true` to retry-wrapper, which then
+#           applies the escalation-label and posts the audit comment
+#   - State is stored in a JSON file in the repo working tree (typically
+#     `.github/.<workflow-name>-state.json`). The caller commits it. We never
+#     commit here — only the caller has the git push permission (S3).
+#
+# STATE FILE SCHEMA (caller writes this):
+#   {
+#     "attempt": <int>,            # current attempt count
+#     "max": <int>,                # max attempts (fallback if input differs)
+#     "last_failure": "<ISO-8601>" # timestamp of last failure
+#   }
+#
+# SECURITY (S1-S7 preserved):
+#   - S4: never logs token values; GH_TOKEN used only via gh CLI
+#   - S7: ships under .github/actions/ via pipeline-fix escape hatch
+#   - This action does NOT push, commit, or modify protected branches
+
+name: "Retry Wrapper"
+description: "M2 of pipeline-redesign-v3 — cross-cutting retry decision helper. Additive, no caller yet."
+
+inputs:
+  state-file:
+    description: "Path (relative to repo root) of the retry-state JSON file. Schema documented in action header."
+    required: true
+  max-attempts:
+    description: "Max attempts allowed. Used as fallback if state file's 'max' field is absent. Default 3."
+    required: false
+    default: "3"
+  issue-number:
+    description: "Issue number — used for audit comment when escalate=true."
+    required: true
+  repo-token:
+    description: "GH token for label + comment. Never logged (S4)."
+    required: true
+  workflow-name:
+    description: "Human-readable workflow name for audit comments (e.g. 'verify', 'test')."
+    required: true
+  escalate:
+    description: "Pass 'true' to trigger escalation (apply escalation-label + post audit comment). Caller sets this when decision==escalate."
+    required: false
+    default: "false"
+  escalation-label:
+    description: "Label to apply on escalate. Default 'stage:failed'."
+    required: false
+    default: "stage:failed"
+  failure-summary:
+    description: "Optional short failure summary to include in escalate audit comment. Empty = omit section."
+    required: false
+    default: ""
+
+outputs:
+  attempt:
+    description: "Current attempt number (after increment)."
+    value: ${{ steps.decide.outputs.attempt }}
+  previous-attempt:
+    description: "Previous attempt number (before increment)."
+    value: ${{ steps.decide.outputs.previous-attempt }}
+  max-applied:
+    description: "Effective max attempts (state file value or input fallback)."
+    value: ${{ steps.decide.outputs.max-applied }}
+  should-retry:
+    description: "'true' if attempt <= max-applied, else 'false'."
+    value: ${{ steps.decide.outputs.should-retry }}
+  decision:
+    description: "'retry' if should-retry=true, else 'escalate'."
+    value: ${{ steps.decide.outputs.decision }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Decide (read state, increment, branch on threshold)
+      id: decide
+      shell: bash
+      env:
+        STATE_FILE: ${{ inputs.state-file }}
+        INPUT_MAX: ${{ inputs.max-attempts }}
+      run: |
+        set -euo pipefail
+        # Source shared logic so test fixtures cannot drift from production.
+        source "${{ github.action_path }}/decide.sh"
+        retry_wrapper_decide >> "$GITHUB_OUTPUT"
+        # Re-print decision to the log for debuggability.
+        # (GITHUB_OUTPUT values are not visible in logs by default.)
+        tail -n 5 "$GITHUB_OUTPUT" | sed 's/^/decision: /'
+
+    - name: Escalate (apply label + post audit comment)
+      id: escalate
+      if: inputs.escalate == 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.repo-token }}
+        NUMBER: ${{ inputs.issue-number }}
+        LABEL: ${{ inputs.escalation-label }}
+        WORKFLOW: ${{ inputs.workflow-name }}
+        ATTEMPT_PREV: ${{ steps.decide.outputs.previous-attempt }}
+        MAX: ${{ steps.decide.outputs.max-applied }}
+        SUMMARY: ${{ inputs.failure-summary }}
+        DECISION: ${{ steps.decide.outputs.decision }}
+      run: |
+        set -euo pipefail
+        # Caller asked for escalate but decide says we still have retries left.
+        # Warn loudly instead of silently skipping (reviewer feedback on PR #66).
+        if [ "$DECISION" != "escalate" ]; then
+          echo "::warning::escalate=true passed but decision=$DECISION (attempts not yet exhausted); no escalation action taken"
+          exit 0
+        fi
+        # Apply escalation label (idempotent).
+        gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "$LABEL" 2>/dev/null || true
+
+        # Build audit comment. Failure summary is optional.
+        if [ -n "$SUMMARY" ]; then
+          summary_block=$(printf '## Failure summary\n\n%s\n' "$SUMMARY")
+        else
+          summary_block=""
+        fi
+
+        gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(cat <<EOF
+        ⚠️ **${WORKFLOW} retries exhausted (${ATTEMPT_PREV}/${MAX})**
+
+        | Field | Value |
+        |---|---|
+        | Workflow | ${WORKFLOW} |
+        | Attempts | ${ATTEMPT_PREV}/${MAX} |
+        | Escalation | ${LABEL} |
+
+        The pipeline cannot automatically recover. A maintainer must triage manually.
+
+        ${summary_block}
+        EOF
+        )"
+        echo "Escalated: issue #$NUMBER, label=$LABEL, attempts=$ATTEMPT_PREV/$MAX"
