@@ -245,16 +245,30 @@ jobs:
           _Branch: \`$HEAD\` @ \`${SHA:0:12}\`_
           EOF
           )
-          pr_url=$(gh pr create \
-            --repo "$GITHUB_REPOSITORY" \
-            --base "${{ needs.preflight.outputs.base-branch }}" \
-            --head "$HEAD" \
-            --title "[Issue #${{ github.event.issue.number }}] ${PR_TITLE}" \
-            --body "$body")
-          echo "pr-url=$pr_url" >> "$GITHUB_OUTPUT"
-          # Post audit comment on the issue (PR opener = PAT owner for traceability).
-          gh issue comment "${{ github.event.issue.number }}" --repo "$GITHUB_REPOSITORY" \
-            --body "🚀 Development branch pushed: \`$HEAD\` @ \`${SHA:0:12}\`. PR: $pr_url"
+          # Idempotent PR open (issue #54): on retry the PR already exists.
+          # Look up an open PR for this head/base pair first; create only if missing.
+          BASE_REF="${{ needs.preflight.outputs.base-branch }}"
+          pr_url=$(gh pr list --repo "$GITHUB_REPOSITORY" \
+            --head "$HEAD" --base "$BASE_REF" --state open \
+            --json url --jq '.[0].url' 2>/dev/null || echo "")
+          if [ -z "$pr_url" ]; then
+            pr_url=$(gh pr create \
+              --repo "$GITHUB_REPOSITORY" \
+              --base "$BASE_REF" \
+              --head "$HEAD" \
+              --title "[Issue #${{ github.event.issue.number }}] ${PR_TITLE}" \
+              --body "$body")
+            echo "pr-url=$pr_url" >> "$GITHUB_OUTPUT"
+            gh issue comment "${{ github.event.issue.number }}" --repo "$GITHUB_REPOSITORY" \
+              --body "🚀 Development branch pushed: \`$HEAD\` @ \`${SHA:0:12}\`. PR: $pr_url"
+          else
+            echo "Reusing existing PR: $pr_url"
+            echo "pr-url=$pr_url" >> "$GITHUB_OUTPUT"
+            gh pr comment "$pr_url" --repo "$GITHUB_REPOSITORY" \
+              --body "🔄 **Retry attempt** — new push: \`$HEAD\` @ \`${SHA:0:12}\`."
+            gh issue comment "${{ github.event.issue.number }}" --repo "$GITHUB_REPOSITORY" \
+              --body "🔄 Retry push landed on existing PR: \`$HEAD\` @ \`${SHA:0:12}\`. PR: $pr_url"
+          fi
 
       - name: Transition issue label (accepted → in-development)
         env:
