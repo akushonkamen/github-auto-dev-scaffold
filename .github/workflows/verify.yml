@@ -1,14 +1,17 @@
-# Module 5+6 — Verify (M5 of pipeline-redesign-v3)
+# Module 5+6 — Verify (M5 of pipeline-redesign-v3, cutover LIVE)
 #
-# Purpose: single verification gate with multiple oracles. Collapses what is
-# today two separate workflows (self-verify.yml + test.yml) into one workflow
-# that runs 3 oracles in parallel and aggregates a single verdict.
+# Purpose: single verification gate with multiple oracles. Replaces the legacy
+# self-verify.yml as the authoritative label owner. test.yml (M6) remains a
+# separate downstream workflow triggered by the `verified` label this workflow
+# emits.
 #
-# STATUS: M5 = OBSERVER MODE. This workflow runs in parallel with the existing
-# self-verify.yml + test.yml, but applies NO label transitions. It only posts
-# a single summary PR comment so we can compare its verdict to the legacy
-# workflows. M6 will switch the production trigger source; M7 will remove the
-# legacy workflows; until then self-verify.yml + test.yml remain authoritative.
+# STATUS: CUTOVER LIVE. This workflow:
+#   - applies `verifying` at start (replaces self-verify.yml step)
+#   - runs 3 oracles in parallel (smoke + targeted + integration)
+#   - aggregates AND verdict
+#   - on pass: applies `verified` (triggers test.yml / Module 6)
+#   - on fail: applies `verify:failed`
+# self-verify.yml was deleted in the cutover PR.
 #
 # ORACLES:
 #   - smoke       : detect manifest (package.json | Cargo.toml) and run its test target
@@ -16,9 +19,14 @@
 #   - integration : invoke ./.github/actions/test (adversarial Claude tester)
 #   - aggregate   : verdict = passed iff all non-skipped oracles pass
 #
+# NOTE: integration oracle duplicates work that test.yml (Module 6) will redo
+# after `verified` is applied. Accepted as known tech debt — future work may
+# have verify.yml apply `tested` directly and delete test.yml, but that
+# requires migrating the retry/escalate logic (spec §4.4 full collapse).
+#
 # RETRY STORAGE (spec §4.4):
-#   Read-only in M5: .github/.verify-state.json on head branch carries attempt
-#   count. M5 surfaces it in the summary comment; M6 will be the writer.
+#   Read-only: .github/.verify-state.json on head branch carries attempt
+#   count. verify.yml surfaces it in the summary comment.
 #
 # SECURITY (PRD §7):
 #   - S1: contents:read + issues:write + pull-requests:write (NO contents:write)
@@ -102,6 +110,16 @@ jobs:
           fi
           echo "attempt=$attempt" >> "$GITHUB_OUTPUT"
           echo "max=$max_attempts" >> "$GITHUB_OUTPUT"
+
+      - name: Apply verifying label on issue (cutover)
+        if: steps.extract.outputs.should-run == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.CLAUDE_DEV_PAT }}
+          NUMBER: ${{ steps.extract.outputs.issue-number }}
+        run: |
+          set -eu
+          # CLAUDE_DEV_PAT so the verified label event below fires test.yml.
+          gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "verifying" || true
 
   smoke:
     needs: filter
@@ -262,6 +280,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
+      issues: write
     outputs:
       verdict: ${{ steps.verdict.outputs.verdict }}
     steps:
@@ -291,7 +310,7 @@ jobs:
           fi
           echo "smoke=$smoke_verdict targeted=$targeted_verdict integration=$integration_verdict"
 
-      - name: Post M5 observer summary on PR
+      - name: Post verify summary on PR
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -309,9 +328,7 @@ jobs:
           icon="✅"
           if [ "$VERDICT" = "failed" ]; then icon="❌"; fi
           gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(cat <<EOF
-          $icon **verify.yml (M5 observer) — \`$VERDICT\`**
-
-          Parallel to legacy self-verify + test. **No label transitions in M5.**
+          $icon **verify.yml — \`$VERDICT\`**
 
           | Oracle | Verdict |
           |---|---|
@@ -322,12 +339,31 @@ jobs:
           | Meta | Value |
           |---|---|
           | Issue | #$ISSUE |
-          | Attempt | $ATTEMPT/$MAX (read-only in M5) |
+          | Attempt | $ATTEMPT/$MAX |
           | Workflow run | $RUN_URL |
-
-          _M5 of pipeline-redesign-v3 — M6 will wire this as the production gate._
           EOF
           )"
+
+      - name: Transition labels (pass → verified, fail → verify:failed)
+        env:
+          GH_TOKEN: ${{ secrets.CLAUDE_DEV_PAT }}
+          NUMBER: ${{ needs.filter.outputs.issue-number }}
+          VERDICT: ${{ steps.verdict.outputs.verdict }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -eu
+          # Remove verifying intermediate label either way.
+          gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "verifying" || true
+
+          if [ "$VERDICT" = "passed" ]; then
+            # CLAUDE_DEV_PAT so the label event fires test.yml (Module 6).
+            gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "verified"
+            gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "✅ **Verify passed** — Module 6 (test) engaged. PR: $PR_URL"
+          else
+            gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "verify:failed"
+            gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "❌ **Verify failed** — see [workflow run]($RUN_URL). PR: $PR_URL"
+          fi
 
   on-failure:
     needs: [smoke, targeted, integration, aggregate]

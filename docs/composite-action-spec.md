@@ -92,22 +92,25 @@ Every module action shares these inputs and outputs so they compose uniformly. M
 
 ### Module 5 — self-verify (`/.github/actions/self-verify/`)
 
-> **Shipped.** v2 composite action with Claude engine, GLM passthrough support, and sealed JSON output schema.
+> **Composite action only.** The standalone `self-verify.yml` workflow was
+> deleted in the verify.yml cutover PR. This composite action is now invoked
+> as the **targeted oracle** inside `verify.yml`. Label transitions are no
+> longer applied by this action — `verify.yml`'s aggregate job owns them.
 
 | Aspect | Value |
 |---|---|
-| Description | Verify implementation against issue acceptance criteria using Claude; emit maintainer-readable report + label transition |
-| Trigger | `pull_request.opened` / `.synchronize` on `claude/issue-*` branches targeting `dev` |
+| Description | Verify implementation against issue acceptance criteria using Claude; emit maintainer-readable report (no label transitions — caller's job) |
+| Trigger | Invoked by `verify.yml` targeted oracle (`pull_request.opened` / `.synchronize` on `claude/issue-*` targeting `dev`) |
 | Inputs | common + `issue-number` (required), `head-branch` (required), `base-branch` (required), `pr-url` (required), `anthropic-base-url` (optional), `issue-language` (optional, default `"en"`) |
 | Outputs | `verify-status` (`passed` \| `failed`), `verify-report` (multi-line, max 2000 chars), `commit-sha` (string) |
 | Secrets | `repo-token`, `api-key` (DEEPSEEK_API_KEY for GLM passthrough) |
 | Permissions | `contents: read`, `issues: write`, `pull-requests: write` (PRD S1 — NO contents:write) |
 | Runner | `ubuntu-latest` |
 | Caches | none |
-| Idempotency | Re-run on PR synchronize replaces prior verify report; label transition is atomic |
-| Failure | Apply `verify:failed` label; `stage:failed` on infrastructure error; do NOT block downstream modules |
+| Idempotency | Re-run on PR synchronize replaces prior verify report; label transition is atomic (caller-side) |
+| Failure | Returns `verify-status=failed`; `verify.yml` aggregate applies `verify:failed` and posts failure comment |
 | Prompt contract | Input: issue body + PR diff + acceptance criteria. Output: JSON `{verify_status, verify_report, failures}` per sealed schema |
-| Label transitions | `verifying` → `verified` (passed) or `verify:failed` (failed) |
+| Label transitions | (none — `verify.yml` aggregate job owns `verifying` → `verified` / `verify:failed`) |
 
 ### Module 6 — test (`/.github/actions/test/`)
 

@@ -51,9 +51,10 @@ Issue opened
    │  • apply in-review label (CLAUDE_DEV_PAT — fires downstream)
    │
    ▼ (pull_request.opened on branches targeting dev)
-[Module 5] Self-verify  ┐
-[Module 5'] verify.yml  ┘  (parallel — verify.yml is M5 observer mode,
-                            self-verify.yml applies verified/verify:failed)
+[Module 5] verify.yml (3-oracle parallel: smoke + targeted + integration)
+   │  cutover LIVE — verify.yml owns the label transitions:
+   │  verifying → verified (pass) | verify:failed (fail)
+   │  self-verify.yml was deleted in the cutover PR.
    │
    ▼ (issues.labeled: verified)
 [Module 6] Test (second isolated Claude Code process, tool-restricted tester)
@@ -98,8 +99,7 @@ Both A and B converge on the same `workflow_run` chain (develop-gate → code-ge
 | 4a develop-gate | (preflight, no LLM) | `workflow_run` or `workflow_dispatch` | `develop-gate-outputs` artifact {issue_number, head_branch, base_branch, issue_language} |
 | 4b code-generate | Claude Code (GLM passthrough) | `workflow_run: develop-gate completed` | branch push + `code-generate-outputs` artifact {branch_name, commit_sha, summary} |
 | 4c pr-lifecycle | (glue, no LLM) | `workflow_run: code-generate completed` | Push (CLAUDE_DEV_PAT) + idempotent PR open + `in-review` label |
-| 5 Self-verify (v1) | Claude Code (GLM passthrough) | `pull_request.opened` / `.synchronize` targeting `dev` | verify report + `verifying` → `verified` / `verify:failed` |
-| 5' verify.yml (M5, observer mode) | Claude Code (3-oracle parallel) | same as 5 | smoke + targeted + integration comments; **no label transitions** (cutover pending) |
+| 5 verify.yml (cutover LIVE) | Claude Code (3-oracle parallel: smoke + targeted + integration) | `pull_request.opened` / `.synchronize` targeting `dev` | summary PR comment + audit issue comment + `verifying` → `verified` / `verify:failed`. self-verify.yml deleted. |
 | 6 Test | Claude Code (second isolated process, tool-restricted tester — PRD §4 amendment) | `issues.labeled: verified` | test report + `tested` / `test:failed`; on fail: `test:retry-N` (maintainer manually re-dispatches code-generate — S2 fix) |
 | 7 PR open (REMOVED) | — | — | Module 7 v1 workflow + composite action deleted. `pr-lifecycle.yml` (M4c) opens the PR and applies `in-review` directly; the `tested → in-review` handoff is no longer needed. |
 | 8 Review | Claude Code + CODEOWNERS | `pull_request.labeled: in-review` | AI initial review comment + human approval via CODEOWNERS |

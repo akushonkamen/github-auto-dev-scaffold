@@ -181,9 +181,9 @@ if count >= TEST_RETRY_MAX:
 | `needs-info` | Author must clarify | maintainer | triage bot on new comment | Re-enters funnel |
 | `design-review` | Needs design proposal first | maintainer on `size:XL` + accepted | design-review workflow on completion | Triggers Module 3.5 (not yet wired) |
 | `design-approved` | Design accepted, may develop | design-review workflow | — | Unlocks Module 4 |
-| `verifying` | Module 5 (self-verify) active | self-verify workflow | self-verify workflow | → `verified` \| `verify:failed` |
-| `verified` | Module 5 self-verify passed | self-verify workflow | test workflow | → `testing` |
-| `verify:failed` | Module 5 self-verify failed; needs maintainer review | self-verify workflow | maintainer | → maintainer triage |
+| `verifying` | Module 5 (verify) active | verify workflow | verify workflow | → `verified` \| `verify:failed` |
+| `verified` | Module 5 verify passed | verify workflow | test workflow | → `testing` |
+| `verify:failed` | Module 5 verify failed; needs maintainer review | verify workflow | maintainer | → maintainer triage |
 | `testing` | Module 6 (test) active | test workflow | test workflow | → `tested` \| `test:failed` |
 | `tested` | Module 6 test passed | test workflow | — | PR already has `in-review` from pr-lifecycle (M4c) |
 | `test:failed` | Module 6 test failed; maintainer dispatches retry | test workflow | maintainer | → `test:retry-1/2/3` or `stage:failed` (exhausted). S2: AI no longer applies `accepted`. |
