@@ -23,7 +23,7 @@ on:
   workflow_run:
     workflows:
       - triage-issue
-      - self-verify
+      - verify
       - test
       - review
       - clarify-loop
