@@ -181,7 +181,7 @@ jobs:
           set -eu
           # Check if this is a retry (test:retry-N label present).
           labels=$(gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json labels --jq '.labels | map(.name) | join(",")')
-          retry_label=$(printf '%s' "$labels" | grep -o 'test:retry-[0-9]' || echo "")
+          retry_label=$(printf '%s' "$labels" | grep -oE 'test:retry-[0-9]+' | sort -V | tail -1 || echo "")
 
           if [ -n "$retry_label" ]; then
             # Get the most recent Module 6 test report from issue comments.
