@@ -227,6 +227,8 @@ jobs:
           SHA: ${{ steps.develop.outputs.commit-sha }}
           SUMMARY: ${{ steps.develop.outputs.summary }}
           PR_TITLE: ${{ github.event.issue.title }}
+          HAS_RETRY: ${{ steps.retry-ctx.outputs.has-retry }}
+          RETRY_LABEL: ${{ steps.retry-ctx.outputs.retry-label }}
         run: |
           set -euo pipefail
           # S7 pipeline-fix (2026-07-07): embed PAT in extraheader so the classic
@@ -235,7 +237,24 @@ jobs:
           git config --local --unset http.https://github.com/.extraheader 2>/dev/null || true
           git config --local http.https://github.com/.extraheader "Authorization: basic $(printf 'x-access-token:%s' "$CLAUDE_DEV_PAT" | base64)"
           # Push the head branch (no force — claude was blocked from force-push anyway).
-          git push origin "$HEAD"
+          push_output=$(git push origin "$HEAD" 2>&1)
+          echo "$push_output"
+          # Issue #57: retry no-op path — if push is up-to-date and this is a
+          # retry, create a sentinel empty commit so pull_request.synchronize
+          # fires and Module 5 self-verify triggers. Without this, the pipeline
+          # stalls at in-development because no push event means no downstream
+          # module runs.
+          if echo "$push_output" | grep -qF "Everything up-to-date"; then
+            if [ "$HAS_RETRY" = "true" ]; then
+              echo "Retry no-op detected ($RETRY_LABEL): push was up-to-date. Creating sentinel commit to trigger downstream pipeline."
+              git commit --allow-empty -m "ci: retry no-op — trigger downstream verification pipeline"
+              git push origin "$HEAD"
+              SHA=$(git rev-parse HEAD)
+              echo "Sentinel commit: $SHA"
+            else
+              echo "Push was up-to-date (non-retry). Proceeding with existing state."
+            fi
+          fi
           # Build PR body with disclosure preamble + change summary + test plan stub.
           body=$(cat <<EOF
           I'm an AI assistant (powered by Claude) operating under the GithubAutoDev disclosure policy.
