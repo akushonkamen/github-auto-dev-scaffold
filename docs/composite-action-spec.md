@@ -36,7 +36,7 @@ Every module action shares these inputs and outputs so they compose uniformly. M
 | Description | First-response, dedupe, clarification question, routing label. Engine-agnostic; supports GLM 5.2 passthrough via `anthropic-base-url` input. |
 | Trigger | `issues.opened` |
 | Inputs | common + `issue-number` (string, required), `anthropic-base-url` (string, default `""`) |
-| Outputs | common + `decision` (`reply` \| `work`), `comment_body` (multi-line markdown), `suggested_labels` (comma-sep), `confidence` (float) |
+| Outputs | common + `decision` (`reply` \| `work`), `comment_body` (multi-line markdown), `suggested_labels` (comma-sep), `confidence` (float), `workload_class` (`trivial` \| `standard` \| `complex`, M3 of pipeline-redesign-v3, defaults to `standard` if engine omits) |
 | Secrets | `repo-token`, `api-key` (Zhipu key when using GLM passthrough) |
 | Permissions | `contents: read`, `issues: write` (PRD S1) |
 | Runner | `ubuntu-latest` |
@@ -46,6 +46,8 @@ Every module action shares these inputs and outputs so they compose uniformly. M
 | Failure | `extract.sh` exits non-zero on schema violation → workflow's `on-failure` job posts `stage:failed` |
 
 > **Wired in this scaffold**: `.github/workflows/triage-issue.yml` calls this action end-to-end with GLM passthrough. See [`docs/quickstart-triage.md`](quickstart-triage.md) for setup.
+
+> **M3 (pipeline-redesign-v3) — `workload_class`**: triage now emits a third classification axis alongside `decision` and `confidence`. M6 will use this to replace the binary `AUTO_ACCEPT_ENABLED` repo var — `trivial`+`standard` may auto-accept, `complex` requires maintainer. Today no consumer reads this field; it is additive. Fixture samples: [`.github/actions/triage/test/fixtures/`](../blob/dev/.github/actions/triage/test/fixtures/).
 
 ### Module 3 — judge (`/.github/actions/judge/`)
 

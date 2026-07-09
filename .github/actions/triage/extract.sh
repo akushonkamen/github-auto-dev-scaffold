@@ -10,6 +10,7 @@
 #   comment_body     — multi-line markdown (heredoc EOF delimiter)
 #   suggested_labels — comma-separated string (empty if none)
 #   confidence       — float in [0,1]
+#   workload_class   — "trivial" | "standard" | "complex" (M3, defaults to "standard")
 #
 # claude-code-action enforces the JSON schema via --json-schema, so the
 # string should be a single JSON object. We validate explicitly and fail
@@ -43,10 +44,22 @@ decision="$(printf '%s' "$raw" | jq -r '.decision')"
 comment_body="$(printf '%s' "$raw" | jq -r '.comment_body')"
 suggested_labels="$(printf '%s' "$raw" | jq -r '.suggested_labels | if length == 0 then "" else join(",") end')"
 confidence="$(printf '%s' "$raw" | jq -r '.confidence')"
+# M3: workload_class is optional in the schema; default to "standard" if absent.
+# This keeps backwards compatibility with engines that haven't picked up the
+# new field yet. M6 will replace AUTO_ACCEPT_ENABLED with this classification.
+workload_class="$(printf '%s' "$raw" | jq -r '.workload_class // "standard"')"
+case "$workload_class" in
+  trivial|standard|complex) ;;
+  *)
+    echo "::warning::workload_class has unexpected value '$workload_class'; coercing to 'standard'"
+    workload_class="standard"
+    ;;
+esac
 
 echo "decision=$decision"                 >> "$GITHUB_OUTPUT"
 echo "confidence=$confidence"             >> "$GITHUB_OUTPUT"
 echo "suggested_labels=$suggested_labels" >> "$GITHUB_OUTPUT"
+echo "workload_class=$workload_class"     >> "$GITHUB_OUTPUT"
 
 # Multi-line output via heredoc delimiter (canonical GITHUB_OUTPUT pattern).
 {
@@ -55,4 +68,4 @@ echo "suggested_labels=$suggested_labels" >> "$GITHUB_OUTPUT"
   echo "COMMENT_BODY_EOF"
 } >> "$GITHUB_OUTPUT"
 
-echo "Parsed triage output: decision=$decision confidence=$confidence labels=[$suggested_labels]"
+echo "Parsed triage output: decision=$decision confidence=$confidence labels=[$suggested_labels] workload_class=$workload_class"

@@ -1,0 +1,6 @@
+{
+  "decision": "work",
+  "comment_body": "Engine emitted the legacy schema (no workload_class field). extract.sh should default this to 'standard'.",
+  "suggested_labels": [],
+  "confidence": 0.70
+}
