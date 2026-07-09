@@ -56,23 +56,29 @@ on:
         required: false
         type: string
         default: "(no summary provided)"
+  workflow_run:
+    workflows: [code-generate]
+    types: [completed]
 
 permissions:
   contents: write
   issues: write
   pull-requests: write
+  actions: read
 
 concurrency:
-  group: pr-lifecycle-issue-${{ inputs.issue-number }}
+  group: pr-lifecycle-run-${{ github.event.workflow_run.id || github.run_id }}
   cancel-in-progress: false
 
 jobs:
   push-and-pr:
     runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     permissions:
       contents: write
       issues: write
       pull-requests: write
+      actions: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -80,16 +86,67 @@ jobs:
           persist-credentials: false
           token: ${{ secrets.CLAUDE_DEV_PAT }}
 
+      - name: Resolve inputs (dispatch or workflow_run artifact)
+        id: resolve
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_ISSUE: ${{ inputs.issue-number }}
+          DISPATCH_HEAD: ${{ inputs.head-branch }}
+          DISPATCH_BASE: ${{ inputs.base-branch }}
+          DISPATCH_SHA: ${{ inputs.commit-sha }}
+          DISPATCH_SUMMARY: ${{ inputs.summary }}
+          WORKFLOW_RUN_ID: ${{ github.event.workflow_run.id }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            issue_number="$DISPATCH_ISSUE"
+            head_branch="$DISPATCH_HEAD"
+            base_branch="$DISPATCH_BASE"
+            commit_sha="$DISPATCH_SHA"
+            summary="${DISPATCH_SUMMARY:-(no summary provided)}"
+          else
+            if [ -z "$WORKFLOW_RUN_ID" ]; then
+              echo "::error::workflow_run event missing workflow_run.id"
+              exit 1
+            fi
+            mkdir -p ./.github/artifacts
+            gh run download "$WORKFLOW_RUN_ID" \
+              --repo "$GITHUB_REPOSITORY" \
+              --name code-generate-outputs \
+              --dir ./.github/artifacts || {
+                echo "::warning::code-generate-outputs artifact not found in upstream run $WORKFLOW_RUN_ID. Skipping."
+                exit 0
+              }
+            issue_number=$(jq -r '.issue_number // ""' ./.github/artifacts/code-generate-outputs.json)
+            head_branch=$(jq -r '.branch_name // ""' ./.github/artifacts/code-generate-outputs.json)
+            commit_sha=$(jq -r '.commit_sha // ""' ./.github/artifacts/code-generate-outputs.json)
+            summary=$(jq -r '.summary // "(no summary provided)"' ./.github/artifacts/code-generate-outputs.json)
+            base_branch=$(jq -r '.base_branch // "dev"' ./.github/artifacts/code-generate-outputs.json)
+            if [ -z "$issue_number" ] || [ -z "$head_branch" ] || [ -z "$commit_sha" ]; then
+              echo "::warning::Incomplete code-generate-outputs artifact; skipping."
+              exit 0
+            fi
+          fi
+          {
+            echo "issue-number=$issue_number"
+            echo "head-branch=$head_branch"
+            echo "base-branch=$base_branch"
+            echo "commit-sha=$commit_sha"
+            echo "summary=$summary"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Push branch + open/reuse PR (CLAUDE_DEV_PAT)
         id: pr
+        if: steps.resolve.outputs.issue-number != ''
         env:
           GH_TOKEN: ${{ secrets.CLAUDE_DEV_PAT }}
           CLAUDE_DEV_PAT: ${{ secrets.CLAUDE_DEV_PAT }}
-          HEAD: ${{ inputs.head-branch }}
-          BASE: ${{ inputs.base-branch }}
-          SHA: ${{ inputs.commit-sha }}
-          SUMMARY: ${{ inputs.summary }}
-          NUMBER: ${{ inputs.issue-number }}
+          HEAD: ${{ steps.resolve.outputs.head-branch }}
+          BASE: ${{ steps.resolve.outputs.base-branch }}
+          SHA: ${{ steps.resolve.outputs.commit-sha }}
+          SUMMARY: ${{ steps.resolve.outputs.summary }}
+          NUMBER: ${{ steps.resolve.outputs.issue-number }}
         run: |
           set -euo pipefail
           if [ "$BASE" = "main" ] || [ "$BASE" = "master" ]; then
@@ -146,12 +203,39 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       issues: write
+      actions: read
     steps:
+      - name: Resolve issue number for failure comment
+        id: resolve
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_ISSUE: ${{ inputs.issue-number }}
+          WORKFLOW_RUN_ID: ${{ github.event.workflow_run.id }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -u
+          number=""
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            number="$DISPATCH_ISSUE"
+          elif [ -n "$WORKFLOW_RUN_ID" ]; then
+            mkdir -p ./.github/artifacts
+            gh run download "$WORKFLOW_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+              --name code-generate-outputs --dir ./.github/artifacts 2>/dev/null || true
+            if [ -f ./.github/artifacts/code-generate-outputs.json ]; then
+              number=$(jq -r '.issue_number // ""' ./.github/artifacts/code-generate-outputs.json)
+            fi
+          fi
+          echo "number=$number" >> "$GITHUB_OUTPUT"
+
       - name: Mark stage:failed
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NUMBER: ${{ inputs.issue-number }}
+          NUMBER: ${{ steps.resolve.outputs.number }}
         run: |
+          if [ -z "$NUMBER" ]; then
+            echo "::warning::No issue number on this event."
+            exit 0
+          fi
           gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "stage:failed" || true
           gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" \
             --body "⚠️ pr-lifecycle failed. See [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details." || true

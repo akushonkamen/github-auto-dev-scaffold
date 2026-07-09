@@ -138,6 +138,27 @@ jobs:
           set -euo pipefail
           ./.github/actions/judge/apply.sh
 
+      - name: M6 — emit issue-context artifact for develop-gate
+        env:
+          NUMBER: ${{ needs.gate.outputs.issue-number }}
+          DECISION: ${{ needs.judge.outputs.decision }}
+        run: |
+          set -eu
+          mkdir -p ./.github/artifacts
+          jq -n \
+            --arg issue_number "$NUMBER" \
+            --arg decision "$DECISION" \
+            --arg source "judge" \
+            '{issue_number: $issue_number, decision: $decision, source: $source}' \
+            > ./.github/artifacts/issue-context.json
+          cat ./.github/artifacts/issue-context.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: issue-context
+          path: ./.github/artifacts/issue-context.json
+          retention-days: 1
+
   # Failure path covers gate, judge, AND apply failures.
   # `if: always()` + per-need result checks is the only reliable pattern when
   # apply (a non-fan-out sibling) can fail.

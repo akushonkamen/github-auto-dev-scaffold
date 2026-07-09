@@ -1,24 +1,26 @@
-# Module 4 — Develop Gate (M4 of pipeline-redesign-v3)
+# Module 4 — Develop Gate (M4 of pipeline-redesign-v3, M6 wired)
 #
 # Purpose: single-responsibility preflight for Module 4. Today this logic is
 # embedded as the `preflight` job in `develop.yml`. M4 extracts it into a
 # standalone workflow so the retry/wiring layer (M6) can compose it
 # independently of code generation and PR lifecycle.
 #
-# STATUS: M4 = ADDITIVE ONLY. This workflow has NO automated trigger in M4.
-# It can only run via workflow_dispatch (manual smoke test). M6 will wire
-# the real trigger (workflow_run: completed on clarify-loop.yml + judge.yml).
-# The existing `develop.yml` remains authoritative until M6.
+# STATUS: M6 wired. This workflow fires via two triggers:
+#   1. workflow_dispatch (manual smoke test)
+#   2. workflow_run on clarify-loop.yml + judge.yml completion (production)
+#
+# When fired via workflow_run, downloads the `issue-context` artifact uploaded
+# by clarify-loop/judge to obtain the issue number.
 #
 # RESPONSIBILITIES (single):
+#   - Resolve issue number (dispatch input OR workflow_run artifact)
 #   - Gate: is the issue open? Are maintainer-override labels absent?
 #   - Compute branch names (slug + head/base)
 #   - Detect issue language
-#   - Emit outputs for the next workflow (code-generate)
+#   - Emit outputs for the next workflow (code-generate) via artifact
 #
-# OUTPUTS:
-#   - should-run: 'true' | 'false'
-#   - head-branch, base-branch, issue-language
+# OUTPUTS (uploaded as `develop-gate-outputs` artifact for code-generate):
+#   - should-run, head-branch, base-branch, issue-language, issue-number
 #
 # SECURITY (S1-S7 preserved):
 #   - permissions: contents:read + issues:read (preflight only, no writes)
@@ -37,32 +39,79 @@ on:
         description: "Issue number to preflight"
         required: true
         type: string
+  workflow_run:
+    workflows: [clarify-loop, judge]
+    types: [completed]
 
 permissions:
   contents: read
   issues: read
+  actions: read
 
 concurrency:
-  group: develop-gate-issue-${{ inputs.issue-number }}
+  group: develop-gate-run-${{ github.event.workflow_run.id || github.run_id }}
   cancel-in-progress: false
 
 jobs:
   preflight:
     runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     permissions:
       contents: read
       issues: read
+      actions: read
     outputs:
       should-run: ${{ steps.gate.outputs.should-run }}
       head-branch: ${{ steps.branch.outputs.head-branch }}
       base-branch: ${{ steps.branch.outputs.base-branch }}
       issue-language: ${{ steps.lang.outputs.issue-language }}
+      issue-number: ${{ steps.resolve-issue.outputs.issue-number }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Resolve issue number (dispatch or workflow_run artifact)
+        id: resolve-issue
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_NUMBER: ${{ inputs.issue-number }}
+          WORKFLOW_RUN_ID: ${{ github.event.workflow_run.id }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          number=""
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            number="$DISPATCH_NUMBER"
+          else
+            if [ -z "$WORKFLOW_RUN_ID" ]; then
+              echo "::error::workflow_run event missing workflow_run.id"
+              exit 1
+            fi
+            mkdir -p ./.github/artifacts
+            gh run download "$WORKFLOW_RUN_ID" \
+              --repo "$GITHUB_REPOSITORY" \
+              --name issue-context \
+              --dir ./.github/artifacts || {
+                echo "::warning::issue-context artifact not found in upstream run $WORKFLOW_RUN_ID — likely a non-accept completion. Skipping."
+                echo "issue-number=" >> "$GITHUB_OUTPUT"
+                exit 0
+              }
+            number=$(jq -r '.issue_number // ""' ./.github/artifacts/issue-context.json)
+          fi
+          if [ -z "$number" ]; then
+            echo "::warning::No issue number resolved; skipping preflight."
+            echo "issue-number=" >> "$GITHUB_OUTPUT"
+          else
+            echo "issue-number=$number" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Gate — issue open + no maintainer-block label
         id: gate
+        if: steps.resolve-issue.outputs.issue-number != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NUMBER: ${{ inputs.issue-number }}
+          NUMBER: ${{ steps.resolve-issue.outputs.issue-number }}
         run: |
           set -euo pipefail
           should_run="true"
@@ -78,6 +127,10 @@ jobs:
               should_run="false"; reason="maintainer override label present: $forbidden"
             fi
           done
+          # M6: only proceed if accepted/accepted-by-claude present (entry signal)
+          if ! printf ',%s,' "$labels" | grep -qE ",(accepted|accepted-by-claude),"; then
+            should_run="false"; reason="no accepted/accepted-by-claude label (entry signal absent)"
+          fi
           echo "should-run=$should_run" >> "$GITHUB_OUTPUT"
           echo "reason=$reason" >> "$GITHUB_OUTPUT"
           echo "Preflight gate: should-run=$should_run reason=$reason"
@@ -86,13 +139,12 @@ jobs:
         id: branch
         if: steps.gate.outputs.should-run == 'true'
         env:
-          NUMBER: ${{ inputs.issue-number }}
+          NUMBER: ${{ steps.resolve-issue.outputs.issue-number }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DEV_BASE: ${{ vars.DEV_BASE_BRANCH }}
         run: |
           set -eu
           base="${DEV_BASE:-dev}"
-          # Fetch issue title for slug derivation
           title=$(gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json title --jq '.title')
           slug=$(printf '%s' "$title" \
             | tr '[:upper:]' '[:lower:]' \
@@ -110,7 +162,7 @@ jobs:
         if: steps.gate.outputs.should-run == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NUMBER: ${{ inputs.issue-number }}
+          NUMBER: ${{ steps.resolve-issue.outputs.issue-number }}
         run: |
           set -eu
           body=$(gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json body | jq -r '.body // ""')
@@ -122,3 +174,29 @@ jobs:
             if [ "$ratio" -ge 30 ]; then lang="zh"; fi
           fi
           echo "issue-language=$lang" >> "$GITHUB_OUTPUT"
+
+      - name: M6 — emit develop-gate-outputs artifact
+        if: steps.gate.outputs.should-run == 'true'
+        env:
+          ISSUE_NUMBER: ${{ steps.resolve-issue.outputs.issue-number }}
+          HEAD: ${{ steps.branch.outputs.head-branch }}
+          BASE: ${{ steps.branch.outputs.base-branch }}
+          LANG: ${{ steps.lang.outputs.issue-language }}
+        run: |
+          set -eu
+          mkdir -p ./.github/artifacts
+          jq -n \
+            --arg issue_number "$ISSUE_NUMBER" \
+            --arg head_branch "$HEAD" \
+            --arg base_branch "$BASE" \
+            --arg issue_language "$LANG" \
+            '{issue_number: $issue_number, head_branch: $head_branch, base_branch: $base_branch, issue_language: $issue_language}' \
+            > ./.github/artifacts/develop-gate-outputs.json
+          cat ./.github/artifacts/develop-gate-outputs.json
+
+      - uses: actions/upload-artifact@v4
+        if: steps.gate.outputs.should-run == 'true'
+        with:
+          name: develop-gate-outputs
+          path: ./.github/artifacts/develop-gate-outputs.json
+          retention-days: 1
