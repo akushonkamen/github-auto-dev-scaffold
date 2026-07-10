@@ -215,7 +215,12 @@ jobs:
         shell: bash
         run: |
           set -u
-          if [ -n "$PRE_SHA" ] && [ "$PRE_SHA" = "$POST_SHA" ]; then
+          # Defensive: if the develop composite did not emit commit-sha (e.g.,
+          # internal failure that did not trip set -e), treat as non-noop and
+          # let the M6 artifact condition (commit-sha != '') + pr-lifecycle's
+          # missing-artifact guard handle the skip. The on-failure job owns
+          # the stage:failed apply for actual composite failures.
+          if [ -n "$PRE_SHA" ] && [ -n "$POST_SHA" ] && [ "$PRE_SHA" = "$POST_SHA" ]; then
             echo "noop=true" >> "$GITHUB_OUTPUT"
             echo "::notice::No-op detected (pre-sha == post-sha == ${PRE_SHA:0:12}). Escalating to stage:failed."
           else
