@@ -1,6 +1,7 @@
 /**
  * Step 3 — LLM provider.
- * DeepSeek passthrough (default) / Anthropic direct / custom endpoint.
+ * GLM 5.2 via Zhipu (default, matches repo's claude-code settings.json) /
+ * DeepSeek passthrough / Anthropic direct / custom endpoint.
  * Performs a health probe against /v1/messages.
  */
 import { input, password, select } from '@inquirer/prompts';
@@ -10,19 +11,25 @@ export const id = '03-llm-provider';
 export const title = 'LLM provider';
 
 const PRESETS = {
+  glm: {
+    name: 'GLM 5.2 via Zhipu bigmodel.cn (recommended — matches repo default)',
+    baseUrl: 'https://open.bigmodel.cn/api/anthropic',
+    keyEnv: 'ZHIPU_API_KEY',
+    model: 'glm-5.2',
+  },
   deepseek: {
-    name: 'DeepSeek passthrough (recommended)',
+    name: 'DeepSeek passthrough',
     baseUrl: 'https://api.deepseek.com/anthropic',
     keyEnv: 'DEEPSEEK_API_KEY',
     model: 'deepseek-v4-pro',
   },
   anthropic: {
-    name: 'Anthropic direct',
+    name: 'Anthropic direct (Claude Opus / Sonnet / Haiku)',
     baseUrl: '',
     keyEnv: 'ANTHROPIC_API_KEY',
     model: 'claude-opus-4-7',
   },
-  custom: { name: 'Custom endpoint', baseUrl: '', keyEnv: '', model: '' },
+  custom: { name: 'Custom Anthropic-compatible endpoint', baseUrl: '', keyEnv: '', model: '' },
 };
 
 export async function run(ctx) {
@@ -76,11 +83,15 @@ async function probeModel(baseUrl, key, model) {
   const url = baseUrl ? `${baseUrl.replace(/\/+$/, '')}/v1/messages` : 'https://api.anthropic.com/v1/messages';
   const start = Date.now();
   try {
+    // Send both auth headers — native Anthropic uses x-api-key, compat layers
+    // (Zhipu/GLM, DeepSeek) typically use Authorization: Bearer. Each server
+    // picks the one it recognises and ignores the other.
     const res = await fetch(url, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
         'x-api-key': key,
+        'authorization': `Bearer ${key}`,
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
