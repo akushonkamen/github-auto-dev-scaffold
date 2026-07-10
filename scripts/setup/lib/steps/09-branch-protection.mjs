@@ -1,10 +1,14 @@
 /**
  * Step 9 — Branch protection.
  * Surfaces the ruleset JSON for dev/main (CI pass, ≥1 review, enforce_admins,
- * block force push). Execution via gh api PUT. Refuses to run on main as base.
+ * block force push). Execution via gh api PUT with --input (full JSON body).
+ * Refuses to run on main as base.
  */
 import { confirm, input } from '@inquirer/prompts';
 import { gh } from '../shell.mjs';
+import { writeFileSync, unlinkSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 export const id = '09-branch-protection';
 export const title = 'Branch protection';
@@ -17,8 +21,6 @@ export async function run(ctx) {
     return { status: 'skipped' };
   }
 
-  // Status check context name varies between repos — many use "test" or
-  // "build" instead of "ci". Prompt so we do not silently break merge gate.
   const ciContext = await input({
     message: 'Status check context name to require (from .github/workflows/):',
     default: 'ci',
@@ -41,24 +43,23 @@ export async function run(ctx) {
   });
   if (!ok) return { status: 'skipped' };
 
+  // Send the full JSON body via --input. Previous attempt used field-level
+  // -F flags, but GitHub's branch-protection schema requires `restrictions`
+  // to be null or {users, teams} (not the boolean false) and -F cannot
+  // emit null. --input with a JSON body sidesteps both issues.
   for (const r of rulesets) {
-    await gh([
-      'api', '-X', 'PUT',
-      `repos/${targetRepo}/branches/${r.branch}/protection`,
-      // All values must be typed (gh -F) — GitHub's branch-protection
-      // schema rejects stringified booleans/integers with HTTP 422.
-      '-F', 'required_status_checks[strict]=true',
-      '-f', `required_status_checks[contexts][]=${r.ciContext}`,
-      '-F', 'required_pull_request_reviews[dismiss_stale_reviews]=false',
-      '-F', 'required_pull_request_reviews[require_code_owner_reviews]=true',
-      '-F', 'required_pull_request_reviews[required_approving_review_count]=1',
-      '-F', 'enforce_admins=true',
-      '-F', 'restrictions=false',
-      '-F', 'required_linear_history=true',
-      '-F', 'allow_force_pushes=false',
-      '-F', 'allow_deletions=false',
-    ], { silent: true });
-    preview.notice(`protected: ${r.branch}`);
+    const tmpFile = join(tmpdir(), `wizard-protect-${process.pid}-${r.branch}.json`);
+    try {
+      writeFileSync(tmpFile, JSON.stringify(r.body));
+      await gh([
+        'api', '-X', 'PUT',
+        `repos/${targetRepo}/branches/${r.branch}/protection`,
+        '--input', tmpFile,
+      ], { silent: true });
+      preview.notice(`protected: ${r.branch}`);
+    } finally {
+      try { unlinkSync(tmpFile); } catch { /* already cleaned */ }
+    }
   }
   return { status: 'ok' };
 }
@@ -75,7 +76,7 @@ function buildRuleset(repo, branch, ciContext) {
         required_approving_review_count: 1,
       },
       enforce_admins: true,
-      restrictions: false,
+      restrictions: null,
       required_linear_history: true,
       allow_force_pushes: false,
       allow_deletions: false,
