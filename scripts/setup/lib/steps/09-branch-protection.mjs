@@ -45,11 +45,13 @@ export async function run(ctx) {
     await gh([
       'api', '-X', 'PUT',
       `repos/${targetRepo}/branches/${r.branch}/protection`,
-      '-f', 'required_status_checks[strict]=true',
+      // All values must be typed (gh -F) — GitHub's branch-protection
+      // schema rejects stringified booleans/integers with HTTP 422.
+      '-F', 'required_status_checks[strict]=true',
       '-f', `required_status_checks[contexts][]=${r.ciContext}`,
-      '-f', 'required_pull_request_reviews[dismiss_stale_reviews]=false',
-      '-f', 'required_pull_request_reviews[require_code_owner_reviews]=true',
-      '-f', 'required_pull_request_reviews[required_approving_review_count]=1',
+      '-F', 'required_pull_request_reviews[dismiss_stale_reviews]=false',
+      '-F', 'required_pull_request_reviews[require_code_owner_reviews]=true',
+      '-F', 'required_pull_request_reviews[required_approving_review_count]=1',
       '-F', 'enforce_admins=true',
       '-F', 'restrictions=false',
       '-F', 'required_linear_history=true',
