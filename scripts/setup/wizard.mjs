@@ -44,6 +44,13 @@ if (startIdx >= STEPS.length) {
   process.exit(2);
 }
 
+// Zero secret memory on Ctrl-C / SIGTERM so it does not leak to swap/dumps.
+const cleanup = () => {
+  for (const k of Object.keys(ctx._secrets || {})) ctx._secrets[k] = null;
+};
+process.on('SIGINT', () => { cleanup(); process.exit(130); });
+process.on('SIGTERM', () => { cleanup(); process.exit(143); });
+
 console.log(color('\x1b[1m\x1b[36m', `Setup wizard — ${args['dry-run'] ? 'DRY-RUN' : 'LIVE'} mode`));
 if (!args['no-state']) console.log(color('\x1b[2m', `  state: ${statePath()}`));
 

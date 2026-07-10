@@ -3,7 +3,7 @@
  * Surfaces the ruleset JSON for dev/main (CI pass, ≥1 review, enforce_admins,
  * block force push). Execution via gh api PUT. Refuses to run on main as base.
  */
-import { confirm } from '@inquirer/prompts';
+import { confirm, input } from '@inquirer/prompts';
 import { gh } from '../shell.mjs';
 
 export const id = '09-branch-protection';
@@ -17,7 +17,15 @@ export async function run(ctx) {
     return { status: 'skipped' };
   }
 
-  const rulesets = branches.map((b) => buildRuleset(targetRepo, b));
+  // Status check context name varies between repos — many use "test" or
+  // "build" instead of "ci". Prompt so we do not silently break merge gate.
+  const ciContext = await input({
+    message: 'Status check context name to require (from .github/workflows/):',
+    default: 'ci',
+    validate: (s) => s.trim() !== '' || 'context name cannot be empty',
+  });
+
+  const rulesets = branches.map((b) => buildRuleset(targetRepo, b, ciContext.trim()));
   for (const r of rulesets) {
     preview.info(`PUT repos/${targetRepo}/branches/${r.branch}/protection`);
     console.log(`    ${JSON.stringify(r.body)}`);
@@ -38,7 +46,7 @@ export async function run(ctx) {
       'api', '-X', 'PUT',
       `repos/${targetRepo}/branches/${r.branch}/protection`,
       '-f', 'required_status_checks[strict]=true',
-      '-f', 'required_status_checks[contexts][]=ci',
+      '-f', `required_status_checks[contexts][]=${r.ciContext}`,
       '-f', 'required_pull_request_reviews[dismiss_stale_reviews]=false',
       '-f', 'required_pull_request_reviews[require_code_owner_reviews]=true',
       '-f', 'required_pull_request_reviews[required_approving_review_count]=1',
@@ -53,11 +61,12 @@ export async function run(ctx) {
   return { status: 'ok' };
 }
 
-function buildRuleset(repo, branch) {
+function buildRuleset(repo, branch, ciContext) {
   return {
     branch,
+    ciContext,
     body: {
-      required_status_checks: { strict: true, contexts: ['ci'] },
+      required_status_checks: { strict: true, contexts: [ciContext] },
       required_pull_request_reviews: {
         dismiss_stale_reviews: false,
         require_code_owner_reviews: true,

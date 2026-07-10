@@ -17,7 +17,19 @@ export async function run(ctx) {
     return { status: 'failed' };
   }
 
-  const groups = buildGroups({ llm, baseBranch: state.baseBranch, patOwner: state.patOwner });
+  let patOwner = state.patOwner;
+  if (!patOwner) {
+    try {
+      const { ghWhoami } = await import('../shell.mjs');
+      patOwner = await ghWhoami();
+      preview.info(`patOwner derived from gh whoami: ${patOwner}`);
+    } catch (err) {
+      preview.warn(`could not derive patOwner: ${err.message}`);
+      patOwner = '';
+    }
+  }
+
+  const groups = buildGroups({ llm, baseBranch: state.baseBranch, patOwner });
 
   for (const g of groups) {
     preview.info(`group: ${g.label}`);

@@ -32,20 +32,28 @@ export async function run(ctx) {
   const issueUrl = stdout.trim();
   preview.notice(`opened: ${issueUrl}`);
 
-  preview.info('Waiting 60s for triage workflow to start...');
-  await sleep(60_000);
-
-  try {
-    const { stdout: j } = await runCmd('gh', ['run', 'list', '--repo', targetRepo, '--workflow', 'triage-issue.yml', '--limit', '1', '--json', 'databaseId,status,conclusion,htmlUrl']);
-    const arr = JSON.parse(j);
-    if (arr.length) {
-      const r = arr[0];
-      preview.info(`triage run: ${r.htmlUrl} (${r.status}/${r.conclusion || '-'})`);
-    } else {
-      preview.warn('no triage run found yet — check Actions tab manually.');
+  // Poll for triage workflow start (up to 3 min) instead of fixed sleep.
+  preview.info('Waiting for triage workflow to start (polling up to 3 min)...');
+  let runUrl = null;
+  const deadline = Date.now() + 180_000;
+  while (Date.now() < deadline) {
+    await sleep(10_000);
+    try {
+      const { stdout: j } = await runCmd('gh', ['run', 'list', '--repo', targetRepo, '--workflow', 'triage-issue.yml', '--limit', '1', '--json', 'databaseId,status,conclusion,htmlUrl']);
+      const arr = JSON.parse(j);
+      if (arr.length && arr[0].status && arr[0].status !== 'queued') {
+        const r = arr[0];
+        runUrl = r.htmlUrl;
+        preview.notice(`triage run visible: ${r.htmlUrl} (${r.status}/${r.conclusion || '-'})`);
+        break;
+      }
+    } catch (err) {
+      preview.warn(`poll error (will retry): ${err.message}`);
     }
-  } catch (err) {
-    preview.warn(`could not list runs: ${err.message}`);
+  }
+  if (!runUrl) {
+    preview.warn('no triage run found in 3 min — check Actions tab manually.');
+    preview.info(`  https://github.com/${targetRepo}/actions/workflows/triage-issue.yml`);
   }
   return { status: 'ok' };
 }

@@ -36,6 +36,17 @@ export async function run(ctx) {
   }
   preview.notice(`PAT identity: ${probe.login}`);
 
+  // S6: verify the PAT actually grants access to targetRepo. /user alone
+  // only confirms the token is live — it does NOT prove single-repo scope.
+  preview.info(`Verifying PAT can access ${targetRepo}...`);
+  const access = await probeRepoAccess(token, targetRepo);
+  if (!access.ok) {
+    preview.error(`PAT cannot access ${targetRepo}: ${access.error}`);
+    preview.error('S6 requires fine-grained PAT scoped to this single repo.');
+    return { status: 'failed' };
+  }
+  preview.notice('PAT scoped to target repo.');
+
   const cmd = ['secret', 'set', 'CLAUDE_DEV_PAT', '--repo', targetRepo];
   preview.commandList([{ cmd: 'gh', args: cmd, mask: token }]);
   if (dry) {
@@ -72,6 +83,25 @@ async function probePat(token) {
     }
     const j = await res.json();
     return { ok: true, login: j.login };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+async function probeRepoAccess(token, repo) {
+  try {
+    const res = await fetch(`https://api.github.com/repos/${repo}`, {
+      headers: {
+        authorization: `Bearer ${token}`,
+        accept: 'application/vnd.github+json',
+        'user-agent': 'githubauto-dev-setup-wizard',
+      },
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      return { ok: false, error: `HTTP ${res.status} ${text.slice(0, 200)}` };
+    }
+    return { ok: true };
   } catch (err) {
     return { ok: false, error: err.message };
   }

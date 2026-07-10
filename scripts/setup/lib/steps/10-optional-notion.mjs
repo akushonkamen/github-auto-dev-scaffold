@@ -47,6 +47,8 @@ export async function run(ctx) {
     mask: [kv.value], silent: true,
   });
   await gh(['variable', 'set', 'NOTION_DATABASE_ID', '--repo', targetRepo, '--body', dv.value], { silent: true });
+  ctx._secrets = ctx._secrets || {};
+  ctx._secrets.NOTION_API_KEY = kv.value;
   preview.notice('NOTION_API_KEY + NOTION_DATABASE_ID written.');
   preview.info('Remember to create 9 properties — see docs/notion-integration.md.');
   return { status: 'ok' };

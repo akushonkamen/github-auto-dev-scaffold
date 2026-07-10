@@ -29,6 +29,18 @@ export async function run(ctx) {
     ctx.ghAccount = auth.account;
   }
 
+  // Scope probe — warn early so later write steps don't fail silently.
+  const scopes = await checkGhScopes();
+  if (scopes.ok) {
+    const missing = ['repo', 'workflow', 'admin:org'].filter((s) => !scopes.scopes.includes(s));
+    if (missing.length) {
+      preview.warn(`gh token missing scopes: ${missing.join(', ')} — some steps may fail.`);
+      preview.warn('Refresh with: gh auth refresh -s workflow -s admin:org');
+    } else {
+      preview.notice('gh scopes: ' + scopes.scopes.join(','));
+    }
+  }
+
   if (problems.length) {
     preview.error('Pre-flight failed:');
     for (const p of problems) preview.error(`  - ${p}`);
@@ -57,5 +69,18 @@ async function checkGit() {
     return { ok: true, version: stdout.trim().replace(/^git version /, '') };
   } catch {
     return { ok: false, error: 'git not found' };
+  }
+}
+
+async function checkGhScopes() {
+  try {
+    const { stdout, stderr } = await runCmd('gh', ['auth', 'status', '--show-token', '--hostname', 'github.com']);
+    // gh auth status prints "Token scopes: ..." when scopes are advertised.
+    const m = (stdout + stderr).match(/Token scopes:\s*(.+)/i);
+    if (!m) return { ok: false };
+    const scopes = m[1].split(',').map((s) => s.trim()).filter(Boolean);
+    return { ok: true, scopes };
+  } catch {
+    return { ok: false };
   }
 }
