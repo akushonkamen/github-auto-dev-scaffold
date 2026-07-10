@@ -13,7 +13,28 @@ export const title = 'CODEOWNERS';
 export async function run(ctx) {
   const { preview, targetRepo, dry } = ctx;
 
-  const maintainers = await promptTeam('Maintainers team/login:');
+  // Default maintainers to the current gh user — works for personal repos
+  // where no org team exists. User can override by typing something else.
+  let defaultMaintainer = '';
+  try {
+    const { ghWhoami } = await import('../shell.mjs');
+    defaultMaintainer = await ghWhoami();
+  } catch (err) {
+    preview.warn(`could not derive gh whoami (non-fatal): ${err.message}`);
+  }
+
+  // allowEmpty=true so user can press Enter on an empty input to skip
+  // CODEOWNERS entirely (e.g. personal disposable repos). Default is the
+  // gh user's login so the common case is one Enter press.
+  const maintainers = await promptTeam(
+    'Maintainers team/login (Enter for default, blank to skip):',
+    true,
+    defaultMaintainer,
+  );
+  if (!maintainers) {
+    preview.warn('skipping CODEOWNERS — no maintainers specified');
+    return { status: 'skipped' };
+  }
   const secTeam = await promptTeam('Security team/login (or blank):', true);
   const architects = await promptTeam('Architects team/login (or blank):', true);
 
@@ -43,12 +64,17 @@ export async function run(ctx) {
   return { status: 'ok' };
 }
 
-async function promptTeam(message, allowEmpty = false) {
+async function promptTeam(message, allowEmpty = false, defaultValue = '') {
   const v = await input({
     message,
-    validate: (s) => (allowEmpty && s.trim() === '') || validateTeamSlug(s).ok || validateTeamSlug(s).error,
+    default: defaultValue || undefined,
+    validate: (s) => {
+      const trimmed = s.trim();
+      if (allowEmpty && trimmed === '') return true;
+      return validateTeamSlug(trimmed).ok || validateTeamSlug(trimmed).error;
+    },
   });
-  if (allowEmpty && v.trim() === '') return '';
+  if (v.trim() === '') return '';
   return validateTeamSlug(v).value;
 }
 
