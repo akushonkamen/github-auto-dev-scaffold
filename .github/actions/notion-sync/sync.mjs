@@ -408,11 +408,12 @@ async function upsertPage(issue, moduleSummaries) {
 
 async function main() {
   if (!NOTION_API_KEY) {
-    fail('NOTION_API_KEY env is not set. Sync is a no-op.');
+    // Notion mirror is optional — silent skip, do not fail the workflow.
+    log('INFO', 'NOTION_API_KEY env is not set. Sync is a no-op (exit 0).');
     return;
   }
   if (!NOTION_DATABASE_ID) {
-    fail('NOTION_DATABASE_ID env is not set. Sync is a no-op.');
+    log('INFO', 'NOTION_DATABASE_ID env is not set. Sync is a no-op (exit 0).');
     return;
   }
   if (!ISSUE_NUMBER) {
