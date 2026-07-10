@@ -44,6 +44,11 @@ Issue opened
    │  • commit to head branch `claude/issue-N-slug`
    │  • emit code-generate-outputs artifact {branch_name, commit_sha, summary}
    │
+   ├─ no-op (issue #57): pre-sha == post-sha → stage:failed + audit comment
+   │  (Claude saw no new work; downstream pr-lifecycle/verify will NOT fire
+   │   because no push means no pull_request.synchronize event)
+   │  → END (maintainer triage)
+   │
    ▼ (workflow_run: code-generate completed)
 [Module 4 — pr-lifecycle] push + open PR
    │  • push head branch (CLAUDE_DEV_PAT extraheader — S7 pipeline-fix)
@@ -97,7 +102,7 @@ Both A and B converge on the same `workflow_run` chain (develop-gate → code-ge
 | 3.5 Design review | Claude Code (+ human) | size threshold hit on `accepted` | Comment + `design-approved` |
 | 4 Develop (M4 split into 3 workflows) | Claude Code (GLM passthrough) | `workflow_run: clarify-loop completed` | develop-gate → code-generate → pr-lifecycle (chain via cross-workflow artifacts) |
 | 4a develop-gate | (preflight, no LLM) | `workflow_run` or `workflow_dispatch` | `develop-gate-outputs` artifact {issue_number, head_branch, base_branch, issue_language} |
-| 4b code-generate | Claude Code (GLM passthrough) | `workflow_run: develop-gate completed` | branch push + `code-generate-outputs` artifact {branch_name, commit_sha, summary} |
+| 4b code-generate | Claude Code (GLM passthrough) | `workflow_run: develop-gate completed` | branch push + `code-generate-outputs` artifact {branch_name, commit_sha, summary}; on no-op (issue #57): `stage:failed` + audit comment |
 | 4c pr-lifecycle | (glue, no LLM) | `workflow_run: code-generate completed` | Push (CLAUDE_DEV_PAT) + idempotent PR open + `in-review` label |
 | 5 verify.yml (cutover LIVE) | Claude Code (2-oracle: smoke + targeted) | `pull_request.opened` / `.synchronize` targeting `dev` | summary PR comment + audit issue comment + `verifying` → `verified` / `verify:failed`. self-verify.yml deleted. Module 6 test composite runs in test.yml after `verified` applied (no duplication). |
 | 6 Test | Claude Code (second isolated process, tool-restricted tester — PRD §4 amendment) | `issues.labeled: verified` | test report + `tested` / `test:failed`; on fail: `test:retry-N` (maintainer manually re-dispatches code-generate — S2 fix) |
