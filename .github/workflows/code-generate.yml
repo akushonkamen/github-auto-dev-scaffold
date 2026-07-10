@@ -12,10 +12,13 @@
 # RESPONSIBILITIES (single):
 #   - Create head branch off base (never main — S3 guard)
 #   - Invoke develop composite action (Claude writes code + commits)
+#   - Detect no-op (issue #57): pre-sha == post-sha means Claude made no
+#     new commit → escalate to stage:failed + audit comment, skip M6 artifact
 #   - Emit branch-name + commit-sha for the next workflow (pr-lifecycle)
 #
 # OUTPUTS:
 #   - branch-name, commit-sha, summary
+#   - (no-op path: stage:failed label + audit comment on the issue)
 #
 # SECURITY (S1-S7 preserved):
 #   - permissions: contents:write (branch + commit only — S3: never on main)
@@ -170,6 +173,13 @@ jobs:
           fi
           echo "branch-name=$HEAD" >> "$GITHUB_OUTPUT"
 
+      - name: Capture pre-develop HEAD SHA (issue #57 no-op detection)
+        id: pre-sha
+        if: steps.resolve.outputs.issue-number != ''
+        shell: bash
+        run: |
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
       - name: "Verify DEEPSEEK_API_KEY secret exists (S4: never print value)"
         shell: bash
         run: |
@@ -196,8 +206,70 @@ jobs:
           issue-language: ${{ steps.resolve.outputs.issue-language }}
           prior-test-report: ${{ steps.resolve.outputs.prior-test-report }}
 
+      - name: Detect no-op (issue #57 — retry produced no new commits)
+        id: noop
+        if: steps.resolve.outputs.issue-number != ''
+        env:
+          PRE_SHA: ${{ steps.pre-sha.outputs.sha }}
+          POST_SHA: ${{ steps.develop.outputs.commit-sha }}
+        shell: bash
+        run: |
+          set -u
+          # Defensive: if the develop composite did not emit commit-sha (e.g.,
+          # internal failure that did not trip set -e), treat as non-noop and
+          # let the M6 artifact condition (commit-sha != '') + pr-lifecycle's
+          # missing-artifact guard handle the skip. The on-failure job owns
+          # the stage:failed apply for actual composite failures.
+          if [ -n "$PRE_SHA" ] && [ -n "$POST_SHA" ] && [ "$PRE_SHA" = "$POST_SHA" ]; then
+            echo "noop=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::No-op detected (pre-sha == post-sha == ${PRE_SHA:0:12}). Escalating to stage:failed."
+          else
+            echo "noop=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Escalate no-op to stage:failed (issue #57)
+        if: steps.noop.outputs.noop == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NUMBER: ${{ steps.resolve.outputs.issue-number }}
+          PRIOR: ${{ steps.resolve.outputs.prior-test-report }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        shell: bash
+        run: |
+          set -eu
+          gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "stage:failed" || true
+          if [ -n "$PRIOR" ]; then
+            gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(cat <<EOF
+          ⚠️ **Module 4 retry produced no new commits** (issue #57).
+
+          Claude analysed the prior test report and concluded the existing branch tip already addresses it — \`pre-sha == post-sha\`, so no commit was made. Downstream modules (pr-lifecycle → verify) will NOT fire because there is no new push event for \`pull_request.synchronize\` to deliver.
+
+          **Maintainer action required:**
+          - Inspect the existing PR — the fix code may already be correct and the prior test failure spurious
+          - OR re-dispatch \`code-generate.yml\` with stronger guidance in the issue
+          - OR close as not-reproducible
+
+          [Workflow run]($RUN_URL)
+          EOF
+          )"
+          else
+            gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(cat <<EOF
+          ⚠️ **Module 4 produced no new commits** (issue #57).
+
+          Claude analysed the issue and concluded no code change is required — \`pre-sha == post-sha\`, so no commit was made. Downstream modules (pr-lifecycle → verify) will NOT fire.
+
+          **Maintainer action required:**
+          - Re-triage the issue — the acceptance criteria may already be satisfied by existing code
+          - OR refine the issue body and re-dispatch \`code-generate.yml\`
+          - OR close as not-actionable
+
+          [Workflow run]($RUN_URL)
+          EOF
+          )"
+          fi
+
       - name: M6 — emit code-generate-outputs artifact
-        if: steps.resolve.outputs.issue-number != '' && steps.develop.outputs.commit-sha != ''
+        if: steps.resolve.outputs.issue-number != '' && steps.develop.outputs.commit-sha != '' && steps.noop.outputs.noop != 'true'
         env:
           ISSUE_NUMBER: ${{ steps.resolve.outputs.issue-number }}
           BRANCH_NAME: ${{ steps.branch.outputs.branch-name }}
@@ -218,7 +290,7 @@ jobs:
           cat ./.github/artifacts/code-generate-outputs.json
 
       - uses: actions/upload-artifact@v4
-        if: steps.resolve.outputs.issue-number != '' && steps.develop.outputs.commit-sha != ''
+        if: steps.resolve.outputs.issue-number != '' && steps.develop.outputs.commit-sha != '' && steps.noop.outputs.noop != 'true'
         with:
           name: code-generate-outputs
           path: ./.github/artifacts/code-generate-outputs.json
