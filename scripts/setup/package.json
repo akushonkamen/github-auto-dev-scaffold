@@ -1,0 +1,21 @@
+{
+  "name": "githubauto-dev-setup-wizard",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Interactive setup wizard that configures a target repo for the GithubAutoDev Issue→PR pipeline.",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "setup-wizard": "./wizard.mjs"
+  },
+  "scripts": {
+    "test": "node --test 'test/**/*.test.mjs'",
+    "wizard": "node wizard.mjs",
+    "wizard:dry": "node wizard.mjs --dry-run"
+  },
+  "dependencies": {
+    "@inquirer/prompts": "^7.0.0"
+  }
+}

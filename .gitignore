@@ -56,4 +56,7 @@ pnpm-debug.log*
 **/.omc/sessions/
 **/.omc/project-memory.json
 
+# setup wizard state — may contain target repo name, never secrets
+scripts/setup/.wizard-state.json
+
 # keep .omc/progress.txt (project progress log) at the root
