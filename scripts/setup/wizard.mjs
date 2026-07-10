@@ -37,6 +37,11 @@ const ctx = {
   dry: !!args['dry-run'],
   preview: { banner, info, notice, warn, error, commandList },
 };
+// Hydrate ctx from state so skipped steps (re-run via --from-step=N) still
+// expose the values their successors depend on (targetRepo, ghAccount, llm,
+// baseBranch). Without this, Step 9 on a resume sees ctx.targetRepo=undefined
+// and PUTs to /repos/undefined/... → 404.
+hydrateFromState(ctx, state);
 
 const startIdx = args['from-step'] ? Math.max(0, Number(args['from-step'])) : 0;
 if (startIdx >= STEPS.length) {
@@ -113,4 +118,16 @@ function parseArgs(argv) {
     }
   }
   return out;
+}
+
+// Restore the ctx fields that earlier steps normally populate. On a resume
+// run (--from-step=N), skipped steps never call run(), so their ctx side
+// effects must be re-applied from state. Only non-secret fields are copied —
+// secrets are never persisted to disk (S4 + state.mjs invariant).
+function hydrateFromState(ctx, state) {
+  if (state.targetRepo) ctx.targetRepo = state.targetRepo;
+  if (state.baseBranch) ctx.baseBranch = state.baseBranch;
+  if (state.ghAccount) ctx.ghAccount = state.ghAccount;
+  if (state.patOwner) ctx.patOwner = state.patOwner;
+  if (state.llm) ctx.llm = state.llm;
 }
