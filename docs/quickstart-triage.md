@@ -2,6 +2,19 @@
 
 This is the first end-to-end runnable flow in the repo. When a new Issue is opened, claude analyzes it and posts a comment. Optionally, claude can also auto-accept the issue into the development pipeline.
 
+## Quick setup (recommended)
+
+The interactive wizard at [`scripts/setup/wizard.mjs`](../scripts/setup/wizard.mjs) automates the bootstrap steps below (API key secret, DeepSeek passthrough vars, labels, CODEOWNERS, branch protection):
+
+```bash
+cd scripts/setup
+npm install
+node wizard.mjs --dry-run    # preview every step
+node wizard.mjs              # execute with per-step confirm
+```
+
+The manual sections that follow describe the same steps for reference, troubleshooting, and environments where running an interactive CLI is not desirable.
+
 ## What it does
 
 1. Trigger: `issues.opened` (also `workflow_dispatch` for manual testing).

@@ -117,3 +117,11 @@ scripts/setup/
 - Ralph / poll.sh configuration.
 - Module 3.5 design review setup (default disabled).
 - Web/GUI version.
+
+## See also
+
+- [docs/quickstart-triage.md](../../docs/quickstart-triage.md) — manual bootstrap for the triage flow (what the wizard automates, with troubleshooting detail)
+- [docs/quickstart-clarify.md](../../docs/quickstart-clarify.md) — v2 clarify loop setup (PAT, repo vars, fixture walkthrough)
+- [docs/security.md](../../docs/security.md) — S1–S7 red lines the wizard enforces
+- [CLAUDE.md](../../CLAUDE.md) — AI agent architecture map for this repo
+

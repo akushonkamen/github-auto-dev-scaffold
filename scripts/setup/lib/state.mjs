@@ -10,7 +10,13 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const STATE_PATH = join(__dirname, '..', '.wizard-state.json');
+// Resolved lazily so WIZARD_STATE_PATH can be set after module load (used by
+// integration tests to redirect state to a sandbox).
+function resolveStatePath() {
+  return process.env.WIZARD_STATE_PATH
+    ? process.env.WIZARD_STATE_PATH
+    : join(__dirname, '..', '.wizard-state.json');
+}
 
 const DEFAULT_STATE = {
   version: 1,
@@ -21,6 +27,7 @@ const DEFAULT_STATE = {
 };
 
 export function loadState() {
+  const STATE_PATH = resolveStatePath();
   if (!existsSync(STATE_PATH)) return { ...DEFAULT_STATE, startedAt: new Date().toISOString() };
   try {
     const raw = readFileSync(STATE_PATH, 'utf-8');
@@ -35,6 +42,7 @@ export function loadState() {
 }
 
 export function saveState(state) {
+  const STATE_PATH = resolveStatePath();
   mkdirSync(dirname(STATE_PATH), { recursive: true });
   writeFileSync(STATE_PATH, JSON.stringify(state, null, 2) + '\n');
 }
@@ -45,13 +53,14 @@ export function markStepComplete(state, stepId, payload = {}) {
 }
 
 export function clearState() {
+  const STATE_PATH = resolveStatePath();
   if (existsSync(STATE_PATH)) {
     writeFileSync(STATE_PATH, '');
   }
 }
 
 export function statePath() {
-  return STATE_PATH;
+  return resolveStatePath();
 }
 
 /**
@@ -76,9 +85,14 @@ export function ensureGitignored() {
 }
 
 function findRepoRoot() {
-  let d = __dirname;
-  while (d !== '/' && !existsSync(join(d, '.git'))) {
-    d = dirname(d);
+  // Walk from process.cwd() first — if the user runs the wizard from inside
+  // a target repo clone, we want THAT repo's .gitignore, not the wizard's.
+  for (const start of [process.cwd(), __dirname]) {
+    let d = start;
+    while (d !== '/' && !existsSync(join(d, '.git'))) {
+      d = dirname(d);
+    }
+    if (d !== '/') return d;
   }
-  return d === '/' ? null : d;
+  return null;
 }
