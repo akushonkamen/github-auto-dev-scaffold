@@ -115,7 +115,7 @@ test('markStepComplete records step id with ISO timestamp', () => {
   }
 });
 
-test('clearState empties state file', () => {
+test('clearState deletes state file', () => {
   const sandbox = mkdtempSync(join(tmpdir(), 'wiz-state-'));
   const origEnv = process.env.WIZARD_STATE_PATH;
   process.env.WIZARD_STATE_PATH = join(sandbox, '.wizard-state.json');
@@ -124,7 +124,31 @@ test('clearState empties state file', () => {
     state.saveState(s);
     assert.ok(existsSync(state.statePath()));
     state.clearState();
-    assert.equal(readFileSync(state.statePath(), 'utf-8'), '');
+    assert.equal(existsSync(state.statePath()), false, 'file should be deleted, not truncated');
+  } finally {
+    process.env.WIZARD_STATE_PATH = origEnv;
+    rmSync(sandbox, { recursive: true, force: true });
+  }
+});
+
+test('loadState treats empty state file as fresh state (no crash)', () => {
+  // Regression: clearState() used to truncate to '', then next launch crashed
+  // on JSON.parse(''). loadState must treat empty/whitespace as no state.
+  const sandbox = mkdtempSync(join(tmpdir(), 'wiz-state-'));
+  const origEnv = process.env.WIZARD_STATE_PATH;
+  const statePath = join(sandbox, '.wizard-state.json');
+  process.env.WIZARD_STATE_PATH = statePath;
+  try {
+    writeFileSync(statePath, '');
+    const s = state.loadState();
+    assert.equal(s.version, 1, 'empty file returns fresh default state');
+    assert.ok(s.startedAt, 'startedAt is populated');
+    assert.deepEqual(s.completedSteps, {});
+
+    // Also cover whitespace-only case
+    writeFileSync(statePath, '   \n  \n');
+    const s2 = state.loadState();
+    assert.equal(s2.version, 1, 'whitespace-only file returns fresh default state');
   } finally {
     process.env.WIZARD_STATE_PATH = origEnv;
     rmSync(sandbox, { recursive: true, force: true });

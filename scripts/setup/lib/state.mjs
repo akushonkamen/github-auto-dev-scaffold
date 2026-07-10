@@ -5,7 +5,7 @@
  * completed steps via --from-step=N. Secrets are NEVER written to disk —
  * they live only in process memory and are sent straight to `gh secret set`.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -18,24 +18,30 @@ function resolveStatePath() {
     : join(__dirname, '..', '.wizard-state.json');
 }
 
-const DEFAULT_STATE = {
-  version: 1,
-  startedAt: null,
-  finishedAt: null,
-  completedSteps: {}, // { "01-target-repo": { repo: "...", ... } }
-  currentStep: null,
-};
+function freshDefault() {
+  return {
+    version: 1,
+    startedAt: null,
+    finishedAt: null,
+    completedSteps: {},
+    currentStep: null,
+  };
+}
 
 export function loadState() {
   const STATE_PATH = resolveStatePath();
-  if (!existsSync(STATE_PATH)) return { ...DEFAULT_STATE, startedAt: new Date().toISOString() };
+  if (!existsSync(STATE_PATH)) return { ...freshDefault(), startedAt: new Date().toISOString() };
+  const raw = readFileSync(STATE_PATH, 'utf-8');
+  // Treat empty / whitespace-only file as fresh state — clearState() unlinks
+  // the file but older versions used to truncate to '', and we should never
+  // crash on JSON.parse('') when a user restarts the wizard.
+  if (raw.trim() === '') return { ...freshDefault(), startedAt: new Date().toISOString() };
   try {
-    const raw = readFileSync(STATE_PATH, 'utf-8');
     const parsed = JSON.parse(raw);
     if (parsed.version !== 1) {
       throw new Error(`unsupported wizard-state version: ${parsed.version}`);
     }
-    return { ...DEFAULT_STATE, ...parsed };
+    return { ...freshDefault(), ...parsed, completedSteps: { ...parsed.completedSteps } };
   } catch (err) {
     throw new Error(`could not parse ${STATE_PATH}: ${err.message}`);
   }
@@ -55,7 +61,7 @@ export function markStepComplete(state, stepId, payload = {}) {
 export function clearState() {
   const STATE_PATH = resolveStatePath();
   if (existsSync(STATE_PATH)) {
-    writeFileSync(STATE_PATH, '');
+    unlinkSync(STATE_PATH);
   }
 }
 
