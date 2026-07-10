@@ -1,83 +1,137 @@
-# Notion Sync — module summary → Notion page append
+# Notion Issue mirror — observer workflow (Module 10 side integration)
 #
-# Triggers when any module workflow completes successfully.
-# Extracts the issue number from the triggering workflow's head_branch
-# and downloads the module-summary artifact to append to the
-# corresponding Notion database page.
+# Observes GitHub Issue events + pipeline module completion events and mirrors
+# Issue state to a Notion database. This is a SIDE INTEGRATION: it reads labels
+# and module summaries but does NOT trigger label transitions (S2 preserved).
+#
+# Triggers (PRD §2 Module 10):
+#   - issues.opened / labeled / unlabeled — Issue lifecycle events
+#   - workflow_run.completed              — module summary artifact emitted
+#   - push (claude/issue-*)               — development branch activity
 #
 # SECURITY POSTURE (PRD §7):
-#   permissions: contents:read + actions:read
-#   (S1: NO contents:write — this workflow only reads artifacts and
-#    calls the Notion API; it never touches source code.)
-#   S4: NOTION_TOKEN is passed as a secret, never printed.
+#   - permissions: contents: read, issues: read, actions: read
+#     (S1: NEVER contents:write for a side integration; issues:read only —
+#      sync.mjs performs GET /repos/.../issues/N, no label mutation)
+#   - NOTION_API_KEY scoped per-job via `env` on the sync step (S3)
+#   - Does NOT trigger label transitions — read-only observer (S2)
+#   - No secrets printed (S4)
+#   - S5/S6 unchanged
 #
-# Sub-bug fixes per Issue #39:
-#   1. Issue number extracted from workflow_run.head_branch and passed
-#      as explicit input (was undefined → Notion API reject).
-#   2. Artifact prefix match handled in composite action (was exact match).
-#   3. Artifact unzip handled by gh run download (was base64 of zip bytes).
+# Rebased onto current dev (PR #78+): workflow_run.workflows list updated to
+# match the live module topology (M3 judge / M4 develop / M5 self-verify /
+# M7 pr-open were removed in PRs #76/#77; replaced by develop-gate,
+# code-generate, pr-lifecycle, verify).
 
 name: notion-sync
 
 on:
+  issues:
+    types: [opened, labeled, unlabeled]
   workflow_run:
     workflows:
       - triage-issue
-      - verify
-      - test
-      - review
       - clarify-loop
       - develop-gate
       - code-generate
       - pr-lifecycle
+      - verify
+      - test
+      - review
       - merge-queue
     types: [completed]
+  push:
+    branches:
+      - 'claude/issue-*'
 
 permissions:
-  contents: read
   actions: read
+  contents: read
+  issues: read
 
 concurrency:
-  group: notion-sync-${{ github.event.workflow_run.id }}
+  group: notion-sync-issue-${{ github.event.issue.number || github.event.workflow_run.id }}
   cancel-in-progress: false
 
 jobs:
-  sync-module-summary:
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+  resolve-issue:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      issues: read
+    outputs:
+      issue-number: ${{ steps.resolve.outputs.issue-number }}
+      event-type: ${{ steps.resolve.outputs.event-type }}
+    steps:
+      - name: Resolve issue number from trigger context
+        id: resolve
+        run: |
+          set -euo pipefail
+          number=""
+          etype="${{ github.event_name }}"
+
+          case "${{ github.event_name }}" in
+            issues)
+              number="${{ github.event.issue.number }}"
+              etype="issues.${{ github.event.action }}"
+              ;;
+            workflow_run)
+              # Extract issue number from the workflow_run's head branch
+              # (triggering workflow's head_branch contains claude/issue-N-*)
+              head="${{ github.event.workflow_run.head_branch }}"
+              number=$(printf '%s' "$head" | sed -nE 's|.*issue-([0-9]+).*|\1|p' || true)
+              if [ -z "$number" ]; then
+                # Fallback: parse from the triggering workflow's display title
+                name="${{ github.event.workflow_run.display_title }}"
+                number=$(printf '%s' "$name" | grep -oE '[0-9]+' | head -1 || true)
+              fi
+              etype="workflow_run.completed"
+              ;;
+            push)
+              ref="${{ github.ref }}"
+              number=$(printf '%s' "$ref" | sed -nE 's|.*issue-([0-9]+).*|\1|p' || true)
+              etype="push"
+              ;;
+          esac
+
+          if [ -z "$number" ]; then
+            echo "::notice::Could not extract issue number for event=$etype — sync skipped"
+            echo "issue-number=" >> "$GITHUB_OUTPUT"
+          else
+            echo "issue-number=$number" >> "$GITHUB_OUTPUT"
+          fi
+          echo "event-type=$etype" >> "$GITHUB_OUTPUT"
+
+  sync:
+    needs: resolve-issue
+    if: needs.resolve-issue.outputs.issue-number != ''
+    runs-on: ubuntu-latest
+    permissions:
       actions: read
-    timeout-minutes: 5
+      contents: read
+      issues: read
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
 
-      # Sub-bug 1 fix: extract issue number from the triggering workflow's
-      # head_branch (e.g. claude/issue-39-bug-module-summaries → 39).
-      - name: Resolve issue number from head branch
-        id: issue
-        env:
-          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
-        run: |
-          set -euo pipefail
-          issue_number=$(echo "$HEAD_BRANCH" | grep -oP 'claude/issue-\K\d+' || echo "")
-          if [ -z "$issue_number" ]; then
-            echo "::warning::Could not extract issue number from head_branch: $HEAD_BRANCH"
-          else
-            echo "Resolved issue number: $issue_number (from branch $HEAD_BRANCH)"
-          fi
-          echo "issue-number=$issue_number" >> "$GITHUB_OUTPUT"
-
-      - name: Sync module summary to Notion
+      - name: Run Notion sync
+        id: sync
         uses: ./.github/actions/notion-sync
         with:
-          notion_token: ${{ secrets.NOTION_TOKEN }}
-          notion_db_id: ${{ vars.NOTION_DB_ID }}
-          event_type: module_summary
-          issue_number: ${{ steps.issue.outputs.issue-number }}
-          source_run_id: ${{ github.event.workflow_run.id }}
-          repo: ${{ github.repository }}
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          head_branch: ${{ github.event.workflow_run.head_branch }}
+          issue-number: ${{ needs.resolve-issue.outputs.issue-number }}
+          event-type: ${{ needs.resolve-issue.outputs.event-type }}
+          notion-api-key: ${{ secrets.NOTION_API_KEY }}
+          notion-database-id: ${{ vars.NOTION_DATABASE_ID }}
+
+      - name: Log sync result
+        if: always()
+        env:
+          STATUS: ${{ steps.sync.outputs.sync-status || 'noop' }}
+          PAGE_URL: ${{ steps.sync.outputs.notion-page-url || '' }}
+          ISSUE: ${{ needs.resolve-issue.outputs.issue-number }}
+        run: |
+          echo "Notion sync for issue #$ISSUE: status=$STATUS"
+          if [ -n "$PAGE_URL" ]; then
+            echo "Notion page: $PAGE_URL"
+          fi

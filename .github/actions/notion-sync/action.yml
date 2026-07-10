@@ -1,133 +1,112 @@
-# Composite action: Notion Sync
+# Composite action: Notion Issue mirror (Module 10 side integration)
 #
-# Syncs module summaries from completed workflow runs to a Notion database.
-# Handles `module_summary` (workflow_run trigger) and
-# `module_summary_push_fallback` (push-triggered artifact lookup).
+# Mirrors GitHub Issue state to a Notion database. This is a SIDE INTEGRATION —
+# it observes labels and module completion events but does NOT trigger label
+# transitions (S2 preserved). The observer workflow
+# (.github/workflows/notion-sync.yml) collects module-summary artifacts from
+# the 9 pipeline workflows, calls this action, which invokes sync.mjs to
+# upsert the Notion page.
 #
-# Sub-bug fixes per Issue #39:
-#   1. Issue number resolved from workflow-run head_branch when not passed
-#      as input (was undefined → Notion API reject).
-#   2. Artifact lookup uses prefix match `module-summary-*` (was exact
-#      match on `module-summary` → always miss).
-#   3. Artifact JSON is downloaded + unzipped by `gh run download` and
-#      read directly by sync.mjs (was base64(zip_bytes) → garbage in Notion).
+# SECURITY POSTURE:
+#   - NOTION_API_KEY scoped per-job in the calling workflow (S3)
+#   - This action does NOT mutate GitHub state — no label transitions (S2)
+#   - No token printing (S4)
+#   - No GitHub token required (read-only Notion API call)
 #
-# REQUIRED PERMISSIONS (caller workflow must grant):
-#   contents: read
-#   actions:  read    (list + download artifacts)
+# REQUIRED PERMISSIONS (calling workflow must grant):
+#   actions: read   (download module-summary artifacts)
+#   contents: read  (checkout for sync.mjs)
+#   issues: read    (read issue body + labels for mirroring — S1 least privilege)
+#
+# Setup guide: docs/notion-integration.md
 
-name: "Notion Sync"
-description: "Download module-summary artifacts and append to Notion pages."
+name: "Module 10 — Notion Issue mirror (side)"
+description: "Mirrors GitHub Issue state to a Notion database page."
 
 inputs:
-  notion_token:
-    description: "Notion integration token"
+  issue-number:
+    description: "Issue number to mirror"
     required: true
-  notion_db_id:
-    description: "Notion database ID"
+  event-type:
+    description: "Triggering event type (issues.opened / labeled / unlabeled / workflow_run.completed / push)"
     required: true
-  event_type:
-    description: "module_summary | module_summary_push_fallback"
+  notion-api-key:
+    description: "Notion integration token (NOTION_API_KEY — scoped per-job, S3)"
     required: true
-  issue_number:
-    description: "Issue number (may be empty — extracted from run head_branch if so)"
-    required: false
-    default: ""
-  source_run_id:
-    description: "Workflow run ID whose artifact to download"
-    required: false
-    default: ""
-  repo:
-    description: "GitHub repository (owner/repo)"
+  notion-database-id:
+    description: "Notion database ID where issue pages are created"
     required: true
-  repo_token:
-    description: "GITHUB_TOKEN with actions:read"
-    required: true
-  head_branch:
-    description: "Workflow run head_branch (for issue-number extraction)"
+  notion-label-name:
+    description: "Name of the Notion label property (optional; defaults to LABEL_NAME env or 'Labels')"
     required: false
     default: ""
 
 outputs:
-  notion-page-id:
-    description: "Notion page ID that was updated"
-    value: ${{ steps.sync.outputs.notion-page-id }}
+  notion-page-url:
+    description: "URL of the upserted Notion page (empty on failure)"
+    value: ${{ steps.sync.outputs.notion-page-url }}
+  sync-status:
+    description: "sync | noop | error"
+    value: ${{ steps.sync.outputs.sync-status }}
 
 runs:
   using: composite
   steps:
-    # ── Download module-summary artifact ──────────────────────────────────
-    # Sub-bug 2 fix: prefix match `module-summary-*` instead of exact match.
-    # Sub-bug 3 fix: `gh run download` unzips; sync.mjs reads plain JSON.
-    - name: Download module-summary artifact
-      id: download
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Install dependencies
       shell: bash
-      if: ${{ inputs.event_type == 'module_summary' || inputs.event_type == 'module_summary_push_fallback' }}
+      run: |
+        cd "${{ github.action_path }}"
+        npm ci --silent 2>/dev/null || npm install --silent
+
+    - name: Resolve label property name
+      id: label-name
+      shell: bash
       env:
-        GH_TOKEN: ${{ inputs.repo_token }}
-        RUN_ID: ${{ inputs.source_run_id }}
-        REPO: ${{ inputs.repo }}
+        INPUT_LABEL_NAME: ${{ inputs.notion-label-name }}
+      run: |
+        label="${INPUT_LABEL_NAME:-${LABEL_NAME:-Labels}}"
+        echo "label-name=$label" >> "$GITHUB_OUTPUT"
+
+    - name: Download module-summary artifacts (workflow_run only)
+      id: download-artifacts
+      if: inputs.event-type == 'workflow_run.completed'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        RUN_ID: ${{ github.event.workflow_run.id }}
+        ISSUE_NUMBER: ${{ inputs.issue-number }}
       run: |
         set -euo pipefail
-
-        if [ -z "$RUN_ID" ]; then
-          echo "::warning::SOURCE_RUN_ID is empty — cannot download artifact"
-          exit 0
+        mkdir -p /tmp/notion-sync-artifacts
+        # Download artifacts matching "module-summary-*" from the triggering run
+        artifacts=$(gh run view "$RUN_ID" --repo "$GITHUB_REPOSITORY" --json artifacts \
+          --jq '.artifacts[] | select(.name | startswith("module-summary-")) | .name + "=" + (.id|tostring)' 2>/dev/null || echo "")
+        echo "artifacts=$artifacts" >> "$GITHUB_OUTPUT"
+        if [ -n "$artifacts" ]; then
+          for entry in $artifacts; do
+            name="${entry%%=*}"
+            id="${entry##*=}"
+            gh run download "$id" --repo "$GITHUB_REPOSITORY" --dir "/tmp/notion-sync-artifacts/$name" 2>/dev/null || true
+          done
         fi
 
-        # List artifacts for this run and find the module-summary-* one.
-        artifacts_json=$(gh api "repos/$REPO/actions/runs/$RUN_ID/artifacts" \
-          --jq '.artifacts' 2>&1) || {
-          echo "::warning::Failed to list artifacts for run $RUN_ID: $artifacts_json"
-          exit 0
-        }
-
-        artifact_name=$(echo "$artifacts_json" | jq -r \
-          '.[] | select(.name | startswith("module-summary-")) | .name' 2>/dev/null || true)
-
-        if [ -z "$artifact_name" ] || [ "$artifact_name" = "null" ]; then
-          echo "::warning::No module-summary-* artifact found in run $RUN_ID (sub-bug 2 condition)"
-          exit 0
-        fi
-
-        echo "Found artifact: $artifact_name"
-
-        # Download + unzip into ARTIFACT_DIR.
-        artifact_dir="/tmp/notion-sync-artifact"
-        rm -rf "$artifact_dir"
-        mkdir -p "$artifact_dir"
-
-        gh run download "$RUN_ID" \
-          --repo "$REPO" \
-          --name "$artifact_name" \
-          --dir "$artifact_dir"
-
-        # Locate the JSON file inside the artifact.
-        json_path=$(find "$artifact_dir" -name 'module-summary.json' -type f 2>/dev/null | head -1)
-        if [ -z "$json_path" ]; then
-          # Maybe it's the only JSON file in the directory.
-          json_path=$(find "$artifact_dir" -name '*.json' -type f 2>/dev/null | head -1)
-        fi
-
-        if [ -z "$json_path" ]; then
-          echo "::warning::Artifact downloaded but no JSON file found inside"
-          exit 0
-        fi
-
-        echo "artifact-json-path=$json_path" >> "$GITHUB_OUTPUT"
-
-    # ── Run sync script ────────────────────────────────────────────────────
-    - name: Run sync.mjs
+    - name: Run sync
       id: sync
       shell: bash
       env:
-        NOTION_TOKEN: ${{ inputs.notion_token }}
-        NOTION_DB_ID: ${{ inputs.notion_db_id }}
-        EVENT_TYPE: ${{ inputs.event_type }}
-        ISSUE_NUMBER: ${{ inputs.issue_number }}
-        SOURCE_RUN_ID: ${{ inputs.source_run_id }}
-        REPO: ${{ inputs.repo }}
-        GH_TOKEN: ${{ inputs.repo_token }}
-        ARTIFACT_JSON_PATH: ${{ steps.download.outputs.artifact-json-path }}
-        WORKFLOW_RUN_HEAD_BRANCH: ${{ inputs.head_branch }}
-      run: node "$GITHUB_ACTION_PATH/sync.mjs"
+        NOTION_API_KEY: ${{ inputs.notion-api-key }}
+        NOTION_DATABASE_ID: ${{ inputs.notion-database-id }}
+        LABEL_NAME: ${{ steps.label-name.outputs.label-name }}
+        GH_TOKEN: ${{ github.token }}
+        ISSUE_NUMBER: ${{ inputs.issue-number }}
+        EVENT_TYPE: ${{ inputs.event-type }}
+        ARTIFACTS_DIR: /tmp/notion-sync-artifacts
+        NOTION_SYNC_DIR: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        node "$NOTION_SYNC_DIR/sync.mjs"

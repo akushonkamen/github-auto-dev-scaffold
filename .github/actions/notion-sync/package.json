@@ -1,0 +1,13 @@
+{
+  "name": "github-autodev-notion-sync",
+  "version": "1.0.0",
+  "description": "Notion Issue mirror — Module 10 side integration for GithubAutoDev",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/sync.test.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

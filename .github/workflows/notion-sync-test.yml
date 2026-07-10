@@ -1,0 +1,85 @@
+# Notion Issue mirror — smoke test (Module 10 side integration)
+#
+# Manual smoke test for the Notion sync integration. Runs on workflow_dispatch
+# with a real issue number. Validates:
+#   - sync.mjs runs without syntax errors
+#   - Notion API connectivity (if NOTION_API_KEY configured)
+#   - GitHub issue fetch works
+#   - Module summary artifact handling
+#
+# SECURITY POSTURE (PRD §7):
+#   - permissions: contents: read, issues: read, actions: read
+#   - NOTION_API_KEY scoped per-job (S3)
+#   - Does NOT trigger label transitions (S2)
+#   - No secrets printed (S4)
+
+name: notion-sync-test
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue-number:
+        description: "Issue number to test sync with"
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+  issues: read
+
+jobs:
+  smoke-test:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      issues: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: "Verify NOTION_API_KEY is configured (S4: never print value)"
+        run: |
+          if [ -z "${{ secrets.NOTION_API_KEY }}" ]; then
+            echo "::warning::NOTION_API_KEY secret is not set. Sync step will be a no-op (no Notion write)."
+          else
+            echo "::notice::NOTION_API_KEY is configured (value not printed per S4)."
+          fi
+
+      - name: Verify NOTION_DATABASE_ID repo variable
+        run: |
+          db_id="${{ vars.NOTION_DATABASE_ID || '' }}"
+          if [ -z "$db_id" ]; then
+            echo "::warning::NOTION_DATABASE_ID repo variable is not set. Sync requires this."
+          else
+            echo "NOTION_DATABASE_ID: ${db_id:0:8}... (truncated)"
+          fi
+
+      - name: Run unit tests
+        run: |
+          cd .github/actions/notion-sync
+          npm install --silent
+          node --test test/sync.test.mjs
+
+      - name: Run Notion sync
+        id: sync
+        uses: ./.github/actions/notion-sync
+        with:
+          issue-number: ${{ inputs.issue-number }}
+          event-type: workflow_dispatch.smoke-test
+          notion-api-key: ${{ secrets.NOTION_API_KEY }}
+          notion-database-id: ${{ vars.NOTION_DATABASE_ID }}
+
+      - name: Report results
+        if: always()
+        env:
+          STATUS: ${{ steps.sync.outputs.sync-status || 'noop' }}
+          PAGE_URL: ${{ steps.sync.outputs.notion-page-url || '' }}
+        run: |
+          echo ""
+          echo "========= Smoke test results ========="
+          echo "Sync status: $STATUS"
+          echo "Notion page: ${PAGE_URL:-N/A}"
+          echo "======================================="
