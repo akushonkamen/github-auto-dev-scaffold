@@ -5,7 +5,7 @@
  * Refuses to run on main as base.
  */
 import { confirm, input } from '@inquirer/prompts';
-import { gh } from '../shell.mjs';
+import { gh, ghBranchExists } from '../shell.mjs';
 import { writeFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -15,9 +15,26 @@ export const title = 'Branch protection';
 
 export async function run(ctx) {
   const { preview, targetRepo, state, dry } = ctx;
-  const branches = unique([state.baseBranch, 'main'].filter(Boolean));
-  if (!branches.length) {
+  const candidates = unique([state.baseBranch, 'main'].filter(Boolean));
+  if (!candidates.length) {
     preview.warn('no branches to protect (base branch unset).');
+    return { status: 'skipped' };
+  }
+
+  // Filter to branches that actually exist on the remote. A repo whose
+  // default branch is `dev` (like this one) may have no `main` at all —
+  // PUT'ing protection rules against a non-existent branch 404s.
+  const branches = [];
+  for (const b of candidates) {
+    const exists = await ghBranchExists(targetRepo, b);
+    if (exists) {
+      branches.push(b);
+    } else {
+      preview.warn(`branch "${b}" does not exist on ${targetRepo} — skipping protection`);
+    }
+  }
+  if (!branches.length) {
+    preview.warn('no branches to protect.');
     return { status: 'skipped' };
   }
 
