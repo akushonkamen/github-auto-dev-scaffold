@@ -10,8 +10,9 @@
 #   - push (claude/issue-*)               — development branch activity
 #
 # SECURITY POSTURE (PRD §7):
-#   - permissions: contents: read, issues: write, actions: read
-#     (S1: NEVER contents:write for a side integration)
+#   - permissions: contents: read, issues: read, actions: read
+#     (S1: NEVER contents:write for a side integration; issues:read only —
+#      sync.mjs performs GET /repos/.../issues/N, no label mutation)
 #   - NOTION_API_KEY scoped per-job via `env` on the sync step (S3)
 #   - Does NOT trigger label transitions — read-only observer (S2)
 #   - No secrets printed (S4)
@@ -46,7 +47,7 @@ on:
 permissions:
   actions: read
   contents: read
-  issues: write
+  issues: read
 
 concurrency:
   group: notion-sync-issue-${{ github.event.issue.number || github.event.workflow_run.id }}
@@ -108,7 +109,7 @@ jobs:
     permissions:
       actions: read
       contents: read
-      issues: write
+      issues: read
     steps:
       - uses: actions/checkout@v4
         with:

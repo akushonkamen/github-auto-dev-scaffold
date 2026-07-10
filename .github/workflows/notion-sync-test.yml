@@ -8,7 +8,7 @@
 #   - Module summary artifact handling
 #
 # SECURITY POSTURE (PRD §7):
-#   - permissions: contents: read, issues: write, actions: read
+#   - permissions: contents: read, issues: read, actions: read
 #   - NOTION_API_KEY scoped per-job (S3)
 #   - Does NOT trigger label transitions (S2)
 #   - No secrets printed (S4)
@@ -26,7 +26,7 @@ on:
 permissions:
   actions: read
   contents: read
-  issues: write
+  issues: read
 
 jobs:
   smoke-test:
@@ -34,7 +34,7 @@ jobs:
     permissions:
       actions: read
       contents: read
-      issues: write
+      issues: read
     steps:
       - uses: actions/checkout@v4
         with:

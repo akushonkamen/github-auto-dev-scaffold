@@ -16,7 +16,7 @@
 # REQUIRED PERMISSIONS (calling workflow must grant):
 #   actions: read   (download module-summary artifacts)
 #   contents: read  (checkout for sync.mjs)
-#   issues: write   (read issue body + labels for mirroring)
+#   issues: read    (read issue body + labels for mirroring — S1 least privilege)
 #
 # Setup guide: docs/notion-integration.md
 

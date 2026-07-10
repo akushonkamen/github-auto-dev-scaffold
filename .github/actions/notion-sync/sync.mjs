@@ -201,7 +201,29 @@ async function readModuleSummaries() {
 async function findExistingPage(issueNumber) {
   log('INFO', `Searching Notion DB ${NOTION_DATABASE_ID} for issue #${issueNumber}`);
 
+  // Primary: numeric "Issue Number" property (typed; matches buildPageProperties
+  // which always sets it as a number, so this is the authoritative lookup key).
   const res = await notionFetch(`/v1/databases/${NOTION_DATABASE_ID}/query`, {
+    method: 'POST',
+    body: JSON.stringify({
+      filter: {
+        property: 'Issue Number',
+        number: { equals: parseInt(issueNumber, 10) },
+      },
+    }),
+  });
+
+  if (res.ok) {
+    const data = await res.json();
+    const hit = data.results?.[0];
+    if (hit) return hit;
+  } else {
+    const body = await res.text();
+    log('WARN', `Notion query (Issue Number) failed (${res.status}): ${safe(body)}`);
+  }
+
+  // Fallback: text "Issue ID" property ("#N") — for DBs that only define that column.
+  const res2 = await notionFetch(`/v1/databases/${NOTION_DATABASE_ID}/query`, {
     method: 'POST',
     body: JSON.stringify({
       filter: {
@@ -211,28 +233,14 @@ async function findExistingPage(issueNumber) {
     }),
   });
 
-  if (!res.ok) {
-    // Fallback: try number filter on "Issue Number" property
-    const res2 = await notionFetch(`/v1/databases/${NOTION_DATABASE_ID}/query`, {
-      method: 'POST',
-      body: JSON.stringify({
-        filter: {
-          property: 'Issue Number',
-          number: { equals: parseInt(issueNumber, 10) },
-        },
-      }),
-    });
-    if (!res2.ok) {
-      const body = await res2.text();
-      log('WARN', `Notion query fallback failed (${res2.status}): ${safe(body)}`);
-      return null;
-    }
-    const data = await res2.json();
-    return data.results?.[0] || null;
+  if (!res2.ok) {
+    const body2 = await res2.text();
+    log('WARN', `Notion query fallback (Issue ID) failed (${res2.status}): ${safe(body2)}`);
+    return null;
   }
 
-  const data = await res.json();
-  return data.results?.[0] || null;
+  const data2 = await res2.json();
+  return data2.results?.[0] || null;
 }
 
 /**
@@ -310,8 +318,9 @@ function buildPageProperties(issue, moduleSummaries) {
   // Summary — build from module summaries, appending each as a rich_text block
   const summaryParts = [];
   const moduleOrder = [
-    'triage', 'clarify', 'judge', 'design-review', 'develop',
-    'self-verify', 'test', 'pr-open', 'review', 'merge-queue',
+    'triage', 'clarify', 'design-review',
+    'develop-gate', 'code-generate', 'pr-lifecycle',
+    'verify', 'test', 'review', 'merge-queue',
   ];
   for (const mod of moduleOrder) {
     const s = moduleSummaries[mod];
