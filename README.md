@@ -6,6 +6,21 @@ AI-driven **Issue → Merge** automation pipeline built on Claude Code, Codex, a
 
 A modular pipeline that takes a GitHub Issue through its full lifecycle — triage, judgement, design review, development, verification, testing, PR, review, merge — using AI agents wired together by **Label state machine** events. See the PRD module table for the 10-stage breakdown.
 
+## Quick setup
+
+Bootstrap a target repo for the pipeline with the interactive wizard:
+
+```bash
+cd scripts/setup
+npm install
+node wizard.mjs --dry-run       # preview every step (recommended first run)
+node wizard.mjs                 # interactive, executes after each confirm
+```
+
+The wizard handles secrets, repo vars, labels sync, CODEOWNERS, and branch protection. See [`scripts/setup/README.md`](scripts/setup/README.md) for the full step list and troubleshooting.
+
+For the manual equivalent on a single module, follow [`docs/quickstart-triage.md`](docs/quickstart-triage.md) (triage flow) or [`docs/quickstart-clarify.md`](docs/quickstart-clarify.md) (v2 clarify loop).
+
 ## Architecture principles
 
 - **Loose coupling.** Modules communicate only via GitHub events + Label transitions. No direct module-to-module calls.
