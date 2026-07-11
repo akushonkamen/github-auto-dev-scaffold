@@ -23,6 +23,7 @@
 
 import { appendFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import crypto from 'node:crypto';
 
 // ---------------------------------------------------------------------------
 // Token format constants (used by safe() — keep in sync with test/safe.test.mjs)
@@ -307,7 +308,132 @@ export function renderReviewCard({ prNumber, prTitle, prUrl, reviewer, verdict }
 }
 
 // ---------------------------------------------------------------------------
-// Main (PR-2: dispatches on EVENT_TYPE; real impl for review-completed)
+// Bitable mirror (PR-3)
+// ---------------------------------------------------------------------------
+//
+// Mirrors GitHub Issue state to a Feishu Bitable table. Search-then-upsert
+// keyed on "Issue Number" column. Assignees column stores sha256(open_id)[:12]
+// for PII-safe deduplication (no raw Feishu user IDs in Bitable).
+//
+// Column schema (per docs/feishu-integration.md §Step 3):
+//   Issue Number (Number) | Title (Text) | State (Single Select) |
+//   Labels (Multi Select) | Assignees (Multi Select) | Updated At (DateTime)
+
+/**
+ * Shorten an open_id (or any identifier) for PII-safe storage.
+ * Returns the first 12 hex chars of sha256(input). 12 chars = 48 bits =
+ * collision probability < 1e-6 for up to 10k distinct inputs — good enough
+ * for Issue mirror deduplication.
+ *
+ * @param {string} open_id
+ * @returns {string} 12-char hex
+ */
+export function shortenOpenId(open_id) {
+  return crypto.createHash('sha256').update(String(open_id)).digest('hex').slice(0, 12);
+}
+
+/**
+ * Build a Bitable fields object from a GitHub Issue.
+ *
+ * @param {{number: number|string, title: string, state?: string, labels?: string[], assignees?: string[], updatedAt?: string|number}} issue
+ * @returns {object} Bitable fields keyed by column name
+ */
+export function renderIssueRow({ number, title, state, labels, assignees, updatedAt }) {
+  const ts = updatedAt
+    ? (typeof updatedAt === 'number' ? updatedAt : new Date(updatedAt).getTime())
+    : Date.now();
+  return {
+    'Issue Number': Number(number),
+    'Title': String(title || ''),
+    'State': state || 'triage',
+    'Labels': (labels || []).map(String),
+    'Assignees': (assignees || []).map(shortenOpenId),
+    'Updated At': ts,
+  };
+}
+
+/**
+ * Search a Bitable table for a record by Issue Number.
+ *
+ * @param {{appId: string, appSecret: string, appToken: string, tableId: string, issueNumber: number|string, fetcher?: typeof fetch}} opts
+ * @returns {Promise<{ok: boolean, recordId?: string, error?: string}>}
+ */
+export async function findBitableRecord({ appId, appSecret, appToken, tableId, issueNumber, fetcher = fetch }) {
+  if (!appToken || !tableId) {
+    return { ok: false, error: 'appToken and tableId required' };
+  }
+  const result = await feishuFetch(
+    `/open-apis/bitable/v1/apps/${appToken}/tables/${tableId}/records/search`,
+    {
+      method: 'POST',
+      params: { page_size: '2' },
+      body: {
+        filter: {
+          conjunction: 'and',
+          conditions: [
+            { field_name: 'Issue Number', operator: 'is', value: [String(issueNumber)] },
+          ],
+        },
+      },
+      appId, appSecret, fetcher,
+    },
+  );
+  if (!result.ok || result.json.code !== 0) {
+    return {
+      ok: false,
+      error: `search failed: code=${result.json.code} msg=${result.json.msg || 'n/a'}`,
+    };
+  }
+  const items = result.json?.data?.items || [];
+  if (items.length === 0) return { ok: true };
+  return { ok: true, recordId: items[0].record_id };
+}
+
+/**
+ * Upsert a record into Bitable: search by Issue Number, create if not found,
+ * update if found. The Issue Number column is the deduplication key.
+ *
+ * @param {{appId: string, appSecret: string, appToken: string, tableId: string, fields: object, fetcher?: typeof fetch}} opts
+ * @returns {Promise<{ok: boolean, action?: 'create'|'update', recordId?: string, error?: string}>}
+ */
+export async function bitableUpsert({ appId, appSecret, appToken, tableId, fields, fetcher = fetch }) {
+  const issueNumber = fields['Issue Number'];
+  if (!issueNumber && issueNumber !== 0) {
+    return { ok: false, error: 'fields["Issue Number"] required' };
+  }
+
+  const found = await findBitableRecord({ appId, appSecret, appToken, tableId, issueNumber, fetcher });
+  if (!found.ok) return { ok: false, error: found.error };
+
+  if (found.recordId) {
+    const result = await feishuFetch(
+      `/open-apis/bitable/v1/apps/${appToken}/tables/${tableId}/records/${found.recordId}`,
+      { method: 'PUT', body: { fields }, appId, appSecret, fetcher },
+    );
+    if (!result.ok || result.json.code !== 0) {
+      return {
+        ok: false,
+        error: `update failed: code=${result.json.code} msg=${result.json.msg || 'n/a'}`,
+      };
+    }
+    return { ok: true, action: 'update', recordId: found.recordId };
+  }
+
+  const result = await feishuFetch(
+    `/open-apis/bitable/v1/apps/${appToken}/tables/${tableId}/records`,
+    { method: 'POST', body: { fields }, appId, appSecret, fetcher },
+  );
+  if (!result.ok || result.json.code !== 0) {
+    return {
+      ok: false,
+      error: `create failed: code=${result.json.code} msg=${result.json.msg || 'n/a'}`,
+    };
+  }
+  return { ok: true, action: 'create', recordId: result.json?.data?.record?.record_id };
+}
+
+// ---------------------------------------------------------------------------
+// Main (PR-3: dispatches on EVENT_TYPE; bitable upsert for Issue lifecycle)
 // ---------------------------------------------------------------------------
 
 function writeOutput(key, value) {
@@ -322,15 +448,59 @@ async function main() {
     return;
   }
 
-  // PR-2: only handle notification events. Bitable upsert lands in PR-3.
+  // PR-2: chat notification events. PR-3: bitable mirror events.
   const NOTIFY_EVENTS = new Set([
     'workflow_run.completed',
     'pull_request.reviewed',
-    'feishu-smoke', // workflow_dispatch smoke trigger
+    'feishu-smoke',
+  ]);
+  const BITABLE_EVENTS = new Set([
+    'issues.opened',
+    'issues.labeled',
+    'issues.unlabeled',
+    'issues.edited',
+    'issues.closed',
+    'issues.reopened',
+    'workflow_run.completed', // also mirrors to Bitable on every module completion
+    'feishu-bitable-smoke',
   ]);
 
+  // Bitable mirror path (PR-3)
+  if (BITABLE_EVENTS.has(EVENT_TYPE) && FEISHU_BITABLE_APP_TOKEN && FEISHU_BITABLE_TABLE_ID && ISSUE_NUMBER) {
+    const fields = renderIssueRow({
+      number: ISSUE_NUMBER,
+      title: process.env.ISSUE_TITLE || `Issue #${ISSUE_NUMBER}`,
+      state: process.env.ISSUE_STATE || 'open',
+      labels: (process.env.ISSUE_LABELS_CSV || '').split(',').map(s => s.trim()).filter(Boolean),
+      assignees: (process.env.ISSUE_ASSIGNEES_CSV || '').split(',').map(s => s.trim()).filter(Boolean),
+      updatedAt: process.env.ISSUE_UPDATED_AT || new Date().toISOString(),
+    });
+    const upsert = await bitableUpsert({
+      appId: FEISHU_APP_ID,
+      appSecret: process.env.FEISHU_APP_SECRET,
+      appToken: FEISHU_BITABLE_APP_TOKEN,
+      tableId: FEISHU_BITABLE_TABLE_ID,
+      fields,
+    });
+    if (!upsert.ok) {
+      fail(`bitableUpsert failed: ${upsert.error}`);
+      writeOutput('sync-status', 'error');
+      return;
+    }
+    log('INFO', `bitableUpsert ${upsert.action} (record_id=${upsert.recordId}, issue=#${ISSUE_NUMBER})`);
+    // Bitable upsert succeeds — fall through to notification path if event is also a notify event
+  } else if (BITABLE_EVENTS.has(EVENT_TYPE) && (!FEISHU_BITABLE_APP_TOKEN || !FEISHU_BITABLE_TABLE_ID)) {
+    log('INFO', `event=${EVENT_TYPE} is a Bitable event but FEISHU_BITABLE_APP_TOKEN/TABLE_ID missing — skipping mirror`);
+  }
+
+  // Notification path (PR-2)
   if (!NOTIFY_EVENTS.has(EVENT_TYPE)) {
-    log('INFO', `event=${EVENT_TYPE} not in notify set — skeleton-noop`);
+    // Pure bitable event with no chat notification needed
+    if (BITABLE_EVENTS.has(EVENT_TYPE)) {
+      writeOutput('sync-status', 'sync');
+      return;
+    }
+    log('INFO', `event=${EVENT_TYPE} not in notify or bitable set — skeleton-noop`);
     writeOutput('sync-status', 'skeleton-noop');
     return;
   }
@@ -341,9 +511,6 @@ async function main() {
     return;
   }
 
-  // Minimal context for the card. The observer workflow (feishu-notify.yml)
-  // passes richer context via env vars when available; here we fall back to
-  // ISSUE_NUMBER + workflow metadata.
   const prNumber = process.env.PR_NUMBER || ISSUE_NUMBER || 'n/a';
   const prTitle = process.env.PR_TITLE || '(no title)';
   const prUrl = process.env.PR_URL || `https://github.com/${process.env.GITHUB_REPOSITORY || 'owner/repo'}`;
