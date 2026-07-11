@@ -1,0 +1,14 @@
+{
+  "name": "github-autodev-feishu-bridge",
+  "version": "1.0.0",
+  "description": "Feishu bridge process — long-lived daemon binding Feishu open_id to GitHub PATs (keychain-backed)",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test test/identity-store.test.mjs test/bind.test.mjs test/router.test.mjs",
+    "start": "node bridge.mjs"
+  }
+}
