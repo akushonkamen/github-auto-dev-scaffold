@@ -1,0 +1,13 @@
+{
+  "name": "github-autodev-feishu-sync",
+  "version": "1.0.0",
+  "description": "Feishu (Lark) Issue mirror + event notification — Module 10 side integration for GithubAutoDev",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/safe.test.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
