@@ -1,0 +1,93 @@
+# Composite action: Feishu (Lark) Issue mirror + event notification
+#
+# Mirrors GitHub Issue state to a Feishu Bitable table AND pushes event
+# notifications (review-completed etc.) to a Feishu chat as message cards.
+# This is a SIDE INTEGRATION — it observes labels and module completion events
+# but does NOT trigger label transitions (S2 preserved). The observer workflow
+# (.github/workflows/feishu-notify.yml — lands in PR-2) calls this action.
+#
+# SECURITY POSTURE:
+#   - All FEISHU_* secrets scoped per-job in the calling workflow (S3)
+#   - This action does NOT mutate GitHub state — no label transitions (S2)
+#   - safe() redacts all Feishu + GitHub token formats from logs (S4)
+#   - No token printing (S4)
+#
+# REQUIRED PERMISSIONS (calling workflow must grant):
+#   actions: read   (download module-summary artifacts in future PRs)
+#   contents: read  (checkout for sync.mjs)
+#   issues: read    (read issue body + labels for mirroring — S1 least privilege)
+#
+# Setup guide: docs/feishu-integration.md
+#
+# PR-1 status: skeleton only. Real Feishu API calls land in PR-2 (postCard)
+# and PR-3 (Bitable upsert). Running this action before secrets are configured
+# is a silent no-op (aligned with notion-sync sync.mjs:410-418).
+
+name: "Module 10 — Feishu Issue mirror + event notification (side)"
+description: "Mirrors GitHub Issue state to Feishu Bitable and pushes event notifications to a Feishu chat."
+
+inputs:
+  issue-number:
+    description: "Issue number to mirror / notify on"
+    required: true
+  event-type:
+    description: "Triggering event type (issues.opened / labeled / unlabeled / workflow_run.completed / push / pull_request.reviewed)"
+    required: true
+  feishu-app-id:
+    description: "Feishu Custom App ID (FEISHU_APP_ID — scoped per-job, S3)"
+    required: true
+  feishu-app-secret:
+    description: "Feishu Custom App Secret (FEISHU_APP_SECRET — scoped per-job, S3)"
+    required: true
+  feishu-verification-token:
+    description: "Feishu Verification Token for callback signature (optional in PR-1, required in PR-4 for bridge)"
+    required: false
+    default: ""
+  feishu-chat-id:
+    description: "Target chat ID for event notifications (FEISHU_CHAT_ID)"
+    required: false
+    default: ""
+  feishu-bitable-app-token:
+    description: "Bitable app_token (multi-table container) for state mirror"
+    required: false
+    default: ""
+  feishu-bitable-table-id:
+    description: "Bitable table_id for Issues state table"
+    required: false
+    default: ""
+
+outputs:
+  sync-status:
+    description: "noop | skeleton-noop | sync | error"
+    value: ${{ steps.sync.outputs.sync-status }}
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Install dependencies
+      shell: bash
+      run: |
+        cd "${{ github.action_path }}"
+        npm ci --silent 2>/dev/null || npm install --silent
+
+    - name: Run sync
+      id: sync
+      shell: bash
+      env:
+        FEISHU_APP_ID: ${{ inputs.feishu-app-id }}
+        FEISHU_APP_SECRET: ${{ inputs.feishu-app-secret }}
+        FEISHU_VERIFICATION_TOKEN: ${{ inputs.feishu-verification-token }}
+        FEISHU_CHAT_ID: ${{ inputs.feishu-chat-id }}
+        FEISHU_BITABLE_APP_TOKEN: ${{ inputs.feishu-bitable-app-token }}
+        FEISHU_BITABLE_TABLE_ID: ${{ inputs.feishu-bitable-table-id }}
+        ISSUE_NUMBER: ${{ inputs.issue-number }}
+        EVENT_TYPE: ${{ inputs.event-type }}
+        FEISHU_SYNC_DIR: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        node "$FEISHU_SYNC_DIR/sync.mjs"
