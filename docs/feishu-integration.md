@@ -122,18 +122,30 @@ in a `.env` file, never as a GitHub secret, never in shell rc**.
 ### One-time setup (PR-4 install path)
 
 ```bash
-# Generate a 32-byte random key
-KEY=$(openssl rand -base64 32)
+# Generate a 32-byte random key as 64 hex chars (identity-store.mjs requires this exact format)
+KEY=$(openssl rand -hex 32)
 
-# Store in macOS Keychain (service: feishu-bridge, account: <repo-full-name>)
+# Store in macOS Keychain (service: feishu-bridge, account: master-key)
 security add-generic-password \
   -s "feishu-bridge" \
-  -a "owner/name" \
+  -a "master-key" \
   -w "$KEY" \
   -U
 
-# Verify retrieval
-security find-generic-password -s "feishu-bridge" -a "owner/name" -w
+# Verify retrieval — must print 64 hex chars
+security find-generic-password -s "feishu-bridge" -a "master-key" -w
+```
+
+On Linux substitute libsecret (`secret-tool`) or `pass`:
+
+```bash
+# libsecret
+printf '%s' "$KEY" | secret-tool store application feishu-bridge account master-key --
+secret-tool lookup application feishu-bridge account master-key
+
+# pass (gpg-backed)
+echo "$KEY" | pass insert -m feishu-bridge/master-key
+pass feishu-bridge/master-key
 ```
 
 ### Why Keychain
@@ -145,7 +157,147 @@ security find-generic-password -s "feishu-bridge" -a "owner/name" -w
   with a key that never enters CI
 
 If Keychain is unavailable (CI / container), the bridge refuses to start.
-**There is no env-var fallback by design.**
+**There is no env-var fallback by design.** Bridge startup will explicitly
+reject any of these env vars if set: `FEISHU_BRIDGE_MASTER_KEY`, `MASTER_KEY`,
+`FEISHU_MASTER_KEY` (P3 red line enforced in `bridge.mjs`).
+
+## Bridge Deployment (PR-4 onward)
+
+The bridge is a long-lived Node process that maintains a Feishu SDK WebSocket
+connection and routes `/bind`, `/set-pat`, `/unbind`, `/status` commands.
+
+### Prerequisites
+
+```bash
+# Node ≥ 20
+node --version
+
+# pm2 process manager
+npm install -g pm2
+
+# Bridge dependencies (run from repo root)
+cd .github/feishu-bridge
+npm install   # installs @larksuiteoapi/node-sdk + @octokit/rest + @github/codeowners + ansi-regex
+```
+
+### Feishu app: enable long-connection mode
+
+1. Open Feishu developer console → your app → **事件订阅** (Event Subscriptions)
+2. Switch from HTTP callback to **长连接** (Long Connection / WebSocket) mode
+3. Add event subscription: `im.message.receive_v1` (receive messages from users)
+4. Re-publish the app version (per PR-3 91403 troubleshooting — version must be live)
+
+### Launch
+
+```bash
+# Verify Keychain master key is retrievable (PR-4 prerequisite)
+security find-generic-password -s feishu-bridge -a master-key -w | wc -c   # should be 65 (64 hex + newline)
+
+# Set required app-credential env (NOT the master key — these are app creds, env is fine)
+export FEISHU_APP_ID="cli_xxxxxxxxxxxxxxxx"
+export FEISHU_APP_SECRET="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
+# Launch with pm2
+pm2 start .github/feishu-bridge/bridge.mjs --name feishu-bridge \
+  --env FEISHU_APP_ID="$FEISHU_APP_ID" \
+  --env FEISHU_APP_SECRET="$FEISHU_APP_SECRET"
+
+# Watch logs (60-minute no-ERROR AC check)
+pm2 logs feishu-bridge --lines 1000
+```
+
+Expected startup logs:
+
+```
+[bridge] starting (Phase A — single instance per machine)
+[bridge] acquired single-instance lock
+[bridge] master_key_source=keychain
+[bridge] WebSocket long connection established
+[bridge] ready — listening for /bind /set-pat /unbind /status
+```
+
+If `master_key_source=env` ever appears in logs, **stop immediately and
+audit** — that path is forbidden by P3 red line. The bridge startup also
+refuses to launch if any of the forbidden env vars are set.
+
+### Health check
+
+```bash
+# Single-instance lockfile present
+ls -la ~/.feishu-bridge/identity-store.json.lock
+
+# Process alive
+pm2 jlist | jq '.[] | select(.name=="feishu-bridge") | .pm2_env.status'
+# → "online"
+
+# No plaintext PATs in store
+grep -c 'github_pat_' ~/.feishu-bridge/identity-store.json
+# → 0
+```
+
+### Stop / restart
+
+```bash
+pm2 stop feishu-bridge       # graceful SIGTERM → Buffer.fill(0) + lock release
+pm2 restart feishu-bridge    # re-acquires lock + keychain key
+pm2 delete feishu-bridge     # full teardown
+```
+
+## User Binding Flow (PR-4 onward)
+
+Each Feishu user binds their identity to a GitHub account once. The flow
+ensures the user owns both ends before the bridge stores a PAT.
+
+### One-time bind per user
+
+1. In Feishu, DM the bot:
+   ```
+   /bind <github-username>
+   ```
+   Bot replies with the magic-comment prompt.
+
+2. On any GitHub Issue or PR in the repo, leave a comment containing:
+   ```
+   feishu-bind:<your-feishu-open-id>
+   ```
+   The open_id is included verbatim in the bot's `/bind` reply — copy-paste it.
+
+3. The bridge polls GitHub search for the magic comment, verifies the comment
+   author matches the declared username, then prompts:
+   ```
+   Verified. Now send: /set-pat github_pat_<...>
+   ```
+
+4. Create a fine-grained PAT (single-repo, ≤90 days, `issues:write` +
+   `pull-requests:write` + `contents:write`) at
+   https://github.com/settings/personal-access-tokens/new
+
+5. DM the bot:
+   ```
+   /set-pat github_pat_<...>
+   ```
+   The bridge encrypts the PAT with the Keychain master key (AES-256-GCM),
+   writes to `~/.feishu-bridge/identity-store.json` (mode 0600), and replies:
+   ```
+   Bound ✅
+   GitHub user: alice
+   PAT stored: github_pat_***
+   ```
+
+### Daily commands
+
+- `/status` — show current binding (without revealing PAT)
+- `/unbind` — wipe encrypted PAT from store
+- `/help` — list available commands
+
+### Failure modes
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `/set-pat` reply "No active bind session" | Session expired (>30 min) or never `/bind`-ed | Re-run `/bind <username>` |
+| `/set-pat` reply "still in state 'awaiting_comment'" | Magic comment not yet detected | Wait for bridge poll cycle (every 30s) or check search API rate limit |
+| `/set-pat` reply "classic tokens rejected" | PAT is `ghp_`-prefixed (classic) | Create fine-grained PAT (`github_pat_` prefix) |
+| Bridge exits with "another feishu-bridge instance is running" | Stale lockfile from killed process | PID-check auto-steals stale locks; if real, run `pm2 stop feishu-bridge` first |
 
 ## Step 5 — Smoke Test (PR-2 onward)
 
