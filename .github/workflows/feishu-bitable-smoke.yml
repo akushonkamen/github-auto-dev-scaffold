@@ -1,0 +1,68 @@
+# Feishu Bitable smoke test — manual trigger to verify Issue mirror upsert
+#
+# Workflow_dispatch only. Inserts/updates a single row in the Bitable table
+# identified by FEISHU_BITABLE_APP_TOKEN + FEISHU_BITABLE_TABLE_ID to confirm
+# the App ID, App Secret, App Token, and Table ID are correctly configured
+# and the Bitable App has been granted the necessary scopes.
+#
+# Use after deploying feishu-sync action changes or rotating secrets.
+# The smoke row uses Issue Number=999999 by default so it is easily
+# identifiable and removable from the production table.
+
+name: feishu-bitable-smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue-number:
+        description: 'Issue Number column value for the smoke row'
+        required: false
+        default: '999999'
+      title:
+        description: 'Title column value'
+        required: false
+        default: 'feishu bitable smoke test'
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Upsert smoke row into Bitable
+        id: sync
+        uses: ./.github/actions/feishu-sync
+        env:
+          EVENT_TYPE: feishu-bitable-smoke
+          ISSUE_NUMBER: ${{ github.event.inputs.issue-number }}
+          ISSUE_TITLE: ${{ github.event.inputs.title }}
+          ISSUE_STATE: 'smoke'
+          ISSUE_LABELS_CSV: 'smoke-test'
+          ISSUE_ASSIGNEES_CSV: ''
+          ISSUE_UPDATED_AT: ''
+        with:
+          issue-number: ${{ github.event.inputs.issue-number }}
+          event-type: feishu-bitable-smoke
+          feishu-app-id: ${{ secrets.FEISHU_APP_ID }}
+          feishu-app-secret: ${{ secrets.FEISHU_APP_SECRET }}
+          feishu-chat-id: ${{ secrets.FEISHU_CHAT_ID }}
+          feishu-bitable-app-token: ${{ secrets.FEISHU_BITABLE_APP_TOKEN }}
+          feishu-bitable-table-id: ${{ secrets.FEISHU_BITABLE_TABLE_ID }}
+
+      - name: Report
+        if: always()
+        env:
+          STATUS: ${{ steps.sync.outputs.sync-status || 'noop' }}
+        run: |
+          echo "Feishu Bitable smoke test status: $STATUS"
+          if [ "$STATUS" != "sync" ]; then
+            echo "::warning::Smoke test did not upsert a row — check FEISHU_APP_ID / FEISHU_APP_SECRET / FEISHU_BITABLE_APP_TOKEN / FEISHU_BITABLE_TABLE_ID and the Bitable scopes"
+            exit 1
+          fi

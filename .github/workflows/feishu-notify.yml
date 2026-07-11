@@ -1,7 +1,8 @@
 # Feishu (Lark) Issue mirror + event notification — observer workflow
-# (Module 10 side integration, PR-2 of feishu plan v1)
+# (Module 10 side integration, PR-3 of feishu plan v1)
 #
-# Mirrors GitHub Issue events to Feishu chat as message cards. SIDE INTEGRATION:
+# Mirrors GitHub Issue events to Feishu chat as message cards AND to a Feishu
+# Bitable table for state tracking. SIDE INTEGRATION:
 # reads labels + workflow_run completion events but does NOT transition any
 # GitHub label (S2 preserved).
 #
@@ -61,6 +62,11 @@ jobs:
       pr-number: ${{ steps.resolve.outputs.pr-number }}
       pr-title: ${{ steps.resolve.outputs.pr-title }}
       pr-url: ${{ steps.resolve.outputs.pr-url }}
+      issue-title: ${{ steps.resolve.outputs.issue-title }}
+      issue-state: ${{ steps.resolve.outputs.issue-state }}
+      issue-labels-csv: ${{ steps.resolve.outputs.issue-labels-csv }}
+      issue-assignees-csv: ${{ steps.resolve.outputs.issue-assignees-csv }}
+      issue-updated-at: ${{ steps.resolve.outputs.issue-updated-at }}
     steps:
       - name: Resolve context from trigger
         id: resolve
@@ -73,6 +79,11 @@ jobs:
           pr_number=""
           pr_title=""
           pr_url=""
+          issue_title=""
+          issue_state=""
+          issue_labels=""
+          issue_assignees=""
+          issue_updated=""
 
           case "${{ github.event_name }}" in
             issues)
@@ -105,6 +116,19 @@ jobs:
               ;;
           esac
 
+          # Fetch Issue metadata for Bitable mirror (PR-3)
+          if [ -n "$number" ]; then
+            repo="${{ github.repository }}"
+            issue_json=$(gh api "repos/${repo}/issues/$number" 2>/dev/null || echo "")
+            if [ -n "$issue_json" ]; then
+              issue_title=$(printf '%s' "$issue_json" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('title',''))" 2>/dev/null || echo "")
+              issue_state=$(printf '%s' "$issue_json" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('state','open'))" 2>/dev/null || echo "")
+              issue_labels=$(printf '%s' "$issue_json" | python3 -c "import sys,json; d=json.load(sys.stdin); print(','.join(l['name'] for l in d.get('labels',[])))" 2>/dev/null || echo "")
+              issue_assignees=$(printf '%s' "$issue_json" | python3 -c "import sys,json; d=json.load(sys.stdin); print(','.join(a['login'] for a in d.get('assignees',[])))" 2>/dev/null || echo "")
+              issue_updated=$(printf '%s' "$issue_json" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('updated_at',''))" 2>/dev/null || echo "")
+            fi
+          fi
+
           if [ -z "$number" ]; then
             echo "::notice::Could not extract issue number for event=$etype — feishu-notify skipped"
             echo "issue-number=" >> "$GITHUB_OUTPUT"
@@ -115,6 +139,11 @@ jobs:
           echo "pr-number=$pr_number" >> "$GITHUB_OUTPUT"
           echo "pr-title=$pr_title" >> "$GITHUB_OUTPUT"
           echo "pr-url=$pr_url" >> "$GITHUB_OUTPUT"
+          echo "issue-title=$issue_title" >> "$GITHUB_OUTPUT"
+          echo "issue-state=$issue_state" >> "$GITHUB_OUTPUT"
+          echo "issue-labels-csv=$issue_labels" >> "$GITHUB_OUTPUT"
+          echo "issue-assignees-csv=$issue_assignees" >> "$GITHUB_OUTPUT"
+          echo "issue-updated-at=$issue_updated" >> "$GITHUB_OUTPUT"
 
   notify:
     needs: resolve-issue
@@ -137,6 +166,11 @@ jobs:
           PR_TITLE: ${{ needs.resolve-issue.outputs.pr-title }}
           PR_URL: ${{ needs.resolve-issue.outputs.pr-url }}
           PR_VERDICT: ${{ github.event.workflow_run.conclusion || 'completed' }}
+          ISSUE_TITLE: ${{ needs.resolve-issue.outputs.issue-title }}
+          ISSUE_STATE: ${{ needs.resolve-issue.outputs.issue-state }}
+          ISSUE_LABELS_CSV: ${{ needs.resolve-issue.outputs.issue-labels-csv }}
+          ISSUE_ASSIGNEES_CSV: ${{ needs.resolve-issue.outputs.issue-assignees-csv }}
+          ISSUE_UPDATED_AT: ${{ needs.resolve-issue.outputs.issue-updated-at }}
         with:
           issue-number: ${{ needs.resolve-issue.outputs.issue-number }}
           event-type: ${{ needs.resolve-issue.outputs.event-type }}
