@@ -1,0 +1,156 @@
+# Feishu (Lark) Issue mirror + event notification — observer workflow
+# (Module 10 side integration, PR-2 of feishu plan v1)
+#
+# Mirrors GitHub Issue events to Feishu chat as message cards. SIDE INTEGRATION:
+# reads labels + workflow_run completion events but does NOT transition any
+# GitHub label (S2 preserved).
+#
+# Triggers (mirrors notion-sync.yml):
+#   - issues.opened / labeled / unlabeled — Issue lifecycle events
+#   - workflow_run.completed              — module summary artifact emitted
+#   - push (claude/issue-*)               — development branch activity
+#
+# SECURITY POSTURE (PRD §7):
+#   - permissions: contents: read, issues: read, actions: read
+#     (S1: NEVER contents:write; issues:read only)
+#   - FEISHU_APP_SECRET scoped per-job via `env` injection in action.yml (S3)
+#   - Does NOT trigger label transitions — read-only observer (S2)
+#   - safe() redacts all Feishu + GitHub token formats from logs (S4)
+#   - Silent skip when FEISHU_APP_ID / FEISHU_CHAT_ID missing — does not fail
+#     pipeline (aligned with notion-sync sync.mjs:410-418)
+
+name: feishu-notify
+
+on:
+  issues:
+    types: [opened, labeled, unlabeled]
+  workflow_run:
+    workflows:
+      - triage-issue
+      - clarify-loop
+      - develop-gate
+      - code-generate
+      - pr-lifecycle
+      - verify
+      - test
+      - review
+      - merge-queue
+    types: [completed]
+  push:
+    branches:
+      - 'claude/issue-*'
+
+permissions:
+  actions: read
+  contents: read
+  issues: read
+
+concurrency:
+  group: feishu-notify-${{ github.event.issue.number || github.event.workflow_run.id || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  resolve-issue:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read
+    outputs:
+      issue-number: ${{ steps.resolve.outputs.issue-number }}
+      event-type: ${{ steps.resolve.outputs.event-type }}
+      pr-number: ${{ steps.resolve.outputs.pr-number }}
+      pr-title: ${{ steps.resolve.outputs.pr-title }}
+      pr-url: ${{ steps.resolve.outputs.pr-url }}
+    steps:
+      - name: Resolve context from trigger
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          number=""
+          etype="${{ github.event_name }}"
+          pr_number=""
+          pr_title=""
+          pr_url=""
+
+          case "${{ github.event_name }}" in
+            issues)
+              number="${{ github.event.issue.number }}"
+              etype="issues.${{ github.event.action }}"
+              ;;
+            workflow_run)
+              head="${{ github.event.workflow_run.head_branch }}"
+              number=$(printf '%s' "$head" | sed -nE 's|.*issue-([0-9]+).*|\1|p' || true)
+              if [ -z "$number" ]; then
+                name="${{ github.event.workflow_run.display_title }}"
+                number=$(printf '%s' "$name" | grep -oE '[0-9]+' | head -1 || true)
+              fi
+              etype="workflow_run.completed"
+              # Resolve PR info if the workflow_run originated from a PR branch
+              if [ -n "$number" ]; then
+                repo="${{ github.repository }}"
+                pr_json=$(gh api "repos/${repo}/pulls/$number" 2>/dev/null || echo "")
+                if [ -n "$pr_json" ]; then
+                  pr_number="$number"
+                  pr_title=$(printf '%s' "$pr_json" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('title',''))" 2>/dev/null || echo "")
+                  pr_url=$(printf '%s' "$pr_json" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('html_url',''))" 2>/dev/null || echo "")
+                fi
+              fi
+              ;;
+            push)
+              ref="${{ github.ref }}"
+              number=$(printf '%s' "$ref" | sed -nE 's|.*issue-([0-9]+).*|\1|p' || true)
+              etype="push"
+              ;;
+          esac
+
+          if [ -z "$number" ]; then
+            echo "::notice::Could not extract issue number for event=$etype — feishu-notify skipped"
+            echo "issue-number=" >> "$GITHUB_OUTPUT"
+          else
+            echo "issue-number=$number" >> "$GITHUB_OUTPUT"
+          fi
+          echo "event-type=$etype" >> "$GITHUB_OUTPUT"
+          echo "pr-number=$pr_number" >> "$GITHUB_OUTPUT"
+          echo "pr-title=$pr_title" >> "$GITHUB_OUTPUT"
+          echo "pr-url=$pr_url" >> "$GITHUB_OUTPUT"
+
+  notify:
+    needs: resolve-issue
+    if: needs.resolve-issue.outputs.issue-number != ''
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      issues: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Run Feishu sync
+        id: sync
+        uses: ./.github/actions/feishu-sync
+        env:
+          PR_NUMBER: ${{ needs.resolve-issue.outputs.pr-number }}
+          PR_TITLE: ${{ needs.resolve-issue.outputs.pr-title }}
+          PR_URL: ${{ needs.resolve-issue.outputs.pr-url }}
+          PR_VERDICT: ${{ github.event.workflow_run.conclusion || 'completed' }}
+        with:
+          issue-number: ${{ needs.resolve-issue.outputs.issue-number }}
+          event-type: ${{ needs.resolve-issue.outputs.event-type }}
+          feishu-app-id: ${{ secrets.FEISHU_APP_ID }}
+          feishu-app-secret: ${{ secrets.FEISHU_APP_SECRET }}
+          feishu-chat-id: ${{ secrets.FEISHU_CHAT_ID }}
+          feishu-bitable-app-token: ${{ secrets.FEISHU_BITABLE_APP_TOKEN }}
+          feishu-bitable-table-id: ${{ secrets.FEISHU_BITABLE_TABLE_ID }}
+
+      - name: Log sync result
+        if: always()
+        env:
+          STATUS: ${{ steps.sync.outputs.sync-status || 'noop' }}
+          ISSUE: ${{ needs.resolve-issue.outputs.issue-number }}
+          EVENT: ${{ needs.resolve-issue.outputs.event-type }}
+        run: |
+          echo "Feishu sync for issue #$ISSUE event=$EVENT: status=$STATUS"

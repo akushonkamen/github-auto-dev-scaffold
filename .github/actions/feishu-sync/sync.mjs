@@ -143,7 +143,171 @@ export function hasRequiredFeishuInputs() {
 }
 
 // ---------------------------------------------------------------------------
-// Main (PR-1 skeleton — real implementation lands in PR-2 / PR-3)
+// Feishu API client (PR-2)
+// ---------------------------------------------------------------------------
+//
+// Token lifecycle: tenant_access_token expires every 2h. We cache with a
+// 10-minute safety margin (expire=now+1h50m) and retry once on 401.
+// Refetch on 401 is mandatory — token can be invalidated server-side early.
+
+const FEISHU_BASE = 'https://open.feishu.cn';
+const TOKEN_REFRESH_MARGIN_MS = 10 * 60 * 1000; // refresh 10 min before real expiry
+
+/** @typedef {{token: string, expiresAt: number}} TokenCache */
+let _tokenCache = null; // module-level cache for single-run use
+
+/**
+ * Fetch a fresh tenant_access_token from Feishu.
+ *
+ * @param {{appId: string, appSecret: string, fetcher?: typeof fetch}} opts
+ * @returns {Promise<{token: string, expiresInSec: number}>}
+ * @throws on non-200 / network error
+ */
+export async function fetchTenantAccessToken({ appId, appSecret, fetcher = fetch }) {
+  if (!appId || !appSecret) {
+    throw new Error('fetchTenantAccessToken: appId and appSecret are required');
+  }
+  const url = `${FEISHU_BASE}/open-apis/auth/v3/tenant_access_token/internal`;
+  const res = await fetcher(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ app_id: appId, app_secret: appSecret }),
+  });
+  const json = await res.json();
+  if (json.code !== 0 || !json.tenant_access_token) {
+    const err = new Error(`tenant_access_token fetch failed: code=${json.code} msg=${json.msg || 'n/a'}`);
+    err.payload = json;
+    throw err;
+  }
+  return { token: json.tenant_access_token, expiresInSec: json.expire };
+}
+
+/**
+ * Get a cached tenant_access_token (or refetch if missing / near-expiry).
+ * First call hits Feishu; subsequent calls within the same process return
+ * cached token until it expires.
+ *
+ * @param {{appId: string, appSecret: string, fetcher?: typeof fetch, now?: () => number}} opts
+ * @returns {Promise<string>}
+ */
+export async function getTenantAccessToken({ appId, appSecret, fetcher = fetch, now = Date.now }) {
+  if (_tokenCache && _tokenCache.expiresAt > now() + TOKEN_REFRESH_MARGIN_MS) {
+    return _tokenCache.token;
+  }
+  const { token, expiresInSec } = await fetchTenantAccessToken({ appId, appSecret, fetcher });
+  _tokenCache = { token, expiresAt: now() + expiresInSec * 1000 };
+  return token;
+}
+
+/** Test-only: reset token cache between unit tests. */
+export function _resetTokenCacheForTest() {
+  _tokenCache = null;
+}
+
+/**
+ * Feishu OpenAPI wrapper with 401 auto-retry. On 401, refetches the
+ * tenant_access_token (once) and retries the original request.
+ *
+ * @param {string} path
+ * @param {{method?: string, body?: object, params?: Record<string,string>, appId: string, appSecret: string, fetcher?: typeof fetch}} opts
+ * @returns {Promise<{ok: boolean, status: number, json: any}>}
+ */
+export async function feishuFetch(path, opts) {
+  const { method = 'GET', body, params, appId, appSecret, fetcher = fetch } = opts;
+  const query = params ? '?' + new URLSearchParams(params).toString() : '';
+  const url = `${FEISHU_BASE}${path}${query}`;
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const token = await getTenantAccessToken({ appId, appSecret, fetcher });
+    const res = await fetcher(url, {
+      method,
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+
+    if (res.status === 401 && attempt === 0) {
+      log('WARN', 'feishuFetch got 401 — invalidating token cache and retrying once');
+      _resetTokenCacheForTest();
+      continue;
+    }
+    const json = await res.json().catch(() => ({}));
+    return { ok: res.ok, status: res.status, json };
+  }
+  // Two 401s in a row — Feishu is rejecting our token. Surface as error.
+  return { ok: false, status: 401, json: { code: 401, msg: 'unauthorized after retry' } };
+}
+
+/**
+ * Post an interactive card to a Feishu chat.
+ *
+ * @param {{chatId: string, msgType?: 'interactive'|'text', content: object, appId: string, appSecret: string, fetcher?: typeof fetch}} opts
+ * @returns {Promise<{ok: boolean, status: number, messageId?: string, error?: string}>}
+ */
+export async function postCard({ chatId, msgType = 'interactive', content, appId, appSecret, fetcher = fetch }) {
+  if (!chatId) return { ok: false, status: 0, error: 'chatId required' };
+  if (!content) return { ok: false, status: 0, error: 'content required' };
+
+  const result = await feishuFetch('/open-apis/im/v1/messages', {
+    method: 'POST',
+    params: { receive_id_type: 'chat_id' },
+    body: {
+      receive_id: chatId,
+      msg_type: msgType,
+      content: typeof content === 'string' ? content : JSON.stringify(content),
+    },
+    appId, appSecret, fetcher,
+  });
+
+  if (!result.ok || result.json.code !== 0) {
+    return {
+      ok: false,
+      status: result.status,
+      error: `postCard failed: code=${result.json.code} msg=${result.json.msg || 'n/a'}`,
+    };
+  }
+  return {
+    ok: true,
+    status: result.status,
+    messageId: result.json?.data?.message_id,
+  };
+}
+
+/**
+ * Build a text-card content payload for review-completed events.
+ * Returns the JSON-stringified content for postCard.
+ *
+ * Card schema: msg_type=text (PR-2 minimal). PR-5 will upgrade to interactive
+ * card with Approve/Request Changes buttons (disabled:true to avoid dead UI
+ * before the bridge lands).
+ *
+ * @param {{prNumber: number|string, prTitle: string, prUrl: string, reviewer?: string, verdict?: 'approved'|'changes_requested'|'completed'}} ctx
+ * @returns {{text: string}}
+ */
+export function renderReviewCard({ prNumber, prTitle, prUrl, reviewer, verdict }) {
+  const verdictEmoji = {
+    approved: '✅',
+    changes_requested: '🔁',
+    completed: '✅',
+  }[verdict] || '🔔';
+
+  const reviewerLine = reviewer ? `Reviewer: ${reviewer}\n` : '';
+  const text = [
+    `${verdictEmoji} PR #${prNumber} ${verdict || 'review'}`,
+    ``,
+    `${prTitle}`,
+    ``,
+    `${reviewerLine}`,
+    `URL: ${prUrl}`,
+  ].filter(Boolean).join('\n');
+
+  return { text };
+}
+
+// ---------------------------------------------------------------------------
+// Main (PR-2: dispatches on EVENT_TYPE; real impl for review-completed)
 // ---------------------------------------------------------------------------
 
 function writeOutput(key, value) {
@@ -153,18 +317,56 @@ function writeOutput(key, value) {
 
 async function main() {
   if (!hasRequiredFeishuInputs()) {
-    // Silent skip — does NOT fail the workflow. Aligned with notion-sync
-    // sync.mjs:410-418. Allows repos to merge feishu-sync action before
-    // secrets are configured.
     log('INFO', `FEISHU_APP_ID missing — silent skip (event=${EVENT_TYPE}, issue=${ISSUE_NUMBER || 'n/a'})`);
     writeOutput('sync-status', 'noop');
     return;
   }
 
-  // PR-2 will implement feishuFetch() + postCard()
-  // PR-3 will implement bitable upsert()
-  log('INFO', `feishu-sync skeleton ready (event=${EVENT_TYPE}, issue=${ISSUE_NUMBER || 'n/a'}, chat=${FEISHU_CHAT_ID || 'n/a'}) — real impl lands in PR-2`);
-  writeOutput('sync-status', 'skeleton-noop');
+  // PR-2: only handle notification events. Bitable upsert lands in PR-3.
+  const NOTIFY_EVENTS = new Set([
+    'workflow_run.completed',
+    'pull_request.reviewed',
+    'feishu-smoke', // workflow_dispatch smoke trigger
+  ]);
+
+  if (!NOTIFY_EVENTS.has(EVENT_TYPE)) {
+    log('INFO', `event=${EVENT_TYPE} not in notify set — skeleton-noop`);
+    writeOutput('sync-status', 'skeleton-noop');
+    return;
+  }
+
+  if (!FEISHU_CHAT_ID) {
+    log('WARN', `EVENT_TYPE=${EVENT_TYPE} requires FEISHU_CHAT_ID — skipping (set the secret to enable notifications)`);
+    writeOutput('sync-status', 'noop');
+    return;
+  }
+
+  // Minimal context for the card. The observer workflow (feishu-notify.yml)
+  // passes richer context via env vars when available; here we fall back to
+  // ISSUE_NUMBER + workflow metadata.
+  const prNumber = process.env.PR_NUMBER || ISSUE_NUMBER || 'n/a';
+  const prTitle = process.env.PR_TITLE || '(no title)';
+  const prUrl = process.env.PR_URL || `https://github.com/${process.env.GITHUB_REPOSITORY || 'owner/repo'}`;
+  const reviewer = process.env.PR_REVIEWER || '';
+  const verdict = process.env.PR_VERDICT || 'completed';
+
+  const content = renderReviewCard({ prNumber, prTitle, prUrl, reviewer, verdict });
+  const result = await postCard({
+    chatId: FEISHU_CHAT_ID,
+    msgType: 'text',
+    content,
+    appId: FEISHU_APP_ID,
+    appSecret: process.env.FEISHU_APP_SECRET,
+  });
+
+  if (!result.ok) {
+    fail(`postCard failed: ${result.error || `status=${result.status}`}`);
+    writeOutput('sync-status', 'error');
+    return;
+  }
+
+  log('INFO', `postCard delivered (message_id=${result.messageId}, chat=${FEISHU_CHAT_ID})`);
+  writeOutput('sync-status', 'sync');
 }
 
 // Run only when invoked directly (not when imported by tests)

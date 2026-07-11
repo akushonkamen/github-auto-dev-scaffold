@@ -1,0 +1,59 @@
+# Feishu smoke test — manual trigger to verify credentials + postCard path
+#
+# Workflow_dispatch only. Sends a single test card to FEISHU_CHAT_ID to
+# confirm the App ID, App Secret, and Chat ID are correctly configured.
+#
+# Use after deploying feishu-sync action changes or rotating secrets.
+
+name: feishu-smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      message:
+        description: 'Test message body (optional)'
+        required: false
+        default: 'feishu smoke test — credentials verified ✅'
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Send smoke test card
+        id: sync
+        uses: ./.github/actions/feishu-sync
+        env:
+          EVENT_TYPE: feishu-smoke
+          ISSUE_NUMBER: '0'
+          PR_NUMBER: '0'
+          PR_TITLE: ${{ github.event.inputs.message }}
+          PR_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PR_VERDICT: 'completed'
+        with:
+          issue-number: '0'
+          event-type: feishu-smoke
+          feishu-app-id: ${{ secrets.FEISHU_APP_ID }}
+          feishu-app-secret: ${{ secrets.FEISHU_APP_SECRET }}
+          feishu-chat-id: ${{ secrets.FEISHU_CHAT_ID }}
+          feishu-bitable-app-token: ${{ secrets.FEISHU_BITABLE_APP_TOKEN }}
+          feishu-bitable-table-id: ${{ secrets.FEISHU_BITABLE_TABLE_ID }}
+
+      - name: Report
+        if: always()
+        env:
+          STATUS: ${{ steps.sync.outputs.sync-status || 'noop' }}
+        run: |
+          echo "Feishu smoke test status: $STATUS"
+          if [ "$STATUS" != "sync" ]; then
+            echo "::warning::Smoke test did not deliver a card — check FEISHU_APP_ID / FEISHU_APP_SECRET / FEISHU_CHAT_ID"
+            exit 1
+          fi
