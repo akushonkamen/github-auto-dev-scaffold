@@ -1,10 +1,11 @@
 /**
  * card-actions/approve-button.mjs — review.completed 卡片上 "Approve" 按钮的处理器
  *
- * 触发事件：飞书 `card.action.trigger`，按钮 tag = `approve_btn`
+ * 触发事件：飞书 `card.action.trigger`，按钮 tag = `button`（飞书默认）
+ * 派发字段：bridge 读 `action.value.action === 'approve'` 路由到本 handler
  *
  * 按钮 value（由 sync.mjs renderReviewCard 生成）：
- *   { "owner": "akushonkamen", "repo": "scaffold", "pr_number": 123 }
+ *   { "owner": "...", "repo": "...", "pr_number": N, "action": "approve" }
  *
  * 处理流程与 /approve 命令等价，差异仅在 target 来源：
  *   - /approve：从命令 arg 解析 URL 或 PR#
@@ -14,7 +15,8 @@
  */
 import { executePrReview } from '../actions/pr-review.mjs';
 
-export const APPROVE_BTN_TAG = 'approve_btn';
+/** Semantic action discriminator in button value (NOT the Feishu element tag). */
+export const APPROVE_ACTION = 'approve';
 
 /**
  * @param {object} opts

@@ -35,8 +35,8 @@ import {
 } from './identity-store.mjs';
 import { parseCommand, routeCommand } from './router.mjs';
 import { fetchCodeownersWithEtag } from './commands/approve.mjs';
-import { handleApproveButton, APPROVE_BTN_TAG } from './card-actions/approve-button.mjs';
-import { handleRequestChangesButton, REQUEST_CHANGES_BTN_TAG } from './card-actions/request-changes.mjs';
+import { handleApproveButton, APPROVE_ACTION } from './card-actions/approve-button.mjs';
+import { handleRequestChangesButton, REQUEST_CHANGES_ACTION } from './card-actions/request-changes.mjs';
 
 // Default CODEOWNERS path inside the bound repo
 const CODEOWNERS_PATH = process.env.FEISHU_CODEOWNERS_PATH || '.github/CODEOWNERS';
@@ -203,13 +203,15 @@ async function onMessage(event) {
 /**
  * onCardAction — handles `card.action.trigger` events from interactive cards.
  *
- * Button tags (set in sync.mjs renderReviewCard):
- *   - approve_btn           → handleApproveButton
- *   - request_changes_btn   → handleRequestChangesButton
+ * Feishu always sends `action.tag === 'button'` for button clicks (the tag is
+ * the *element type*, not our semantic name). The semantic action is in
+ * `action.value.action`:
+ *   - 'approve'           → handleApproveButton
+ *   - 'request_changes'   → handleRequestChangesButton
  *
- * Each button's `value` carries { owner, repo, pr_number }.
+ * Each button's `value` also carries { owner, repo, pr_number } for routing.
  *
- * Replies go back to the clicking user via DM (open_id from sender).
+ * Replies go back to the clicking user via DM (open_id from operator).
  */
 async function onCardAction(event) {
   // Schema 2.0: event.event.{operator, action, token, context}
@@ -222,26 +224,32 @@ async function onCardAction(event) {
   const openId = operator.open_id;
   if (!openId) return;
 
-  const tag = action.tag;
+  // Defensive: only handle button clicks. Overflow/select menus etc. ignored.
+  if (action.tag && action.tag !== 'button') {
+    console.log(`[bridge] ignoring non-button card action tag: ${action.tag}`);
+    return;
+  }
+
+  const semanticAction = action.value?.action;
   const deps = buildApproveDeps();
 
   let result;
   try {
-    if (tag === APPROVE_BTN_TAG) {
+    if (semanticAction === APPROVE_ACTION) {
       result = await handleApproveButton({
         action, openId, masterKey, lookupFn: lookup, deps,
       });
-    } else if (tag === REQUEST_CHANGES_BTN_TAG) {
+    } else if (semanticAction === REQUEST_CHANGES_ACTION) {
       result = await handleRequestChangesButton({
         action, openId, masterKey, lookupFn: lookup, deps,
       });
     } else {
-      // Unknown button — log and ignore (no reply to avoid spam)
-      console.log(`[bridge] unknown card action tag: ${tag}`);
+      // Unknown semantic action — log and ignore (no reply to avoid spam)
+      console.log(`[bridge] unknown card action value.action: ${JSON.stringify(semanticAction)}`);
       return;
     }
   } catch (e) {
-    console.error(`[bridge] card action "${tag}" failed:`, e.message);
+    console.error(`[bridge] card action "${semanticAction}" failed:`, e.message);
     result = { reply: `Action failed: ${e.message}` };
   }
 

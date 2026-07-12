@@ -15,11 +15,11 @@ import assert from 'node:assert/strict';
 import {
   handleApproveButton,
   parseTargetFromValue,
-  APPROVE_BTN_TAG,
+  APPROVE_ACTION,
 } from '../card-actions/approve-button.mjs';
 import {
   handleRequestChangesButton,
-  REQUEST_CHANGES_BTN_TAG,
+  REQUEST_CHANGES_ACTION,
 } from '../card-actions/request-changes.mjs';
 
 function makeDeps({ files, codeownersContent, reviewCalls = [], commentCalls = [] }) {
@@ -38,10 +38,39 @@ function makeDeps({ files, codeownersContent, reviewCalls = [], commentCalls = [
   };
 }
 
-test('tags: distinct constants', () => {
-  assert.equal(APPROVE_BTN_TAG, 'approve_btn');
-  assert.equal(REQUEST_CHANGES_BTN_TAG, 'request_changes_btn');
-  assert.notEqual(APPROVE_BTN_TAG, REQUEST_CHANGES_BTN_TAG);
+test('semantic actions: distinct string constants', () => {
+  // These live in `action.value.action`, not in `action.tag` (which Feishu
+  // always sends as 'button' regardless of which button was clicked).
+  assert.equal(APPROVE_ACTION, 'approve');
+  assert.equal(REQUEST_CHANGES_ACTION, 'request_changes');
+  assert.notEqual(APPROVE_ACTION, REQUEST_CHANGES_ACTION);
+});
+
+test('button handlers ignore the Feishu element tag — they only read value.action', async () => {
+  // Simulate the actual Feishu payload: tag='button', semantic in value.action
+  const reviewCalls = [];
+  const commentCalls = [];
+  const r = await handleApproveButton({
+    action: {
+      tag: 'button', // Feishu default — must NOT be the dispatch key
+      value: { owner: 'foo', repo: 'bar', pr_number: 7, action: 'approve' },
+    },
+    openId: 'ou_alice',
+    masterKey: Buffer.alloc(32, 1),
+    lookupFn: async () => ({
+      github_user: 'alice',
+      pat: Buffer.from('github_pat_test'),
+      bound_at: '2026-07-12',
+    }),
+    deps: makeDeps({
+      files: ['src/x.js'],
+      codeownersContent: '*.js  @alice\n',
+      reviewCalls,
+      commentCalls,
+    }),
+  });
+  assert.match(r.reply, /approved PR #7/);
+  assert.equal(reviewCalls[0].event, 'APPROVE');
 });
 
 test('parseTargetFromValue: happy path', () => {
@@ -69,7 +98,7 @@ test('handleApproveButton: owner → APPROVE review + audit comment', async () =
   const commentCalls = [];
   const r = await handleApproveButton({
     action: {
-      tag: APPROVE_BTN_TAG,
+      tag: 'button',  // Feishu always sends element tag=button
       value: { owner: 'foo', repo: 'bar', pr_number: 55, action: 'approve' },
     },
     openId: 'ou_alice',
@@ -96,7 +125,7 @@ test('handleRequestChangesButton: owner → REQUEST_CHANGES review', async () =>
   const commentCalls = [];
   const r = await handleRequestChangesButton({
     action: {
-      tag: REQUEST_CHANGES_BTN_TAG,
+      tag: 'button',  // Feishu always sends element tag=button
       value: { owner: 'foo', repo: 'bar', pr_number: 55, action: 'request_changes' },
     },
     openId: 'ou_alice',
@@ -123,7 +152,7 @@ test('handleApproveButton: non-owner → reject, zero side effects (S7)', async 
   const commentCalls = [];
   const r = await handleApproveButton({
     action: {
-      tag: APPROVE_BTN_TAG,
+      tag: 'button',  // Feishu always sends element tag=button
       value: { owner: 'foo', repo: 'bar', pr_number: 55 },
     },
     openId: 'ou_eve',
@@ -148,7 +177,7 @@ test('handleApproveButton: non-owner → reject, zero side effects (S7)', async 
 test('handleApproveButton: malformed value → error reply, zero side effects', async () => {
   const reviewCalls = [];
   const r = await handleApproveButton({
-    action: { tag: APPROVE_BTN_TAG, value: { owner: 'foo' } }, // missing repo+pr_number
+    action: { tag: 'button', value: { owner: 'foo' } }, // missing repo+pr_number
     openId: 'ou_x',
     masterKey: Buffer.alloc(32, 1),
     lookupFn: async () => null,
@@ -162,7 +191,7 @@ test('handleApproveButton: not bound → friendly reply, zero side effects', asy
   const reviewCalls = [];
   const r = await handleApproveButton({
     action: {
-      tag: APPROVE_BTN_TAG,
+      tag: 'button',  // Feishu always sends element tag=button
       value: { owner: 'foo', repo: 'bar', pr_number: 1 },
     },
     openId: 'ou_x',

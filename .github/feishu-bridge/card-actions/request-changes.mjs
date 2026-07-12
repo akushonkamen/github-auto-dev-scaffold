@@ -1,7 +1,8 @@
 /**
  * card-actions/request-changes.mjs — review.completed 卡片上 "Request Changes" 按钮的处理器
  *
- * 触发事件：飞书 `card.action.trigger`，按钮 tag = `request_changes_btn`
+ * 触发事件：飞书 `card.action.trigger`，按钮 tag = `button`（飞书默认）
+ * 派发字段：bridge 读 `action.value.action === 'request_changes'` 路由到本 handler
  *
  * 与 approve-button 共享 actions/pr-review.mjs，差异：
  *   - review event = REQUEST_CHANGES（而非 APPROVE）
@@ -10,7 +11,8 @@
 import { executePrReview } from '../actions/pr-review.mjs';
 import { parseTargetFromValue } from './approve-button.mjs';
 
-export const REQUEST_CHANGES_BTN_TAG = 'request_changes_btn';
+/** Semantic action discriminator in button value (NOT the Feishu element tag). */
+export const REQUEST_CHANGES_ACTION = 'request_changes';
 
 /**
  * @param {object} opts — same shape as handleApproveButton
