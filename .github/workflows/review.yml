@@ -107,6 +107,9 @@ jobs:
     outputs:
       review-status: ${{ steps.review.outputs.review-status }}
       audit-comment-url: ${{ steps.review.outputs.audit-comment-url }}
+      review-verdict: ${{ steps.review.outputs.review-verdict }}
+      review-severity: ${{ steps.review.outputs.review-severity }}
+      review-summary: ${{ steps.review.outputs.review-summary }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -183,6 +186,100 @@ jobs:
           AI review is advisory only.  A human CODEOWNER must approve before
           merge (PRD §6).
           REVIEW_BODY
+          )"
+
+      - name: Route by verdict (review:retry-N chain, PR #122)
+        id: retry
+        env:
+          GH_TOKEN: ${{ secrets.CLAUDE_DEV_PAT }}
+          READ_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NUMBER: ${{ needs.preflight.outputs.issue-number }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          VERDICT: ${{ steps.review.outputs.review-verdict }}
+          SEVERITY: ${{ steps.review.outputs.review-severity }}
+          SUMMARY: ${{ steps.review.outputs.review-summary }}
+          REVIEW_RETRY_MAX: ${{ vars.REVIEW_RETRY_MAX || '3' }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if [ -z "$NUMBER" ]; then
+            echo "::warning::No issue number — cannot apply review:retry-N label. Skipping routing."
+            echo "decision=skip" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$VERDICT" != "changes-requested" ]; then
+            echo "Verdict=$VERDICT (not changes-requested) — no retry label needed. Awaiting human CODEOWNER."
+            echo "decision=await-human" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Verdict = changes-requested → calculate retry counter from existing review:retry-N labels.
+          labels=$(gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json labels --jq '.labels | map(.name) | join(",")')
+          retry_count=0
+          if printf '%s' "$labels" | grep -q "review:retry-3"; then retry_count=3; fi
+          if [ "$retry_count" -eq 0 ] && printf '%s' "$labels" | grep -q "review:retry-2"; then retry_count=2; fi
+          if [ "$retry_count" -eq 0 ] && printf '%s' "$labels" | grep -q "review:retry-1"; then retry_count=1; fi
+
+          max="${REVIEW_RETRY_MAX:-3}"
+          echo "retry_count=$retry_count max=$max"
+
+          if [ "$retry_count" -ge "$max" ]; then
+            # Max retries exhausted — escalate.
+            echo "decision=escalate" >> "$GITHUB_OUTPUT"
+            gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "stage:failed" || true
+            gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(cat <<EOF
+          ❌ **Review retries exhausted (${retry_count}/${max})**
+
+          Claude flagged \`changes-requested\` ${retry_count} time(s). The pipeline cannot automatically converge.
+
+          | Field | Value |
+          |---|---|
+          | Last verdict | ${VERDICT} |
+          | Severity | ${SEVERITY} |
+          | Summary | ${SUMMARY} |
+          | PR | #${PR_NUMBER} |
+          | Workflow run | ${RUN_URL} |
+
+          A maintainer must triage manually.
+          EOF
+          )" || true
+            exit 0
+          fi
+
+          next=$((retry_count + 1))
+          echo "decision=retry" >> "$GITHUB_OUTPUT"
+          echo "retry_label=review:retry-${next}" >> "$GITHUB_OUTPUT"
+
+          # Clean up prior review:retry-N labels so only the latest counter remains.
+          for old_n in 1 2 3 4 5; do
+            [ "$old_n" = "$next" ] && continue
+            gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "review:retry-$old_n" 2>/dev/null || true
+          done
+          gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "review:retry-${next}"
+
+          # Post audit comment so code-generate can pick up the prior-review-feedback.
+          gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(cat <<EOF
+          🔄 **Review retry ${next}/${max}**
+
+          Claude flagged this PR as \`changes-requested\`. Triggering auto-fix pass.
+
+          | Field | Value |
+          |---|---|
+          | Retry | ${next} of ${max} |
+          | Severity | ${SEVERITY} |
+          | PR | #${PR_NUMBER} |
+          | Workflow run | ${RUN_URL} |
+
+          ## Claude summary
+
+          ${SUMMARY}
+
+          ---
+          code-generate.yml will auto-trigger on the \`review:retry-${next}\` label,
+          fetch Claude's full review comment on PR #${PR_NUMBER} as prior-review-feedback,
+          and re-run Module 4 to address the findings.
+          EOF
           )"
 
   on-failure:
