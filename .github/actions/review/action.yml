@@ -64,6 +64,15 @@ outputs:
   audit-comment-url:
     description: "URL of the review comment posted on the PR"
     value: ${{ steps.emit.outputs.audit-comment-url }}
+  review-verdict:
+    description: "Structured verdict from Claude (approve | changes-requested | unknown)"
+    value: ${{ steps.emit.outputs.review-verdict }}
+  review-severity:
+    description: "Highest severity of any finding (high | medium | low | none)"
+    value: ${{ steps.emit.outputs.review-severity }}
+  review-summary:
+    description: "One-line summary Claude emitted in the verdict JSON"
+    value: ${{ steps.emit.outputs.review-summary }}
 
 runs:
   using: composite
@@ -244,6 +253,32 @@ runs:
           4. If `${{ inputs.dry-run }}` is `true`, report what you WOULD do but
              skip any mutating commands (`gh pr comment`).
 
+          ## Verdict JSON (mandatory)
+
+          After the human-readable review comment, you MUST append a hidden
+          HTML comment block carrying a structured JSON verdict. The downstream
+          workflow parses this to drive the `review:retry-N` retry chain
+          (see .github/workflows/review.yml). Format:
+
+          ```
+          <!-- REVIEW_VERDICT
+          {"verdict":"approve|changes-requested","severity":"high|medium|low|none","summary":"<one-line plain-text summary, no quotes escaped>","findings":[{"id":"S1","status":"pass|warn|fail","note":"..."}]}
+          -->
+          ```
+
+          Rules:
+          - `verdict` MUST be exactly `"approve"` (no S1-S7 fail, no high-sev
+            finding, acceptance criteria met) or `"changes-requested"` (any
+            fail, or any high-severity warn).
+          - `severity` = highest severity across all findings. Use `none` only
+            when no findings at all.
+          - `summary` is a single line, plain text, ≤200 chars, no newlines.
+          - The JSON MUST be valid (workflow parses with `jq`); do not include
+            trailing commas or comments inside the JSON.
+          - The block MUST be the LAST thing in the PR comment, after the
+            "Final approval is human" footer.
+          - Only emit ONE `REVIEW_VERDICT` block per comment.
+
           ## Output
 
           After completing the review and posting the comment, report a one-line
@@ -270,10 +305,37 @@ runs:
         GH_TOKEN: ${{ inputs.repo-token }}
         PR_NUMBER: ${{ inputs.pr-number }}
       run: |
+        set -eu
         echo "review-status=posted" >> "$GITHUB_OUTPUT"
-        # Retrieve the last PR comment URL as the audit-comment-url.
-        # The Claude step above posted the review comment, so the
-        # last comment in the array is the one we just created.
         COMMENT_URL=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
           --json comments --jq '.comments[-1].url // ""' 2>/dev/null || echo "")
         echo "audit-comment-url=${COMMENT_URL}" >> "$GITHUB_OUTPUT"
+
+        # Parse REVIEW_VERDICT JSON from the latest PR comment (emitted by
+        # Claude per the prompt's "Verdict JSON" section). Drive the
+        # review:retry-N chain in .github/workflows/review.yml.
+        body=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+          --json comments --jq '.comments[-1].body // ""' 2>/dev/null || echo "")
+
+        verdict="unknown"
+        severity="none"
+        summary=""
+        json_block=$(printf '%s' "$body" \
+          | sed -n '/<!-- REVIEW_VERDICT/,/-->/p' \
+          | sed -e '1d;$d' \
+          | tr -d '\n' \
+          | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        if [ -n "$json_block" ] && printf '%s' "$json_block" | jq -e . >/dev/null 2>&1; then
+          verdict=$(printf '%s' "$json_block" | jq -r '.verdict // "unknown"')
+          severity=$(printf '%s' "$json_block" | jq -r '.severity // "none"')
+          summary=$(printf '%s' "$json_block" | jq -r '.summary // ""')
+        else
+          echo "::warning::REVIEW_VERDICT block missing or unparseable — workflow will treat as unknown (no retry label emitted)."
+        fi
+
+        echo "review-verdict=$verdict" >> "$GITHUB_OUTPUT"
+        echo "review-severity=$severity" >> "$GITHUB_OUTPUT"
+        # Multiline safe emit for summary (cap 200 chars per prompt contract).
+        summary_trunc=$(printf '%s' "$summary" | head -c 200)
+        printf 'review-summary<<SUMMARY_EOF\n%s\nSUMMARY_EOF\n' "$summary_trunc" >> "$GITHUB_OUTPUT"
+        echo "Parsed verdict=$verdict severity=$severity"

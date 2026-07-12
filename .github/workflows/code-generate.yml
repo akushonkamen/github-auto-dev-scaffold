@@ -81,7 +81,7 @@ jobs:
     if: |
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
-      (github.event_name == 'issues' && github.event.action == 'labeled' && startsWith(github.event.label.name, 'test:retry-'))
+      (github.event_name == 'issues' && github.event.action == 'labeled' && (startsWith(github.event.label.name, 'test:retry-') || startsWith(github.event.label.name, 'review:retry-')))
     permissions:
       contents: write
       issues: write
@@ -122,8 +122,11 @@ jobs:
             issue_language="${DISPATCH_LANG:-en}"
             prior_test_report="${DISPATCH_PRIOR:-}"
           elif [ "$EVENT_NAME" = "issues" ]; then
-            # M1+M2 restore: test:retry-N label → re-run Module 4 with prior test report.
-            if [ -z "$LABEL_NAME" ] || ! printf '%s' "$LABEL_NAME" | grep -qE '^test:retry-[0-9]+$'; then
+            # M1+M2 restore (issue #118): test:retry-N label → re-run Module 4
+            # with prior test report.
+            # PR #122 extension: review:retry-N label → re-run Module 4 with
+            # prior review feedback (Claude flagged changes-requested).
+            if [ -z "$LABEL_NAME" ] || ! printf '%s' "$LABEL_NAME" | grep -qE '^(test|review):retry-[0-9]+$'; then
               echo "::warning::issues.labeled event with non-retry label '$LABEL_NAME' — skipping."
               exit 0
             fi
@@ -132,7 +135,11 @@ jobs:
               exit 1
             fi
             issue_number="$ISSUE_NUMBER_FROM_EVENT"
-            retry_attempt="${LABEL_NAME#test:retry-}"
+            retry_kind="test"
+            if printf '%s' "$LABEL_NAME" | grep -q '^review:retry-'; then
+              retry_kind="review"
+            fi
+            retry_attempt="${LABEL_NAME#*:retry-}"
             # Locate the existing PR for this issue (head: claude/issue-N-*).
             pr_json=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open \
               --json headRefName,baseRefName,number --limit 100 \
@@ -143,6 +150,7 @@ jobs:
             fi
             head_branch=$(printf '%s' "$pr_json" | jq -r '.headRefName')
             base_branch=$(printf '%s' "$pr_json" | jq -r '.baseRefName // "dev"')
+            pr_number=$(printf '%s' "$pr_json" | jq -r '.number')
             if [ "$base_branch" = "null" ] || [ -z "$base_branch" ]; then base_branch="dev"; fi
             if [ "$base_branch" = "main" ] || [ "$base_branch" = "master" ]; then
               echo "::error::Resolved PR base branch is $base_branch — refusing retry (S3)."
@@ -150,14 +158,26 @@ jobs:
             fi
             # Issue language: default to en (we do not re-analyse body on retry path).
             issue_language="en"
-            # Pull prior Module 6 test report from the most recent "Auto-retry" or
-            # "Test failed" comment on the issue. This is what Claude must fix.
-            prior_test_report=$(gh issue view "$issue_number" --repo "$GITHUB_REPOSITORY" \
-              --json comments --jq '
-                [.comments[]
-                  | select(.body | test("Auto-retry|❌ \\*\\*Test failed"))
-                ] | last | .body // ""
-              ' 2>/dev/null || echo "")
+            if [ "$retry_kind" = "review" ]; then
+              # PR #122: pull Claude's full review comment on the PR as
+              # prior-review-feedback. Search PR comments for the AI review
+              # block (posted by .github/actions/review/action.yml).
+              prior_test_report=$(gh pr view "$pr_number" --repo "$GITHUB_REPOSITORY" \
+                --json comments --jq '
+                  [.comments[]
+                    | select(.body | test("AI Initial Review|REVIEW_VERDICT|Review retry"))
+                  ] | last | .body // ""
+                ' 2>/dev/null || echo "")
+            else
+              # M1+M2 original: pull prior Module 6 test report from the most
+              # recent "Auto-retry" or "Test failed" comment on the issue.
+              prior_test_report=$(gh issue view "$issue_number" --repo "$GITHUB_REPOSITORY" \
+                --json comments --jq '
+                  [.comments[]
+                    | select(.body | test("Auto-retry|❌ \\*\\*Test failed"))
+                  ] | last | .body // ""
+                ' 2>/dev/null || echo "")
+            fi
           else
             if [ -z "$WORKFLOW_RUN_ID" ]; then
               echo "::error::workflow_run event missing workflow_run.id"
@@ -227,12 +247,14 @@ jobs:
           MAX: ${{ vars.TEST_RETRY_MAX || '3' }}
           HEAD_BRANCH: ${{ steps.resolve.outputs.head-branch }}
           CLAUDE_DEV_PAT: ${{ secrets.CLAUDE_DEV_PAT }}
+          LABEL_NAME: ${{ github.event.label.name }}
         shell: bash
         run: |
           set -euo pipefail
           # M2 fix: previously .verify-state.json was read but never written,
           # so attempt counter was stuck at 1. Now code-generate writes it on
           # every retry path so the next verify.yml run reports the right count.
+          # PR #122 extension: label prefix is dynamic (test:retry-N or review:retry-N).
           next_attempt=$((ATTEMPT + 1))
           ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
           mkdir -p .github
@@ -240,7 +262,7 @@ jobs:
             --argjson attempt "$next_attempt" \
             --argjson max "$MAX" \
             --arg ts "$ts" \
-            --arg label "test:retry-$ATTEMPT" \
+            --arg label "${LABEL_NAME:-test:retry-$ATTEMPT}" \
             '{attempt: $attempt, max: $max, last_failed_at: $ts, label: $label}' \
             > .github/.verify-state.json
           cat .github/.verify-state.json
