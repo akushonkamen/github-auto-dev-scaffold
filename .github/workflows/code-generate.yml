@@ -63,6 +63,8 @@ on:
   workflow_run:
     workflows: [develop-gate]
     types: [completed]
+  issues:
+    types: [labeled]
 
 permissions:
   contents: write
@@ -70,13 +72,16 @@ permissions:
   actions: read
 
 concurrency:
-  group: code-generate-run-${{ github.event.workflow_run.id || github.run_id }}
+  group: code-generate-run-${{ github.event.workflow_run.id || github.event.issue.number || github.run_id }}
   cancel-in-progress: false
 
 jobs:
   develop:
     runs-on: ubuntu-latest
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
+      (github.event_name == 'issues' && github.event.action == 'labeled' && startsWith(github.event.label.name, 'test:retry-'))
     permissions:
       contents: write
       issues: write
@@ -94,7 +99,7 @@ jobs:
           persist-credentials: false
           token: ${{ secrets.CLAUDE_DEV_PAT }}
 
-      - name: Resolve inputs (dispatch or workflow_run artifact)
+      - name: Resolve inputs (dispatch, workflow_run artifact, or issues.labeled retry)
         id: resolve
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -104,15 +109,55 @@ jobs:
           DISPATCH_LANG: ${{ inputs.issue-language }}
           DISPATCH_PRIOR: ${{ inputs.prior-test-report }}
           WORKFLOW_RUN_ID: ${{ github.event.workflow_run.id }}
+          ISSUE_NUMBER_FROM_EVENT: ${{ github.event.issue.number }}
+          LABEL_NAME: ${{ github.event.label.name }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          retry_attempt="0"
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             issue_number="$DISPATCH_ISSUE"
             head_branch="$DISPATCH_HEAD"
             base_branch="$DISPATCH_BASE"
             issue_language="${DISPATCH_LANG:-en}"
             prior_test_report="${DISPATCH_PRIOR:-}"
+          elif [ "$EVENT_NAME" = "issues" ]; then
+            # M1+M2 restore: test:retry-N label → re-run Module 4 with prior test report.
+            if [ -z "$LABEL_NAME" ] || ! printf '%s' "$LABEL_NAME" | grep -qE '^test:retry-[0-9]+$'; then
+              echo "::warning::issues.labeled event with non-retry label '$LABEL_NAME' — skipping."
+              exit 0
+            fi
+            if [ -z "$ISSUE_NUMBER_FROM_EVENT" ]; then
+              echo "::error::issues.labeled event missing issue.number"
+              exit 1
+            fi
+            issue_number="$ISSUE_NUMBER_FROM_EVENT"
+            retry_attempt="${LABEL_NAME#test:retry-}"
+            # Locate the existing PR for this issue (head: claude/issue-N-*).
+            pr_json=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open \
+              --json headRefName,baseRefName,number --limit 100 \
+              --jq ".[] | select(.headRefName | startswith(\"claude/issue-${issue_number}-\"))" 2>/dev/null || echo "")
+            if [ -z "$pr_json" ]; then
+              echo "::error::No open PR found for issue #$issue_number with head claude/issue-${issue_number}-*. Retry cannot proceed."
+              exit 1
+            fi
+            head_branch=$(printf '%s' "$pr_json" | jq -r '.headRefName')
+            base_branch=$(printf '%s' "$pr_json" | jq -r '.baseRefName // "dev"')
+            if [ "$base_branch" = "null" ] || [ -z "$base_branch" ]; then base_branch="dev"; fi
+            if [ "$base_branch" = "main" ] || [ "$base_branch" = "master" ]; then
+              echo "::error::Resolved PR base branch is $base_branch — refusing retry (S3)."
+              exit 1
+            fi
+            # Issue language: default to en (we do not re-analyse body on retry path).
+            issue_language="en"
+            # Pull prior Module 6 test report from the most recent "Auto-retry" or
+            # "Test failed" comment on the issue. This is what Claude must fix.
+            prior_test_report=$(gh issue view "$issue_number" --repo "$GITHUB_REPOSITORY" \
+              --json comments --jq '
+                [.comments[]
+                  | select(.body | test("Auto-retry|❌ \\*\\*Test failed"))
+                ] | last | .body // ""
+              ' 2>/dev/null || echo "")
           else
             if [ -z "$WORKFLOW_RUN_ID" ]; then
               echo "::error::workflow_run event missing workflow_run.id"
@@ -142,6 +187,7 @@ jobs:
             echo "base-branch=$base_branch"
             echo "issue-language=$issue_language"
             echo "prior-test-report=$prior_test_report"
+            echo "retry-attempt=$retry_attempt"
           } >> "$GITHUB_OUTPUT"
 
       - name: Create head branch (off base, never main)
@@ -172,6 +218,42 @@ jobs:
             git checkout -B "$HEAD" "origin/$default"
           fi
           echo "branch-name=$HEAD" >> "$GITHUB_OUTPUT"
+
+      - name: Write .verify-state.json (M2 — retry path only)
+        id: state
+        if: steps.resolve.outputs.issue-number != '' && steps.resolve.outputs.retry-attempt != '0'
+        env:
+          ATTEMPT: ${{ steps.resolve.outputs.retry-attempt }}
+          MAX: ${{ vars.TEST_RETRY_MAX || '3' }}
+          HEAD_BRANCH: ${{ steps.resolve.outputs.head-branch }}
+          CLAUDE_DEV_PAT: ${{ secrets.CLAUDE_DEV_PAT }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # M2 fix: previously .verify-state.json was read but never written,
+          # so attempt counter was stuck at 1. Now code-generate writes it on
+          # every retry path so the next verify.yml run reports the right count.
+          next_attempt=$((ATTEMPT + 1))
+          ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          mkdir -p .github
+          jq -n \
+            --argjson attempt "$next_attempt" \
+            --argjson max "$MAX" \
+            --arg ts "$ts" \
+            --arg label "test:retry-$ATTEMPT" \
+            '{attempt: $attempt, max: $max, last_failed_at: $ts, label: $label}' \
+            > .github/.verify-state.json
+          cat .github/.verify-state.json
+          # Configure git + embed PAT in extraheader (actions/checkout runs with
+          # persist-credentials: false; same auth pattern as pr-lifecycle.yml).
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config --local --unset http.https://github.com/.extraheader 2>/dev/null || true
+          git config --local http.https://github.com/.extraheader "Authorization: basic $(printf 'x-access-token:%s' "$CLAUDE_DEV_PAT" | base64)"
+          git add .github/.verify-state.json
+          git commit -m "chore(state): record verify attempt=$next_attempt (M2 retry)"
+          git push origin "HEAD:$HEAD_BRANCH"
+          echo "wrote-attempt=$next_attempt" >> "$GITHUB_OUTPUT"
 
       - name: Capture pre-develop HEAD SHA (issue #57 no-op detection)
         id: pre-sha

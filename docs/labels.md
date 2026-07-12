@@ -123,14 +123,15 @@ test.yml reads retry count from test:retry-N labels
   ↓
 if count < TEST_RETRY_MAX (default 3):
   - removes test:failed, verified (if present)
-  - adds test:retry-(N+1)
-  - adds accepted → triggers Module 4 (develop)
+  - adds test:retry-(N+1)  ← dispatch signal
   - posts audit comment with retry count, failure summary, run URL
   ↓
-Module 4 develop re-runs:
-  - develop.yml detects test:retry-N label
-  - reads most recent Module 6 test report from issue comments
-  - passes as prior-test-report input to composite action
+Module 4 code-generate re-runs (auto-triggered):
+  - code-generate.yml triggers on issues.labeled: test:retry-*
+  - resolves existing PR + head branch for the issue
+  - fetches most recent "Auto-retry" comment body as prior-test-report
+  - writes .github/.verify-state.json with attempt=N+1 (M2 fix)
+  - runs develop composite with prior-test-report input
   - Claude sees "Prior test feedback" section in prompt
   ↓
 ... pipeline continues (verify → test) ...
@@ -145,9 +146,9 @@ if count >= TEST_RETRY_MAX:
 
 | Label | Meaning | Apply | Remove |
 |---|---|---|---|
-| `test:retry-1` | First auto-retry in progress | test.yml (on fail) | develop.yml on completion (replaced with `in-development`) |
-| `test:retry-2` | Second auto-retry in progress | test.yml (on fail) | develop.yml on completion |
-| `test:retry-3` | Third auto-retry in progress; next fail escalates | test.yml (on fail) | develop.yml on completion; next fail → `stage:failed` |
+| `test:retry-1` | First auto-retry in progress | test.yml (on fail) | code-generate.yml on completion (replaced with `in-development`) |
+| `test:retry-2` | Second auto-retry in progress | test.yml (on fail) | code-generate.yml on completion |
+| `test:retry-3` | Third auto-retry in progress; next fail escalates | test.yml (on fail) | code-generate.yml on completion; next fail → `stage:failed` |
 
 **Configuration:**
 
@@ -164,10 +165,11 @@ if count >= TEST_RETRY_MAX:
 
 **Security (S2):**
 
-- `test.yml` applies `accepted` as a pipeline-level transition — the same S2
-  semantics as the existing `tested` transition (already sanctioned by S2).
-- Module 4's preflight gate already requires `accepted` OR `accepted-by-claude`,
-  so the retry path flows through the existing security guard.
+- M1+M2 restore (issue #118): the retry chain is fully automated via the
+  `issues.labeled: test:retry-*` trigger on code-generate.yml. No `accepted`
+  label is applied — the trigger bypasses the accepted gate (which is for
+  fresh-issue intake) and re-runs Module 4 directly using the existing PR.
+- Module 4's S3 guard (no main/master base) still applies on the retry path.
 
 ### Stage labels (terminal states for the issue lifecycle)
 
@@ -186,10 +188,10 @@ if count >= TEST_RETRY_MAX:
 | `verify:failed` | Module 5 verify failed; needs maintainer review | verify workflow | maintainer | → maintainer triage |
 | `testing` | Module 6 (test) active | test workflow | test workflow | → `tested` \| `test:failed` |
 | `tested` | Module 6 test passed | test workflow | — | PR already has `in-review` from pr-lifecycle (M4c) |
-| `test:failed` | Module 6 test failed; maintainer dispatches retry | test workflow | maintainer | → `test:retry-1/2/3` or `stage:failed` (exhausted). S2: AI no longer applies `accepted`. |
-| `test:retry-1` | Retry 1/3: maintainer re-dispatches code-generate with test report | test workflow (on fail) | maintainer (manual code-generate dispatch) | Maintainer manually re-runs Module 4 |
-| `test:retry-2` | Retry 2/3: maintainer re-dispatches code-generate with test report | test workflow (on fail) | maintainer (manual code-generate dispatch) | Maintainer manually re-runs Module 4 |
-| `test:retry-3` | Retry 3/3: maintainer re-dispatches code-generate with test report; next fail escalates | test workflow (on fail) | maintainer; next fail escalates | → `stage:failed` on next fail |
+| `test:failed` | Module 6 test failed; auto-retry chain triggered | test workflow | test workflow (on retry transition) | → `test:retry-1/2/3` (auto) or `stage:failed` (exhausted) |
+| `test:retry-1` | Retry 1/3: code-generate auto-triggered with prior test report | test workflow (on fail) | code-generate.yml on completion | Auto-triggers Module 4 via issues.labeled |
+| `test:retry-2` | Retry 2/3: code-generate auto-triggered with prior test report | test workflow (on fail) | code-generate.yml on completion | Auto-triggers Module 4 via issues.labeled |
+| `test:retry-3` | Retry 3/3: code-generate auto-triggered; next fail escalates | test workflow (on fail) | code-generate.yml on completion; next fail escalates | → `stage:failed` on next fail |
 | `in-review` | PR opened, Module 8 active | pr-lifecycle workflow (M4c) | review workflow | Applied with `CLAUDE_DEV_PAT` so downstream fires |
 | `merged` | Module 9 complete | merge-queue workflow | — | Terminal |
 | `stage:failed` | A module failed; needs maintainer triage | any failing workflow | maintainer | PRD §6 失败降级 |

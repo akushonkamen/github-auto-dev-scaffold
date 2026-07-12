@@ -235,11 +235,10 @@ jobs:
           else
             # Retry: remove test:failed (if present), clean up intermediate labels,
             # add retry counter.
-            # S2 (PRD §7): only maintainers may apply `accepted`. The legacy
-            # `--add-label accepted` was removed in this fix — M7 deleted the
-            # develop.yml listener, so that label had zero downstream effect
-            # anyway. Retry now requires maintainer to manually dispatch
-            # code-generate.yml with the prior test report attached.
+            # M1+M2 restore (issue #118): the test:retry-N label is now the
+            # dispatch signal — code-generate.yml triggers on issues.labeled
+            # with test:retry-* and re-runs Module 4 with the prior test report
+            # fetched from the audit comment below.
             next=$((retry_count + 1))
             echo "decision=retry" >> "$GITHUB_OUTPUT"
             echo "retry_label=test:retry-${next}" >> "$GITHUB_OUTPUT"
@@ -254,9 +253,11 @@ jobs:
             gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "test:retry-${next}"
 
             # Post audit comment with retry count, failure summary, and run URL.
+            # code-generate.yml parses this comment body to reconstruct the
+            # prior-test-report for Claude on the retry pass.
             failure_summary="$(printf '%s' "$REPORT" | head -n 6)"
             gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(cat <<EOF
-          🔄 **Auto-retry ${next}/${max_retries}: maintainer action required**
+          🔄 **Auto-retry ${next}/${max_retries}**
 
           | Field | Value |
           |---|---|
@@ -269,9 +270,9 @@ jobs:
           ${failure_summary}
 
           ---
-          ⚠️ Auto-retry label was applied. S2 forbids AI from applying \`accepted\`.
-          A maintainer must manually re-run Module 4 (code-generate.yml) with this
-          test report as context, or close the issue as \`rejected\`.
+          code-generate.yml will auto-trigger on the \`test:retry-${next}\` label,
+          fetch this comment as the prior-test-report, and re-run Module 4 to
+          fix the failure.
           EOF
           )"
           fi
