@@ -126,6 +126,18 @@ labels:
     color: "fbca04"
     description: "Review retry 3/3: Claude flagged changes-requested, re-running Module 4 to fix"
     category: stage
+  - name: "verify:retry-1"
+    color: "fbca04"
+    description: "Verify retry 1/3: Module 5 verify failed, re-running Module 4 to fix"
+    category: stage
+  - name: "verify:retry-2"
+    color: "fbca04"
+    description: "Verify retry 2/3: Module 5 verify failed, re-running Module 4 to fix"
+    category: stage
+  - name: "verify:retry-3"
+    color: "fbca04"
+    description: "Verify retry 3/3: Module 5 verify failed, re-running Module 4 to fix"
+    category: stage
   - name: ready-for-pr
     color: "1d76db"
     description: "Tests passed; PR may be opened"
