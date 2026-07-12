@@ -392,12 +392,18 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           DISPATCH_ISSUE: ${{ inputs.issue-number }}
           WORKFLOW_RUN_ID: ${{ github.event.workflow_run.id }}
+          ISSUE_NUMBER_FROM_EVENT: ${{ github.event.issue.number }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -u
           number=""
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             number="$DISPATCH_ISSUE"
+          elif [ "$EVENT_NAME" = "issues" ]; then
+            # Retry path (M1+M2 restore, issue #118): failure during test:retry-N
+            # re-run. Without this branch the failure is silent — issue stays in
+            # test:retry-N with no stage:failed and no audit comment.
+            number="$ISSUE_NUMBER_FROM_EVENT"
           elif [ -n "$WORKFLOW_RUN_ID" ]; then
             mkdir -p ./.github/artifacts
             gh run download "$WORKFLOW_RUN_ID" --repo "$GITHUB_REPOSITORY" \

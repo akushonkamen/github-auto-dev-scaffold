@@ -52,6 +52,7 @@ jobs:
       comment-body: ${{ steps.triage.outputs.comment_body }}
       suggested-labels: ${{ steps.triage.outputs.suggested_labels }}
       confidence: ${{ steps.triage.outputs.confidence }}
+      workload-class: ${{ steps.triage.outputs.workload_class }}
     steps:
       - uses: actions/checkout@v4
         with:

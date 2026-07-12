@@ -77,8 +77,10 @@ jobs:
             if [ "$should_run" = "true" ] && [ "$COMMENT_USER" != "$ISSUE_USER" ]; then
               should_run="false"; reason="comment author is not the issue author"
             fi
-            # AC-V2-3c: sentinel marker bail-out (belt-and-suspenders even after 3b)
-            if [ "$should_run" = "true" ] && printf '%s' "$COMMENT_BODY" | grep -qF '<!-- claude-clarify-round-'; then
+            # AC-V2-3c: sentinel marker bail-out (belt-and-suspenders even after 3b).
+            # Match either the per-round marker or the round-state marker so a
+            # stray CLARIFY_STATE-only comment (defense-in-depth) is also caught.
+            if [ "$should_run" = "true" ] && printf '%s' "$COMMENT_BODY" | grep -qE '<!-- (claude-clarify-round-|CLARIFY_STATE)'; then
               should_run="false"; reason="comment body contains claude sentinel marker"
             fi
           else
