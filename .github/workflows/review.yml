@@ -188,6 +188,60 @@ jobs:
           REVIEW_BODY
           )"
 
+      - name: Auto-approve if verdict=approve (Module 8 v2 — plan B, PR #126)
+        id: auto-approve
+        if: steps.review.outputs.review-verdict == 'approve'
+        env:
+          GH_TOKEN: ${{ secrets.REVIEW_BOT_PAT }}
+          AUDIT_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NUMBER: ${{ needs.preflight.outputs.issue-number }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          SEVERITY: ${{ steps.review.outputs.review-severity }}
+          SUMMARY: ${{ steps.review.outputs.review-summary }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          # S2 red line: REVIEW_BOT_PAT MUST be a second identity (DONKY-XOTE),
+          # never the PR author. S6: fine-grained, single-repo, pull-requests:write,
+          # <=90 days. Branch protection enforces CODEOWNERS review independently.
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::REVIEW_BOT_PAT secret not set — cannot auto-approve. Configure per issue #126."
+            exit 1
+          fi
+          REVIEW_BODY="✅ **Auto-approved by Module 8 review-bot** (verdict=approve)
+
+          | Field | Value |
+          |---|---|
+          | AI severity | \`${SEVERITY}\` |
+          | AI summary | ${SUMMARY} |
+          | Workflow run | ${RUN_URL} |
+
+          Per plan B (issue #126): when Claude's structured verdict is \`approve\`,
+          the review-bot identity applies \`gh pr review --approve\` using
+          \`REVIEW_BOT_PAT\` (a distinct GitHub identity from the PR author,
+          satisfying PRD §7 S2). CODEOWNERS enforcement remains in effect via
+          branch protection on \`dev\`.
+
+          ---"
+
+          gh pr review "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --approve --body "$REVIEW_BODY"
+
+          if [ -n "$NUMBER" ]; then
+            GH_TOKEN="$AUDIT_TOKEN" gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(cat <<AUDIT
+          🤖 **Auto-approval applied** (plan B)
+
+          | Field | Value |
+          |---|---|
+          | PR | #${PR_NUMBER} |
+          | Verdict | approve (severity=${SEVERITY}) |
+          | Approver identity | review-bot (REVIEW_BOT_PAT) |
+          | Workflow run | ${RUN_URL} |
+
+          Next: merge-queue.yml picks up the approved state automatically.
+          AUDIT
+          )"
+          fi
+
       - name: Route by verdict (review:retry-N chain, PR #122)
         id: retry
         env:
