@@ -91,10 +91,14 @@ process.on('SIGINT', () => void shutdown('SIGINT'));
 // ---------------------------------------------------------------------------
 
 async function onMessage(event) {
-  // Feishu im.message.receive_v1 schema
-  const msg = event?.message;
-  const sender = event?.event?.sender;
-  if (!msg || !sender) return;
+  // Feishu schema 2.0: payload is { header, event: { sender, message } }
+  // Also tolerate legacy 1.0 where message/sender sit at top level.
+  const ev = event?.event ?? event;
+  const msg = ev?.message;
+  const sender = ev?.sender;
+  if (!msg || !sender) {
+    return;
+  }
 
   const openId = sender.sender_id?.open_id;
   if (!openId) return;
@@ -195,7 +199,7 @@ async function start() {
   larkClient = new lark.Client({
     appId: process.env.FEISHU_APP_ID,
     appSecret: process.env.FEISHU_APP_SECRET,
-    appType: lark.AppType.Selfbuild,
+    appType: lark.AppType.SelfBuild,
     domain: lark.Domain.Feishu,
   });
 
@@ -210,6 +214,7 @@ async function start() {
     eventDispatcher: new lark.EventDispatcher({})
       .register({
         'im.message.receive_v1': async (event) => onMessage(event),
+        'im.message.receive_v2': async (event) => onMessage(event),
       }),
   });
   larkWs = wsClient;

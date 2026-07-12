@@ -75,7 +75,10 @@ export async function routeCommand({ parsed, sessions, masterKey, deps, openId }
     case 'unbind':
       return withMask(await handleUnbind({ openId, unbindFn: deps.unbind }));
     case 'status':
-      return withMask(await handleStatus({ openId, lookupFn: deps.lookup }));
+      if (!masterKey) {
+        return withMask({ reply: 'Bridge is still initializing the keychain master key. Try again in a moment.' });
+      }
+      return withMask(await handleStatus({ openId, lookupFn: deps.lookup, masterKey }));
     case 'help':
       return withMask({ reply: HELP_TEXT });
     default:
