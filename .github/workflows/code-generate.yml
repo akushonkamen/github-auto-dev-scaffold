@@ -81,7 +81,7 @@ jobs:
     if: |
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
-      (github.event_name == 'issues' && github.event.action == 'labeled' && (startsWith(github.event.label.name, 'test:retry-') || startsWith(github.event.label.name, 'review:retry-')))
+      (github.event_name == 'issues' && github.event.action == 'labeled' && (startsWith(github.event.label.name, 'test:retry-') || startsWith(github.event.label.name, 'review:retry-') || startsWith(github.event.label.name, 'verify:retry-')))
     permissions:
       contents: write
       issues: write
@@ -126,7 +126,9 @@ jobs:
             # with prior test report.
             # PR #122 extension: review:retry-N label → re-run Module 4 with
             # prior review feedback (Claude flagged changes-requested).
-            if [ -z "$LABEL_NAME" ] || ! printf '%s' "$LABEL_NAME" | grep -qE '^(test|review):retry-[0-9]+$'; then
+            # PR #124 extension: verify:retry-N label → re-run Module 4 with
+            # prior verify report (Module 5 failed).
+            if [ -z "$LABEL_NAME" ] || ! printf '%s' "$LABEL_NAME" | grep -qE '^(test|review|verify):retry-[0-9]+$'; then
               echo "::warning::issues.labeled event with non-retry label '$LABEL_NAME' — skipping."
               exit 0
             fi
@@ -138,6 +140,8 @@ jobs:
             retry_kind="test"
             if printf '%s' "$LABEL_NAME" | grep -q '^review:retry-'; then
               retry_kind="review"
+            elif printf '%s' "$LABEL_NAME" | grep -q '^verify:retry-'; then
+              retry_kind="verify"
             fi
             retry_attempt="${LABEL_NAME#*:retry-}"
             # Locate the existing PR for this issue (head: claude/issue-N-*).
@@ -166,6 +170,15 @@ jobs:
                 --json comments --jq '
                   [.comments[]
                     | select(.body | test("AI Initial Review|REVIEW_VERDICT|Review retry"))
+                  ] | last | .body // ""
+                ' 2>/dev/null || echo "")
+            elif [ "$retry_kind" = "verify" ]; then
+              # PR #124: pull prior Module 5 verify report from the most recent
+              # "Verify retry" comment on the issue (posted by verify.yml).
+              prior_test_report=$(gh issue view "$issue_number" --repo "$GITHUB_REPOSITORY" \
+                --json comments --jq '
+                  [.comments[]
+                    | select(.body | test("Verify retry|Verify retries exhausted"))
                   ] | last | .body // ""
                 ' 2>/dev/null || echo "")
             else

@@ -293,13 +293,14 @@ jobs:
           EOF
           )"
 
-      - name: Transition labels (pass → verified, fail → verify:failed)
+      - name: Transition labels (pass → verified, fail → verify:retry-N or stage:failed)
         env:
           GH_TOKEN: ${{ secrets.CLAUDE_DEV_PAT }}
           NUMBER: ${{ needs.filter.outputs.issue-number }}
           VERDICT: ${{ steps.verdict.outputs.verdict }}
           PR_URL: ${{ github.event.pull_request.html_url }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          VERIFY_RETRY_MAX: ${{ vars.VERIFY_RETRY_MAX || '3' }}
         run: |
           set -eu
           # Remove verifying intermediate label either way.
@@ -309,10 +310,65 @@ jobs:
             # CLAUDE_DEV_PAT so the label event fires test.yml (Module 6).
             gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "verified"
             gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "✅ **Verify passed** — Module 6 (test) engaged. PR: $PR_URL"
-          else
-            gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "verify:failed"
-            gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "❌ **Verify failed** — see [workflow run]($RUN_URL). PR: $PR_URL"
+            exit 0
           fi
+
+          # Verdict = failed → calculate retry counter from existing verify:retry-N labels.
+          # Mirror test:retry-N (Module 6) and review:retry-N (Module 8, PR #122) pattern.
+          labels=$(gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json labels --jq '.labels | map(.name) | join(",")')
+          retry_count=0
+          if printf '%s' "$labels" | grep -q "verify:retry-3"; then retry_count=3; fi
+          if [ "$retry_count" -eq 0 ] && printf '%s' "$labels" | grep -q "verify:retry-2"; then retry_count=2; fi
+          if [ "$retry_count" -eq 0 ] && printf '%s' "$labels" | grep -q "verify:retry-1"; then retry_count=1; fi
+
+          max="${VERIFY_RETRY_MAX:-3}"
+          echo "retry_count=$retry_count max=$max"
+
+          if [ "$retry_count" -ge "$max" ]; then
+            # Max retries exhausted — escalate to maintainer.
+            gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "stage:failed" || true
+            gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(cat <<EOF
+          ❌ **Verify retries exhausted (${retry_count}/${max})**
+
+          Module 5 failed ${retry_count} time(s). The pipeline cannot automatically recover.
+          A maintainer must triage manually.
+
+          | Field | Value |
+          |---|---|
+          | PR | ${PR_URL} |
+          | Last workflow run | ${RUN_URL} |
+          | Retry labels | ${labels} |
+          EOF
+          )"
+            exit 0
+          fi
+
+          next=$((retry_count + 1))
+          # Clean up prior verify:retry-N labels so only the latest counter remains.
+          for old_n in 1 2 3 4 5; do
+            [ "$old_n" = "$next" ] && continue
+            gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "verify:retry-$old_n" 2>/dev/null || true
+          done
+          gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "verify:retry-${next}"
+
+          # Post audit comment with retry count + run URL — code-generate.yml
+          # parses this comment body to reconstruct prior-verify-report for Claude.
+          gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(cat <<EOF
+          🔄 **Verify retry ${next}/${max}**
+
+          | Field | Value |
+          |---|---|
+          | Retry | ${next} of ${max} |
+          | PR | ${PR_URL} |
+          | Prior workflow run | ${RUN_URL} |
+          | Retry label | verify:retry-${next} |
+
+          ---
+          code-generate.yml will auto-trigger on the \`verify:retry-${next}\` label,
+          fetch this comment as the prior-verify-report, and re-run Module 4 to
+          address the verify failure.
+          EOF
+          )"
 
   on-failure:
     needs: [smoke, targeted, aggregate]
