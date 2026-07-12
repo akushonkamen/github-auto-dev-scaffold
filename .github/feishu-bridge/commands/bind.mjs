@@ -221,9 +221,10 @@ export async function handleUnbind({ openId, unbindFn }) {
 /**
  * /status — show whether this open_id is bound (without revealing PAT).
  */
-export async function handleStatus({ openId, lookupFn }) {
+export async function handleStatus({ openId, lookupFn, masterKey }) {
   if (!openId) throw new Error('openId required');
-  const found = await lookupFn({ openId });
+  if (!masterKey) throw new Error('masterKey required');
+  const found = await lookupFn({ openId, masterKey });
   if (!found) {
     return { reply: 'Status: NOT BOUND\n\nRun /bind <github-username> to start binding.' };
   }

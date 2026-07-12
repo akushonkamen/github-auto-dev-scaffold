@@ -373,6 +373,7 @@ test('handleUnbind reports not-found when no binding', async () => {
 test('handleStatus reports NOT BOUND when lookup returns null', async () => {
   const r = await handleStatus({
     openId: 'ou_x',
+    masterKey: Buffer.alloc(32, 1),
     lookupFn: async () => null,
   });
   assert.match(r.reply, /NOT BOUND/);
@@ -381,6 +382,7 @@ test('handleStatus reports NOT BOUND when lookup returns null', async () => {
 test('handleStatus reports BOUND without revealing PAT', async () => {
   const r = await handleStatus({
     openId: 'ou_x',
+    masterKey: Buffer.alloc(32, 1),
     lookupFn: async () => ({ github_user: 'alice', bound_at: '2026-07-11T00:00:00Z', pat: Buffer.from('x') }),
   });
   assert.match(r.reply, /BOUND/);

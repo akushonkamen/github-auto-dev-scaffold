@@ -86,7 +86,7 @@ test('routeCommand: /status with no binding returns NOT BOUND', async () => {
   const r = await routeCommand({
     parsed: parseCommand('/status'),
     sessions,
-    masterKey: null,
+    masterKey: Buffer.alloc(32, 1),
     deps: { ...emptyDeps, lookup: async () => null },
     openId: 'ou_x',
   });

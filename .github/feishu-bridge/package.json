@@ -10,5 +10,12 @@
   "scripts": {
     "test": "node --test test/identity-store.test.mjs test/bind.test.mjs test/router.test.mjs",
     "start": "node bridge.mjs"
+  },
+  "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.70.0",
+    "codeowners": "^5.1.1",
+    "@octokit/rest": "^22.0.1",
+    "ansi-regex": "^6.2.2"
   }
 }
+
