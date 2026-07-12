@@ -34,6 +34,10 @@ import {
   wipeBuffer,
 } from './identity-store.mjs';
 import { parseCommand, routeCommand } from './router.mjs';
+import { fetchCodeownersWithEtag } from './commands/approve.mjs';
+
+// Default CODEOWNERS path inside the bound repo
+const CODEOWNERS_PATH = process.env.FEISHU_CODEOWNERS_PATH || '.github/CODEOWNERS';
 
 const REQUIRED_ENV = ['FEISHU_APP_ID', 'FEISHU_APP_SECRET'];
 const FORBIDDEN_MASTER_KEY_ENV = [
@@ -43,6 +47,9 @@ const FORBIDDEN_MASTER_KEY_ENV = [
 ];
 
 const sessions = new Map();
+// ETag cache for CODEOWNERS fetch — per-call GET + If-None-Match (S7: never trust
+// local-only cache). Cache is updated after each /approve call.
+const codeownersCache = { etag: null, content: null };
 let masterKey = null;
 let masterKeySource = null;
 let releaseLock = null;
@@ -90,6 +97,47 @@ process.on('SIGINT', () => void shutdown('SIGINT'));
 // Incoming message handler
 // ---------------------------------------------------------------------------
 
+/**
+ * Build injected deps for /approve. Lazily imports Octokit to keep boot fast.
+ * Cache reference shared with onMessage via module-level codeownersCache.
+ */
+function buildApproveDeps() {
+  return {
+    createOctokit: async (pat) => {
+      const { Octokit } = await import('@octokit/rest');
+      return new Octokit({ auth: pat });
+    },
+    fetchPRFiles: async (octokit, owner, repo, prNumber) => {
+      const files = await octokit.paginate(
+        'GET /repos/{owner}/{repo}/pulls/{pull_number}/files',
+        { owner, repo, pull_number: prNumber, per_page: 100 },
+        (response) => response.data.map((f) => f.filename),
+      );
+      return files;
+    },
+    fetchCodeowners: async (octokit, owner, repo, cache) => {
+      const r = await fetchCodeownersWithEtag({
+        octokit, owner, repo, path: CODEOWNERS_PATH, cache: cache ?? codeownersCache,
+      });
+      // Update cache on hit-or-miss for next call
+      codeownersCache.etag = r.etag;
+      codeownersCache.content = r.content;
+      return r;
+    },
+    postReview: async (octokit, owner, repo, prNumber, event) => {
+      return octokit.request('POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews', {
+        owner, repo, pull_number: prNumber, event,
+      });
+    },
+    postIssueComment: async (octokit, owner, repo, issueNumber, body) => {
+      return octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+        owner, repo, issue_number: issueNumber, body,
+      });
+    },
+    cache: codeownersCache,
+  };
+}
+
 async function onMessage(event) {
   // Feishu schema 2.0: payload is { header, event: { sender, message } }
   // Also tolerate legacy 1.0 where message/sender sit at top level.
@@ -124,6 +172,8 @@ async function onMessage(event) {
     sessions,
     masterKey,
     deps: { bind, unbind, lookup },
+    approveDeps: parsed.command === 'approve' ? buildApproveDeps() : null,
+    bindRepo: process.env.FEISHU_BIND_REPO || null,
     openId,
   });
 
@@ -219,7 +269,7 @@ async function start() {
   });
   larkWs = wsClient;
   console.log('[bridge] WebSocket long connection established');
-  console.log('[bridge] ready — listening for /bind /set-pat /unbind /status');
+  console.log('[bridge] ready — listening for /bind /set-pat /unbind /status /approve');
 }
 
 start().catch((e) => {

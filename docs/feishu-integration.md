@@ -196,11 +196,15 @@ security find-generic-password -s feishu-bridge -a master-key -w | wc -c   # sho
 # Set required app-credential env (NOT the master key — these are app creds, env is fine)
 export FEISHU_APP_ID="cli_xxxxxxxxxxxxxxxx"
 export FEISHU_APP_SECRET="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+# Required for /approve <PR#> (bare number) to know which repo to target.
+# If unset, users must pass a full PR URL: /approve https://github.com/owner/repo/pull/123
+export FEISHU_BIND_REPO="akushonkamen/github-auto-dev-scaffold"
 
 # Launch with pm2
 pm2 start .github/feishu-bridge/bridge.mjs --name feishu-bridge \
   --env FEISHU_APP_ID="$FEISHU_APP_ID" \
-  --env FEISHU_APP_SECRET="$FEISHU_APP_SECRET"
+  --env FEISHU_APP_SECRET="$FEISHU_APP_SECRET" \
+  --env FEISHU_BIND_REPO="$FEISHU_BIND_REPO"
 
 # Watch logs (60-minute no-ERROR AC check)
 pm2 logs feishu-bridge --lines 1000
@@ -213,7 +217,7 @@ Expected startup logs:
 [bridge] acquired single-instance lock
 [bridge] master_key_source=keychain
 [bridge] WebSocket long connection established
-[bridge] ready — listening for /bind /set-pat /unbind /status
+[bridge] ready — listening for /bind /set-pat /unbind /status /approve
 ```
 
 If `master_key_source=env` ever appears in logs, **stop immediately and
@@ -288,6 +292,8 @@ ensures the user owns both ends before the bridge stores a PAT.
 
 - `/status` — show current binding (without revealing PAT)
 - `/unbind` — wipe encrypted PAT from store
+- `/approve <PR#>` or `/approve <PR-url>` — approve a PR as the bound GitHub user
+  (enforces CODEOWNERS check; non-owners rejected with no GitHub side effects)
 - `/help` — list available commands
 
 ### Failure modes
