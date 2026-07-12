@@ -8,7 +8,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "node --test test/identity-store.test.mjs test/bind.test.mjs test/router.test.mjs test/codeowners.test.mjs test/approve.test.mjs",
+    "test": "node --test test/identity-store.test.mjs test/bind.test.mjs test/router.test.mjs test/codeowners.test.mjs test/approve.test.mjs test/pr-review.test.mjs test/card-action.test.mjs",
     "start": "node bridge.mjs"
   },
   "dependencies": {

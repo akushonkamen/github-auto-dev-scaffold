@@ -277,15 +277,17 @@ export async function postCard({ chatId, msgType = 'interactive', content, appId
 }
 
 /**
- * Build a text-card content payload for review-completed events.
- * Returns the JSON-stringified content for postCard.
+ * Build an interactive card payload for review-completed events.
  *
- * Card schema: msg_type=text (PR-2 minimal). PR-5 will upgrade to interactive
- * card with Approve/Request Changes buttons (disabled:true to avoid dead UI
- * before the bridge lands).
+ * Card schema v1 (PR-6): `msg_type=interactive`，含 Approve / Request Changes
+ * 按钮，按钮 `value` 携带 {owner, repo, pr_number}。bridge 收到
+ * `card.action.trigger` 后通过 actions/pr-review.mjs 路由。
+ *
+ * Owner/repo 来源：GITHUB_REPOSITORY env（GitHub Actions 默认注入
+ * `owner/repo` 格式），允许 PR_REPOSITORY env 覆盖。
  *
  * @param {{prNumber: number|string, prTitle: string, prUrl: string, reviewer?: string, verdict?: 'approved'|'changes_requested'|'completed'}} ctx
- * @returns {{text: string}}
+ * @returns {{msg_type: 'interactive', content: string}}
  */
 export function renderReviewCard({ prNumber, prTitle, prUrl, reviewer, verdict }) {
   const verdictEmoji = {
@@ -294,17 +296,57 @@ export function renderReviewCard({ prNumber, prTitle, prUrl, reviewer, verdict }
     completed: '✅',
   }[verdict] || '🔔';
 
-  const reviewerLine = reviewer ? `Reviewer: ${reviewer}\n` : '';
-  const text = [
-    `${verdictEmoji} PR #${prNumber} ${verdict || 'review'}`,
-    ``,
-    `${prTitle}`,
-    ``,
-    `${reviewerLine}`,
-    `URL: ${prUrl}`,
-  ].filter(Boolean).join('\n');
+  // owner/repo from env so the bridge can route card-action back to the right PR
+  const repoSlug = process.env.PR_REPOSITORY || process.env.GITHUB_REPOSITORY || '';
+  const [owner, repo] = repoSlug.split('/');
+  const hasValidTarget = Boolean(owner && repo);
 
-  return { text };
+  // Button value — only set when owner/repo known; otherwise omitted so bridge
+  // replies "missing PR target" rather than posting a malformed review.
+  const btnValue = hasValidTarget
+    ? { owner, repo, pr_number: Number(prNumber) }
+    : {};
+
+  const card = {
+    config: { wide_screen_mode: true },
+    header: {
+      title: { tag: 'plain_text', content: `${verdictEmoji} PR #${prNumber} ${verdict || 'review'}` },
+      template: verdict === 'changes_requested' ? 'red' : 'green',
+    },
+    elements: [
+      { tag: 'div', text: { tag: 'lark_md', content: `**${prTitle}**` } },
+    ],
+  };
+
+  if (reviewer) {
+    card.elements.push({ tag: 'div', text: { tag: 'lark_md', content: `Reviewer: ${reviewer}` } });
+  }
+  card.elements.push({ tag: 'div', text: { tag: 'lark_md', content: `[Open PR](${prUrl})` } });
+
+  // Buttons — Approve (green) + Request Changes (red)
+  // Notes:
+  //   - `tag: 'button'` + `type: 'default' | 'primary' | 'danger'`
+  //   - `value` is arbitrary JSON, bridge reads it on click
+  //   - Bridge verifies CODEOWNERS again before posting the review (S7)
+  card.elements.push({
+    tag: 'action',
+    actions: [
+      {
+        tag: 'button',
+        text: { tag: 'plain_text', content: '✅ Approve' },
+        type: 'primary',
+        value: { ...btnValue, action: 'approve' },
+      },
+      {
+        tag: 'button',
+        text: { tag: 'plain_text', content: '🔁 Request Changes' },
+        type: 'danger',
+        value: { ...btnValue, action: 'request_changes' },
+      },
+    ],
+  });
+
+  return { msg_type: 'interactive', content: JSON.stringify({ card }) };
 }
 
 // ---------------------------------------------------------------------------
@@ -517,11 +559,11 @@ async function main() {
   const reviewer = process.env.PR_REVIEWER || '';
   const verdict = process.env.PR_VERDICT || 'completed';
 
-  const content = renderReviewCard({ prNumber, prTitle, prUrl, reviewer, verdict });
+  const card = renderReviewCard({ prNumber, prTitle, prUrl, reviewer, verdict });
   const result = await postCard({
     chatId: FEISHU_CHAT_ID,
-    msgType: 'text',
-    content,
+    msgType: card.msg_type,
+    content: card.content,
     appId: FEISHU_APP_ID,
     appSecret: process.env.FEISHU_APP_SECRET,
   });

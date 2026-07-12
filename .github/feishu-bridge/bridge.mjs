@@ -35,6 +35,8 @@ import {
 } from './identity-store.mjs';
 import { parseCommand, routeCommand } from './router.mjs';
 import { fetchCodeownersWithEtag } from './commands/approve.mjs';
+import { handleApproveButton, APPROVE_BTN_TAG } from './card-actions/approve-button.mjs';
+import { handleRequestChangesButton, REQUEST_CHANGES_BTN_TAG } from './card-actions/request-changes.mjs';
 
 // Default CODEOWNERS path inside the bound repo
 const CODEOWNERS_PATH = process.env.FEISHU_CODEOWNERS_PATH || '.github/CODEOWNERS';
@@ -195,6 +197,71 @@ async function onMessage(event) {
 }
 
 // ---------------------------------------------------------------------------
+// Card action handler (PR-6) — interactive buttons on review.completed cards
+// ---------------------------------------------------------------------------
+
+/**
+ * onCardAction — handles `card.action.trigger` events from interactive cards.
+ *
+ * Button tags (set in sync.mjs renderReviewCard):
+ *   - approve_btn           → handleApproveButton
+ *   - request_changes_btn   → handleRequestChangesButton
+ *
+ * Each button's `value` carries { owner, repo, pr_number }.
+ *
+ * Replies go back to the clicking user via DM (open_id from sender).
+ */
+async function onCardAction(event) {
+  // Schema 2.0: event.event.{operator, action, token, context}
+  // Schema 1.0: top-level { operator, action, ... }
+  const ev = event?.event ?? event;
+  const action = ev?.action;
+  const operator = ev?.operator;
+  if (!action || !operator) return;
+
+  const openId = operator.open_id;
+  if (!openId) return;
+
+  const tag = action.tag;
+  const deps = buildApproveDeps();
+
+  let result;
+  try {
+    if (tag === APPROVE_BTN_TAG) {
+      result = await handleApproveButton({
+        action, openId, masterKey, lookupFn: lookup, deps,
+      });
+    } else if (tag === REQUEST_CHANGES_BTN_TAG) {
+      result = await handleRequestChangesButton({
+        action, openId, masterKey, lookupFn: lookup, deps,
+      });
+    } else {
+      // Unknown button — log and ignore (no reply to avoid spam)
+      console.log(`[bridge] unknown card action tag: ${tag}`);
+      return;
+    }
+  } catch (e) {
+    console.error(`[bridge] card action "${tag}" failed:`, e.message);
+    result = { reply: `Action failed: ${e.message}` };
+  }
+
+  if (!result?.reply) return;
+
+  try {
+    await larkClient.im.message.create({
+      params: { receive_id_type: 'open_id' },
+      data: {
+        receive_id: openId,
+        msg_type: 'text',
+        content: JSON.stringify({ text: result.reply }),
+      },
+    });
+  } catch (e) {
+    console.error('[bridge] card-action reply send failed:', e.message);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Startup
 // ---------------------------------------------------------------------------
 
@@ -265,11 +332,12 @@ async function start() {
       .register({
         'im.message.receive_v1': async (event) => onMessage(event),
         'im.message.receive_v2': async (event) => onMessage(event),
+        'card.action.trigger': async (event) => onCardAction(event),
       }),
   });
   larkWs = wsClient;
   console.log('[bridge] WebSocket long connection established');
-  console.log('[bridge] ready — listening for /bind /set-pat /unbind /status /approve');
+  console.log('[bridge] ready — listening for /bind /set-pat /unbind /status /approve + card actions');
 }
 
 start().catch((e) => {
@@ -280,4 +348,4 @@ start().catch((e) => {
   process.exit(1);
 });
 
-export { shutdown, onMessage };
+export { shutdown, onMessage, onCardAction };

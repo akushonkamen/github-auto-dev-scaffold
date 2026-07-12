@@ -304,6 +304,10 @@ ensures the user owns both ends before the bridge stores a PAT.
 | `/set-pat` reply "still in state 'awaiting_comment'" | Magic comment not yet detected | Wait for bridge poll cycle (every 30s) or check search API rate limit |
 | `/set-pat` reply "classic tokens rejected" | PAT is `ghp_`-prefixed (classic) | Create fine-grained PAT (`github_pat_` prefix) |
 | Bridge exits with "another feishu-bridge instance is running" | Stale lockfile from killed process | PID-check auto-steals stale locks; if real, run `pm2 stop feishu-bridge` first |
+| Card button click "missing PR target" reply | `PR_REPOSITORY` / `GITHUB_REPOSITORY` env unset when sync.mjs rendered the card | Set `PR_REPOSITORY=owner/repo` in the feishu-notify workflow env, or rely on GitHub Actions default `GITHUB_REPOSITORY` |
+| Card button click "Not bound" reply | Clicker never ran `/bind` + `/set-pat` | DM the bot `/bind <github-username>` first |
+| Card button click no reply at all | `card.action.trigger` not subscribed in Feishu app, or bridge not running | Re-check event subscription includes `card.action.trigger`; `pm2 status feishu-bridge` |
+| Bridge log "unknown card action tag" | sync.mjs emitted a button tag the bridge doesn't recognize | Confirm `.github/feishu-bridge/card-actions/*.mjs` tags match `renderReviewCard` output |
 
 ## Step 5 — Smoke Test (PR-2 onward)
 
@@ -345,9 +349,10 @@ Local Bridge (macOS host)                                 │
 - **PR-2**: postCard path implemented (chat notifications)
 - **PR-3**: bitable.upsert path implemented (Issue state mirror)
 - **PR-4**: local bridge added (WebSocket long connection)
-- **PR-5**: `/approve` command + interactive card buttons
-- **PR-6**: CODEOWNERS-aware routing (calls `@github/codeowners` with
-  mandatory ETag invalidation)
+- **PR-5**: `/approve` command + CODEOWNERS enforcement + ETag cache control
+- **PR-6**: interactive card buttons (Approve / Request Changes) + E2E + docs
+  收尾。card-action handler 复用 `actions/pr-review.mjs` 共享模块，与
+  `/approve` 命令等价（CODEOWNERS 检查 + audit comment）。
 
 ## Security Posture (mapped to S1-S7)
 
@@ -360,6 +365,129 @@ Local Bridge (macOS host)                                 │
 | S5 | Bridge runs as user-level process; no `--dangerously-skip-permissions` style bypass |
 | S6 | PAT encrypted at rest with AES-256-GCM, master key in Keychain (no env fallback) |
 | S7 | Every change to this integration (`.github/actions/feishu-sync/`, this doc, observer workflow) goes through Issue→PR with mandatory `pipeline-fix` audit comment |
+
+## E2E Validation (PR-6 onward)
+
+Four scenarios must pass before declaring v1 done. Each scenario is documented
+with the commands to run, the expected observation, and the S7 red-line check.
+
+### Scenario 1 — Owner approves via `/approve` command
+
+```bash
+# Pre-req: alice is bound (DM bot /bind alice → magic comment → /set-pat)
+# Pre-req: PR #N exists, alice is CODEOWNER of at least one file
+
+# In Feishu DM to the bot:
+/approve #N
+# or
+/approve https://github.com/<owner>/<repo>/pull/N
+```
+
+Expected:
+
+- Bot replies `✅ approved PR #N in <owner>/<repo> as @alice`
+- PR shows a new `APPROVE` review from alice
+- PR shows a new comment with `action=approved via feishu by=@alice feishu_user_hash=<12-hex>`
+- `grep -E 'github_pat_|t-g\.|t-cl\.|cli_[a-f0-9]{32}' .github/feishu-bridge/*.mjs` → 0 hits (S4)
+
+### Scenario 2 — Non-owner is rejected
+
+```bash
+# Pre-req: eve is bound, but NOT a CODEOWNER of any file in PR #N
+/approve #N
+```
+
+Expected (S7 red line — zero GitHub side effects):
+
+- Bot replies `❌ Rejected: @eve is not a CODEOWNER of any file in PR #N`
+- PR has NO new review
+- PR has NO new comment
+- `gh api repos/<owner>/<repo>/pulls/N/reviews` — most recent review is unchanged
+
+### Scenario 3 — Owner approves via card button
+
+```bash
+# Pre-req: review.completed card has been delivered to the Feishu chat
+# Pre-req: alice is CODEOWNER
+
+# Click the "✅ Approve" button on the card
+```
+
+Expected (equivalent to Scenario 1):
+
+- Bot DMs alice `✅ approved PR #N in <owner>/<repo> as @alice`
+- PR shows new APPROVE review + audit comment (same body shape as Scenario 1)
+- Button `value` payload `{owner, repo, pr_number, action}` reached the bridge
+  via `card.action.trigger`
+
+### Scenario 4 — WebSocket reconnect补发
+
+The Feishu SDK WebSocket auto-reconnects on disconnect. To verify cache +
+binding survive a transient disconnect:
+
+```bash
+# Simulate network blip
+pm2 restart feishu-bridge
+
+# Within 5 seconds, bridge logs:
+#   [bridge] acquired single-instance lock
+#   [bridge] master_key_source=keychain
+#   [bridge] WebSocket long connection established
+#   [bridge] ready — listening for /bind /set-pat /unbind /status /approve + card actions
+
+# Then immediately DM /status — must reply within 2 seconds with binding info
+# (proves Keychain decryption path works on restart)
+```
+
+For full E2E coverage on every PR touching `.github/feishu-bridge/` or
+`.github/actions/feishu-sync/`:
+
+```bash
+cd .github/feishu-bridge
+npm test                    # 130+ unit tests, all green
+
+# Secret leak scan (every PR)
+grep -RE 'github_pat_[A-Za-z0-9_]{40,}|ghp_[A-Za-z0-9]{36}|cli_[a-f0-9]{32}' \
+  .github/actions/feishu-sync/ .github/feishu-bridge/ 2>/dev/null | grep -v node_modules
+# expected: empty
+
+# Optional: trufflehog if installed
+trufflehog filesystem .github/actions/feishu-sync/ .github/feishu-bridge/ \
+  --only-verified
+# expected: 0 verified findings
+```
+
+## Phase B Migration Guide (post-v1)
+
+v1 ships as a local-bridge Phase A architecture (one bridge process per
+machine, single repo binding). Phase B lifts these restrictions. Triggers
+recorded in plan ADR Follow-ups (transition when ANY of these holds):
+
+| Trigger | Threshold | Phase B action |
+|---|---|---|
+| Multi-repo | Bridge instances > 1 (different repos) | Deploy one bridge per repo OR consolidate into a single bridge with multi-repo routing |
+| User count | Bound users > 10 | Migrate identity-store from single JSON to SQLite (already file-mode 0600, schema compatible) |
+| Payload size | Bitable JSON payload > 1 MB | Switch from per-field update to batch `batch_update` API; archive closed Issues > 90 days |
+| Uptime | Bridge uptime > 30 days continuous | Move from pm2 to systemd with auto-restart; add `/healthz` HTTP probe |
+
+### What does NOT change in Phase B
+
+- **P3 red line**: master key stays in OS Keychain — never env, never CI
+- **S6 red line**: PATs stay fine-grained (`github_pat_`), single-repo, ≤90 days
+- **S7 red line**: every change to this integration still goes through
+  Issue→PR with `pipeline-fix` audit comment
+- **WebSocket long connection**: Feishu SDK mode is unchanged — no public
+  callback URL is required in Phase B either
+
+### What changes in Phase B
+
+- **OAuth user-token flow**: Phase B may add OAuth to replace the magic-comment
+  + `/set-pat` flow for end users. This is the only v1 boundary that requires
+  Feishu-side app reconfiguration.
+- **Multi-repo fanout**: bridge reads `FEISHU_BIND_REPOES` (plural) and routes
+  by button `value.repo` rather than env-var default.
+- **Cross-workspace Bitable rollup**: optional aggregation table in a separate
+  Bitable app — gated by explicit `FEISHU_ROLLUP_APP_TOKEN` env var.
 
 ## References
 
