@@ -21,6 +21,7 @@ import {
   handleStatus,
   maskPAT,
 } from './commands/bind.mjs';
+import { handleApprove } from './commands/approve.mjs';
 
 const COMMAND_PREFIX = '/';
 
@@ -39,6 +40,7 @@ const HELP_TEXT =
   '  /set-pat <github_pat_...>   Store your fine-grained PAT (after /bind verification)\n' +
   '  /unbind                     Remove your binding\n' +
   '  /status                     Show your current binding\n' +
+  '  /approve <PR#|PR-url>       Approve a PR (CODEOWNERS check enforced)\n' +
   '  /help                       Show this help\n\n' +
   'Note: PAT must be fine-grained (github_pat_ prefix). Classic tokens are rejected.';
 
@@ -49,10 +51,13 @@ const HELP_TEXT =
  * @param {object} opts.parsed — output of parseCommand
  * @param {Map} opts.sessions
  * @param {Buffer|null} opts.masterKey — null until bridge resolves keychain key
- * @param {object} opts.deps — { bind, unbind, lookup } identity-store functions
+ * @param {object} opts.deps — identity-store fns: { bind, unbind, lookup }
+ * @param {object} [opts.approveDeps] — injected GitHub API surface for /approve
+ *   (see commands/approve.mjs handleApprove `deps` arg)
+ * @param {string|null} [opts.bindRepo] — owner/repo default for bare PR numbers
  * @param {string} opts.openId
  */
-export async function routeCommand({ parsed, sessions, masterKey, deps, openId }) {
+export async function routeCommand({ parsed, sessions, masterKey, deps, approveDeps, bindRepo, openId }) {
   if (!parsed) {
     return { reply: null, handled: false };
   }
@@ -79,6 +84,23 @@ export async function routeCommand({ parsed, sessions, masterKey, deps, openId }
         return withMask({ reply: 'Bridge is still initializing the keychain master key. Try again in a moment.' });
       }
       return withMask(await handleStatus({ openId, lookupFn: deps.lookup, masterKey }));
+    case 'approve':
+      if (!masterKey) {
+        return withMask({ reply: 'Bridge is still initializing the keychain master key. Try again in a moment.' });
+      }
+      if (!approveDeps) {
+        return withMask({ reply: '/approve not configured on this bridge (missing approveDeps).' });
+      }
+      return withMask(
+        await handleApprove({
+          openId,
+          args: parsed.args,
+          masterKey,
+          lookupFn: deps.lookup,
+          bindRepo,
+          deps: approveDeps,
+        }),
+      );
     case 'help':
       return withMask({ reply: HELP_TEXT });
     default:
