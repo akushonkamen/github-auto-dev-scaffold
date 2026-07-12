@@ -112,11 +112,11 @@ jobs:
 
           # 5. Required checks must all report SUCCESS
           #    Check names are the job keys from each module's workflow:
-          #    - branch-protection.yml job: check
-          #    - self-verify.yml    job: self-verify (Module 5)
-          #    - test.yml           job: test        (Module 6)
-          #    - review.yml         job: review      (Module 8)
-          for check_name in "check" "self-verify" "test" "review"; do
+          #    - branch-protection.yml job: check      (CI gate)
+          #    - verify.yml         job: aggregate     (Module 5 — 2-oracle consensus)
+          #    - test.yml           job: test          (Module 6)
+          #    - review.yml         job: review        (Module 8)
+          for check_name in "check" "aggregate" "test" "review"; do
             conclusion=$(gh pr checks "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
               --json name,conclusion \
               --jq "[.[] | select(.name == \"$check_name\")] | .[0].conclusion // empty" \
