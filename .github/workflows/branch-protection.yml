@@ -56,7 +56,7 @@ jobs:
           exit 1
 
       - name: Post audit comment (acceptance)
-        if: success()
+        if: success() && (github.event.action == 'opened' || github.event.action == 'reopened' || github.event.action == 'labeled')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}

@@ -307,7 +307,7 @@ jobs:
     permissions:
       issues: write
     steps:
-      - name: Mark stage:failed
+      - name: Mark stage:failed + clean intermediate labels
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NUMBER: ${{ github.event.issue.number }}
@@ -317,5 +317,10 @@ jobs:
             exit 0
           fi
           gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "stage:failed" || true
+          # M3 fix: test job applies `testing` before the composite runs (line 93).
+          # On composite failure that label is never removed, leaving the issue in
+          # a contradictory state (testing + stage:failed + verified). Mirror the
+          # cleanup pattern verify.yml:306 uses for `verifying`.
+          gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "testing" 2>/dev/null || true
           gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" \
             --body "⚠️ Test job failed (infrastructure/engine error — not a test failure). See [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details. A maintainer will triage manually." || true
