@@ -10,7 +10,7 @@
 #   - push to dev that touches .github/labels.yml
 #   - workflow_dispatch (manual re-sync)
 #
-# Engine: crazy-max/ghaction-github-labeler@v5 (the action labels.yml's own
+# Engine: crazy-max/ghaction-github-labeler@v6 (the action labels.yml's own
 # preamble references).
 #
 # SECURITY (PRD §7):
@@ -50,7 +50,7 @@ jobs:
           persist-credentials: false
 
       - name: Sync labels from .github/labels.yml
-        uses: crazy-max/ghaction-github-labeler@v5
+        uses: crazy-max/ghaction-github-labeler@v6
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           yaml-file: .github/labels.yml
