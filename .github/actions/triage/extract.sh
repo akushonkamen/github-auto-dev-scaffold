@@ -1,53 +1,133 @@
 #!/usr/bin/env bash
 # Parse LLM engine output for the triage composite action.
 #
+# PR #132: GLM passthrough does not reliably honor --json-schema strict
+# mode. Claude now posts its decision as an issue comment containing a
+# hidden <!-- TRIAGE_VERDICT {...} --> JSON block. This script tolerates:
+#   (a) pure JSON
+#   (b) prose + JSON mixed
+#   (c) ```json``` fenced JSON
+#   (d) hidden HTML-comment-wrapped JSON (TRIAGE_VERDICT block)
+# If all extraction strategies fail, we fall back to decision="reply" with
+# the raw output as comment_body — this lets clarify-loop take over
+# gracefully instead of hard-failing the triage workflow.
+#
 # Input env var:
-#   STRUCTURED — claude-code-action `structured_output` (JSON string), set
-#                when --json-schema is passed via claude_args.
+#   STRUCTURED — claude-code-action `structured_output` OR the latest issue
+#                comment body containing the TRIAGE_VERDICT block.
 #
 # Writes to GITHUB_OUTPUT:
 #   decision         — "reply" | "work"
 #   comment_body     — multi-line markdown (heredoc EOF delimiter)
 #   suggested_labels — comma-separated string (empty if none)
 #   confidence       — float in [0,1]
-#   workload_class   — "trivial" | "standard" | "complex" (M3, defaults to "standard")
-#
-# claude-code-action enforces the JSON schema via --json-schema, so the
-# string should be a single JSON object. We validate explicitly and fail
-# loudly on any deviation — silent fallbacks hide integration bugs.
+#   workload_class   — "trivial" | "standard" | "complex"
 set -euo pipefail
 
 raw="${STRUCTURED:-}"
 
 if [ -z "$raw" ]; then
-  echo "::error::structured_output is empty."
-  echo "::error::Verify that --json-schema is in claude_args and the action did not fail."
+  echo "::error::STRUCTURED env is empty."
+  echo "::error::Verify that Claude posted its TRIAGE_VERDICT comment."
   exit 1
 fi
 
-# Validate: must be a JSON object matching the schema.
-if ! printf '%s' "$raw" | jq -e '
-  (.decision == "reply" or .decision == "work")
-  and (.comment_body | type == "string" and length >= 10)
-  and (.suggested_labels | type == "array")
-  and (.confidence | type == "number" and . >= 0 and . <= 1)
-' >/dev/null 2>&1; then
-  echo "::error::Engine output did not match the {decision, comment_body, suggested_labels, confidence} schema."
+# --- extraction strategies (try each in order) -------------------------------
+extract_json() {
+  local input="$1"
+  # Strategy 1: hidden TRIAGE_VERDICT block
+  local block
+  block=$(printf '%s' "$input" \
+    | sed -n '/<!-- TRIAGE_VERDICT/,/-->/p' \
+    | sed -e '1d;$d' \
+    | tr -d '\n' \
+    | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+  if [ -n "$block" ] && printf '%s' "$block" | jq -e . >/dev/null 2>&1; then
+    printf '%s' "$block"
+    return 0
+  fi
+  # Strategy 2: ```json ... ``` fenced block (last match wins)
+  block=$(printf '%s' "$input" \
+    | awk '/```json/{flag=1;next}/```/{flag=0}flag' \
+    | tr -d '\n' \
+    | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+  if [ -n "$block" ] && printf '%s' "$block" | jq -e . >/dev/null 2>&1; then
+    printf '%s' "$block"
+    return 0
+  fi
+  # Strategy 3: first `{` ... last `}` substring
+  block=$(printf '%s' "$input" \
+    | sed -n 's/.*\({.*}\).*/\1/p' \
+    | tr -d '\n' \
+    | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+  if [ -n "$block" ] && printf '%s' "$block" | jq -e . >/dev/null 2>&1; then
+    printf '%s' "$block"
+    return 0
+  fi
+  # Strategy 4: input is already pure JSON
+  if printf '%s' "$input" | jq -e . >/dev/null 2>&1; then
+    printf '%s' "$input" | tr -d '\n'
+    return 0
+  fi
+  return 1
+}
+
+json=$(extract_json "$raw") || json=""
+
+if [ -z "$json" ]; then
+  echo "::warning::All JSON extraction strategies failed. Falling back to decision=reply."
+  echo "::warning::Clarify-loop will take over to gather more info from the issue author."
   echo "Raw output (first 500 chars):"
   printf '%s' "$raw" | head -c 500 | sed 's/^/  raw> /'
   echo ""
-  exit 1
+  # Fallback: safe defaults — let clarify-loop triage it manually.
+  echo "decision=reply"                 >> "$GITHUB_OUTPUT"
+  echo "confidence=0.3"                 >> "$GITHUB_OUTPUT"
+  echo "suggested_labels="              >> "$GITHUB_OUTPUT"
+  echo "workload_class=complex"         >> "$GITHUB_OUTPUT"
+  {
+    echo "comment_body<<COMMENT_BODY_EOF"
+    echo "I couldn't parse the triage decision automatically. Could you provide more detail on:"
+    echo ""
+    echo "- The expected behavior"
+    echo "- Any relevant acceptance criteria"
+    echo "- Affected files or modules"
+    echo ""
+    echo "(Triage parse fallback — raw LLM output is in the workflow logs.)"
+    echo "COMMENT_BODY_EOF"
+  } >> "$GITHUB_OUTPUT"
+  echo "Parsed triage output (fallback): decision=reply workload_class=complex"
+  exit 0
 fi
 
-# Extract individual fields.
-decision="$(printf '%s' "$raw" | jq -r '.decision')"
-comment_body="$(printf '%s' "$raw" | jq -r '.comment_body')"
-suggested_labels="$(printf '%s' "$raw" | jq -r '.suggested_labels | if length == 0 then "" else join(",") end')"
-confidence="$(printf '%s' "$raw" | jq -r '.confidence')"
-# M3: workload_class is optional in the schema; default to "standard" if absent.
-# This keeps backwards compatibility with engines that haven't picked up the
-# new field yet. M8 replaces AUTO_ACCEPT_ENABLED with this classification.
-workload_class="$(printf '%s' "$raw" | jq -r '.workload_class // "standard"')"
+# Validate the extracted JSON has the required shape. Coerce missing/invalid
+# fields to safe defaults rather than failing — the goal is non-blocking.
+decision=$(printf '%s' "$json" | jq -r '.decision // "reply"')
+case "$decision" in
+  reply|work) ;;
+  *)
+    echo "::warning::decision has unexpected value '$decision'; coercing to 'reply'"
+    decision="reply"
+    ;;
+esac
+
+comment_body=$(printf '%s' "$json" | jq -r '.comment_body // ""')
+if [ "${#comment_body}" -lt 10 ]; then
+  echo "::warning::comment_body is empty or < 10 chars; using placeholder."
+  comment_body="(Triage could not extract a clear comment_body. Please clarify the issue.)"
+fi
+
+suggested_labels=$(printf '%s' "$json" | jq -r '.suggested_labels | if type == "array" then (if length == 0 then "" else map(tostring) | join(",") end) else "" end')
+
+confidence=$(printf '%s' "$json" | jq -r '.confidence // 0.5')
+case "$confidence" in
+  ''|*[!0-9.]*) confidence=0.5 ;;
+esac
+# Clamp to [0,1]
+awk -v c="$confidence" 'BEGIN { if (c+0 < 0) c=0; if (c+0 > 1) c=1; printf "%.3f", c+0 }' \
+  > /tmp/_conf.$$ && confidence=$(cat /tmp/_conf.$$) && rm -f /tmp/_conf.$$
+
+workload_class=$(printf '%s' "$json" | jq -r '.workload_class // "standard"')
 case "$workload_class" in
   trivial|standard|complex) ;;
   *)
@@ -61,7 +141,6 @@ echo "confidence=$confidence"             >> "$GITHUB_OUTPUT"
 echo "suggested_labels=$suggested_labels" >> "$GITHUB_OUTPUT"
 echo "workload_class=$workload_class"     >> "$GITHUB_OUTPUT"
 
-# Multi-line output via heredoc delimiter (canonical GITHUB_OUTPUT pattern).
 {
   echo "comment_body<<COMMENT_BODY_EOF"
   printf '%s\n' "$comment_body"
