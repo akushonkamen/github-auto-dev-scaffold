@@ -11,6 +11,15 @@
 #   - workflow_run.completed              — module summary artifact emitted
 #   - push (claude/issue-*)               — development branch activity
 #
+# Issue-number resolver (workflow_run path):
+#   1. head_branch "issue-N" regex
+#   2. head_commit.message "closes #N" / "fixes #N"
+#   3. pull_requests[0].body (via gh api) "closes #N"
+#   4. display_title first integer (fragile last resort)
+#   Known gap: issue-event-triggered workflows running on `dev` still skip
+#   (no signal in workflow_run payload). Closing that needs each module
+#   workflow to upload an issue-context artifact — future PR.
+#
 # SECURITY POSTURE (PRD §7):
 #   - permissions: contents: read, issues: read, actions: read
 #     (S1: NEVER contents:write; issues:read only)
@@ -91,16 +100,57 @@ jobs:
               etype="issues.${{ github.event.action }}"
               ;;
             workflow_run)
+              # Resolver fallback chain (most reliable first):
+              #   1. head_branch matches "issue-N" — workflow ran on a PR branch
+              #   2. head_commit.message has "closes #N" / "fixes #N" / "#N" —
+              #      pipeline-fix PR merges into dev
+              #   3. pull_requests[].body (fetched via gh api) has "closes #N" —
+              #      PR-triggered workflow runs
+              #   4. display_title first integer — fragile last resort
+              #
+              # Known gap: issue-event-triggered workflows (e.g. triage-issue
+              # fired by issues.opened) run on `dev`, so head_branch=dev and
+              # head_commit.message is whatever last shipped to dev. These
+              # runs still skip. Closing that gap needs each module workflow
+              # to upload an issue-context artifact (future PR).
+              repo="${{ github.repository }}"
               head="${{ github.event.workflow_run.head_branch }}"
               number=$(printf '%s' "$head" | sed -nE 's|.*issue-([0-9]+).*|\1|p' || true)
+
+              if [ -z "$number" ]; then
+                commit_msg="${{ github.event.workflow_run.head_commit.message }}"
+                number=$(printf '%s' "$commit_msg" | sed -nE 's|.*closes #([0-9]+).*|\1|pi' \
+                      | head -1 || true)
+                if [ -z "$number" ]; then
+                  number=$(printf '%s' "$commit_msg" | sed -nE 's|.*fixes #([0-9]+).*|\1|pi' \
+                      | head -1 || true)
+                fi
+              fi
+
+              if [ -z "$number" ]; then
+                # PR-linked workflow runs: payload exposes pull_requests[]
+                pr_array='${{ github.event.workflow_run.pull_requests }}'
+                pr_count=$(printf '%s' "$pr_array" | python3 -c \
+                  "import sys,json; d=json.loads(sys.stdin.read() or '[]'); print(len(d))" 2>/dev/null || echo 0)
+                if [ "${pr_count:-0}" -gt 0 ]; then
+                  pr_url=$(printf '%s' "$pr_array" | python3 -c \
+                    "import sys,json; d=json.loads(sys.stdin.read()); print(d[0].get('url',''))" 2>/dev/null || echo "")
+                  if [ -n "$pr_url" ]; then
+                    pr_body=$(gh api "$pr_url" --jq '.body' 2>/dev/null || echo "")
+                    number=$(printf '%s' "$pr_body" | sed -nE 's|.*closes #([0-9]+).*|\1|pi' \
+                          | head -1 || true)
+                  fi
+                fi
+              fi
+
               if [ -z "$number" ]; then
                 name="${{ github.event.workflow_run.display_title }}"
                 number=$(printf '%s' "$name" | grep -oE '[0-9]+' | head -1 || true)
               fi
+
               etype="workflow_run.completed"
               # Resolve PR info if the workflow_run originated from a PR branch
               if [ -n "$number" ]; then
-                repo="${{ github.repository }}"
                 pr_json=$(gh api "repos/${repo}/pulls/$number" 2>/dev/null || echo "")
                 if [ -n "$pr_json" ]; then
                   pr_number="$number"
