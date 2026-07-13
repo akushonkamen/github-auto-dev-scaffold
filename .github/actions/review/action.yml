@@ -32,6 +32,10 @@ inputs:
   api-key:
     description: "Engine provider API key (LLM_API_KEY for GLM passthrough)"
     required: true
+  api-key-backup:
+    description: "Backup API key for 429 quota-exhaustion fallback (LLM_API_KEY_BACKUP). Empty disables retry."
+    required: false
+    default: ""
   anthropic-base-url:
     description: "Anthropic-compatible API base URL. Empty = Anthropic default."
     required: false
@@ -152,6 +156,7 @@ runs:
     - name: Review via Claude (DeepSeek passthrough)
       if: inputs.engine == 'claude'
       id: claude-run
+      continue-on-error: true
       uses: anthropics/claude-code-action@v1
       env:
         ANTHROPIC_BASE_URL: ${{ inputs.anthropic-base-url }}
@@ -284,6 +289,161 @@ runs:
           After completing the review and posting the comment, report a one-line
           summary: "AI review posted on PR #${{ inputs.pr-number }}. Findings: N
           issues noted."
+    - name: Detect 429 quota exhaustion (primary key)
+      id: detect-429
+      if: always()
+      shell: bash
+      env:
+        EXEC_FILE: ${{ steps.claude-run.outputs.execution_file }}
+      run: |
+        set -uo pipefail
+        needs_retry="false"
+        if [ -n "$EXEC_FILE" ] && [ -f "$EXEC_FILE" ]; then
+          if grep -qE '"is_error"[[:space:]]*:[[:space:]]*true' "$EXEC_FILE" 2>/dev/null \
+             && grep -q '429' "$EXEC_FILE" 2>/dev/null; then
+            needs_retry="true"
+            echo "::notice::Primary LLM key hit 429 quota — retrying with backup key."
+          fi
+        fi
+        echo "needs-retry=$needs_retry" >> "$GITHUB_OUTPUT"
+
+    - name: Review via Claude (backup key — primary hit 429)
+      if: steps.detect-429.outputs.needs-retry == 'true' && inputs.api-key-backup != ''
+      id: claude-run-backup
+      continue-on-error: true
+      uses: anthropics/claude-code-action@v1
+      env:
+        ANTHROPIC_BASE_URL: ${{ inputs.anthropic-base-url }}
+      with:
+        anthropic_api_key: ${{ inputs.api-key-backup }}
+        github_token: ${{ inputs.repo-token }}
+        settings: ${{ steps.cfg.outputs.settings }}
+        prompt: |
+          You are Module 8 (Review) of the GithubAutoDev pipeline — AI initial
+          review.  Your job is to review the PR diff for correctness, security,
+          and compliance against the project's reference documents.  You MUST
+          post your findings as a PR comment.
+
+          ## Critical rules (violating any of these is a pipeline bug)
+
+          1. **NEVER approve the PR.**  Final approval is human per PRD §6.
+             Do not use `gh pr review --approve` or any approval mechanism.
+             You may only comment.
+          2. **NEVER request changes or close the PR.**  You are an advisor,
+             not a gatekeeper.
+          3. **NEVER print tokens, API keys, or environment variable values**
+             (S4).  Any key-like pattern in your output is a pipeline failure.
+
+          ## PR context
+
+          | Field | Value |
+          |---|---|
+          | PR number | #${{ inputs.pr-number }} |
+          | PR title | ${{ steps.context.outputs.pr-title }} |
+          | PR URL | ${{ steps.context.outputs.pr-url }} |
+          | Head branch | `${{ steps.context.outputs.pr-head }}` |
+          | Base branch | `${{ steps.context.outputs.pr-base }}` |
+          | Issue | #${{ inputs.issue-number }} — ${{ steps.context.outputs.issue-title }} |
+
+          ## Issue body (acceptance criteria reference)
+
+          ```
+          ${{ steps.context.outputs.issue-body }}
+          ```
+
+          ## PR diff
+
+          ```diff
+          ${{ steps.context.outputs.diff }}
+          ```
+
+          ## Review process
+
+          1. Read the reference documents:
+             - `CLAUDE.md` — architecture map, module structure, security red lines
+             - `docs/security.md` — S1-S7 red lines (these take precedence over every feature)
+             - `docs/composite-action-spec.md` — composite action interface spec
+
+          2. Check the PR diff against:
+             - **Security (S1-S7):** Does the change respect permissions (S1)?
+               Does it gate on `accepted` label (S2)?  Least privilege secrets (S3)?
+               No token exfiltration (S4)?  No sandbox bypass (S5)?
+               PAT handling per S6?  Pipeline-fix escape hatch rules (S7)?
+             - **Correctness:** Does the implementation satisfy the acceptance
+               criteria in the issue body?
+             - **Compliance:** Does it match the composite action spec interface?
+               Does it follow the module pattern (trigger, permissions, on-failure)?
+
+          3. Post your findings as a PR comment using `gh pr comment`:
+             ```
+             gh pr comment ${{ inputs.pr-number }} --body "..."
+             ```
+
+             The comment body must be a structured review:
+
+             > ## 🤖 AI Initial Review (Module 8)
+             >
+             > | Check | Status | Notes |
+             > |---|---|---|
+             > | S1 (permissions) | ✅ / ⚠️ / ❌ | ... |
+             > | S2 (accepted gate) | ✅ / ⚠️ / ❌ | ... |
+             > | S3 (least privilege) | ✅ / ⚠️ / ❌ | ... |
+             > | S4 (no token leak) | ✅ / ⚠️ / ❌ | ... |
+             > | S5 (no sandbox bypass) | ✅ / ⚠️ / ❌ | ... |
+             > | S6 (PAT handling) | ✅ / ⚠️ / ❌ | ... |
+             > | S7 (pipeline-fix) | ✅ / ⚠️ / ❌ | ... |
+             > | Acceptance criteria | ✅ / ⚠️ / ❌ | ... |
+             > | Composite spec compliance | ✅ / ⚠️ / ❌ | ... |
+             >
+             > ### Summary
+             >
+             > <one-paragraph summary of findings>
+             >
+             > ### Detailed findings
+             >
+             > <per-finding detail: what was checked, what was found, severity>
+             >
+             > ---
+             > ⚠️ This is an AI initial review only.  **Final approval is human** (PRD §6).
+             > A CODEOWNER must review and approve before merge.
+             >
+             > 🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+          4. If `${{ inputs.dry-run }}` is `true`, report what you WOULD do but
+             skip any mutating commands (`gh pr comment`).
+
+          ## Verdict JSON (mandatory)
+
+          After the human-readable review comment, you MUST append a hidden
+          HTML comment block carrying a structured JSON verdict. The downstream
+          workflow parses this to drive the `review:retry-N` retry chain
+          (see .github/workflows/review.yml). Format:
+
+          ```
+          <!-- REVIEW_VERDICT
+          {"verdict":"approve|changes-requested","severity":"high|medium|low|none","summary":"<one-line plain-text summary, no quotes escaped>","findings":[{"id":"S1","status":"pass|warn|fail","note":"..."}]}
+          -->
+          ```
+
+          Rules:
+          - `verdict` MUST be exactly `"approve"` (no S1-S7 fail, no high-sev
+            finding, acceptance criteria met) or `"changes-requested"` (any
+            fail, or any high-severity warn).
+          - `severity` = highest severity across all findings. Use `none` only
+            when no findings at all.
+          - `summary` is a single line, plain text, ≤200 chars, no newlines.
+          - The JSON MUST be valid (workflow parses with `jq`); do not include
+            trailing commas or comments inside the JSON.
+          - The block MUST be the LAST thing in the PR comment, after the
+            "Final approval is human" footer.
+          - Only emit ONE `REVIEW_VERDICT` block per comment.
+
+          ## Output
+
+          After completing the review and posting the comment, report a one-line
+          summary: "AI review posted on PR #${{ inputs.pr-number }}. Findings: N
+          issues noted."
+
     - name: Review via Codex
       if: inputs.engine == 'codex'
       id: codex-run

@@ -35,6 +35,10 @@ inputs:
   api-key:
     description: "Engine provider API key (LLM_API_KEY for GLM passthrough)"
     required: true
+  api-key-backup:
+    description: "Backup API key for 429 quota-exhaustion fallback (LLM_API_KEY_BACKUP). Empty disables retry."
+    required: false
+    default: ""
   anthropic-base-url:
     description: "Anthropic-compatible API base URL. Empty = Anthropic default."
     required: false
@@ -165,6 +169,7 @@ runs:
     - name: Self-verify via Claude (or GLM via base-url passthrough)
       if: inputs.engine == 'claude'
       id: claude-run
+      continue-on-error: true
       uses: anthropics/claude-code-action@v1
       env:
         ANTHROPIC_BASE_URL: ${{ inputs.anthropic-base-url }}
@@ -218,11 +223,86 @@ runs:
         settings: ${{ steps.cfg.outputs.settings }}
         claude_args: "--json-schema ${{ steps.cfg.outputs.schema }} --disallowedTools '${{ steps.cfg.outputs.disallowed }}'"
 
+    - name: Detect 429 quota exhaustion (primary key)
+      id: detect-429
+      if: always()
+      shell: bash
+      env:
+        EXEC_FILE: ${{ steps.claude-run.outputs.execution_file }}
+      run: |
+        set -uo pipefail
+        needs_retry="false"
+        if [ -n "$EXEC_FILE" ] && [ -f "$EXEC_FILE" ]; then
+          if grep -qE '"is_error"[[:space:]]*:[[:space:]]*true' "$EXEC_FILE" 2>/dev/null \
+             && grep -q '429' "$EXEC_FILE" 2>/dev/null; then
+            needs_retry="true"
+            echo "::notice::Primary LLM key hit 429 quota — retrying with backup key."
+          fi
+        fi
+        echo "needs-retry=$needs_retry" >> "$GITHUB_OUTPUT"
+
+    - name: Self-verify via Claude (backup key — primary hit 429)
+      if: steps.detect-429.outputs.needs-retry == 'true' && inputs.api-key-backup != ''
+      id: claude-run-backup
+      continue-on-error: true
+      uses: anthropics/claude-code-action@v1
+      env:
+        ANTHROPIC_BASE_URL: ${{ inputs.anthropic-base-url }}
+      with:
+        anthropic_api_key: ${{ inputs.api-key-backup }}
+        github_token: ${{ inputs.repo-token }}
+        prompt: |
+          You are the self-verify module of the GithubAutoDev pipeline (Module 5, v2).
+
+          Issue #${{ inputs.issue-number }}: ${{ steps.context.outputs.title }}
+          URL: ${{ steps.context.outputs.url }}
+
+          ## Issue body (acceptance criteria source)
+          ```
+          ${{ steps.context.outputs.body }}
+          ```
+
+          ## PR diff (implementation to verify)
+          ```diff
+          ${{ steps.context.outputs.diff }}
+          ```
+
+          ## Task
+          Verify that the implementation in the PR diff satisfies the acceptance criteria
+          listed in the issue body. Read any files referenced in the diff for deeper context
+          if needed, but do NOT write anything and do NOT run shell commands (S5).
+
+          ## Verification process
+          1. Extract all acceptance criteria from the issue body (look for checkboxes `[ ]`,
+             bullet lists of requirements, "Acceptance criteria" sections).
+          2. For each criterion, check whether the PR diff + referenced files satisfy it.
+          3. Produce a concise, maintainer-readable verify report.
+
+          ## Output ONE JSON object (sealed schema):
+          {
+            "verify_status": "passed" | "failed",
+            "verify_report": "<maintainer-readable report, max 2000 chars>",
+            "failures": ["<criterion not met>", ...]
+          }
+
+          Rules:
+          - `verify_status` is "passed" only if ALL acceptance criteria are met.
+          - `verify_report` is a structured summary: list each criterion, mark ✓ or ✗,
+            add a one-line note per criterion.
+          - `failures` is an array of specific criteria that were NOT met (empty if passed).
+          - Do NOT write files, do NOT run shell commands. Read-only (S5).
+          - Match the natural language of the issue body in the verify_report.
+          ${{ steps.cfg.outputs.context_paths && format('Allowed paths: {0}', steps.cfg.outputs.context_paths) || '' }}
+
+          Respond ONLY with the JSON object. No prose, no markdown fences.
+        settings: ${{ steps.cfg.outputs.settings }}
+        claude_args: "--json-schema ${{ steps.cfg.outputs.schema }} --disallowedTools '${{ steps.cfg.outputs.disallowed }}'"
+
     - name: Parse engine output
       id: emit
       shell: bash
       env:
-        STRUCTURED: ${{ steps.claude-run.outputs.structured_output }}
+        STRUCTURED: ${{ steps.claude-run-backup.outputs.structured_output || steps.claude-run.outputs.structured_output }}
         HEAD_BRANCH: ${{ inputs.head-branch }}
       run: |
         set -euo pipefail

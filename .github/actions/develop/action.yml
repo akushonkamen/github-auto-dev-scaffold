@@ -41,6 +41,10 @@ inputs:
   api-key:
     description: "Engine provider API key (ZHIPU_API_KEY for GLM passthrough)"
     required: true
+  api-key-backup:
+    description: "Backup API key for 429 quota-exhaustion fallback (LLM_API_KEY_BACKUP). Empty disables retry."
+    required: false
+    default: ""
   anthropic-base-url:
     description: "Anthropic-compatible API base URL. Empty = Anthropic default."
     required: false
@@ -239,13 +243,101 @@ runs:
         # avoids the spaces-in-args shell-split bug that crashed the CLI on
         # startup (run 29244145735: "Claude Code process exited with code 1").
 
+    - name: Detect 429 quota exhaustion (primary key)
+      id: detect-429
+      if: always()
+      shell: bash
+      env:
+        EXEC_FILE: ${{ steps.claude-run.outputs.execution_file }}
+      run: |
+        set -uo pipefail
+        needs_retry="false"
+        if [ -n "$EXEC_FILE" ] && [ -f "$EXEC_FILE" ]; then
+          if grep -qE '"is_error"[[:space:]]*:[[:space:]]*true' "$EXEC_FILE" 2>/dev/null \
+             && grep -q '429' "$EXEC_FILE" 2>/dev/null; then
+            needs_retry="true"
+            echo "::notice::Primary LLM key hit 429 quota — retrying with backup key."
+          fi
+        fi
+        echo "needs-retry=$needs_retry" >> "$GITHUB_OUTPUT"
+
+    - name: Develop via Claude (backup key — primary hit 429)
+      if: steps.detect-429.outputs.needs-retry == 'true' && inputs.api-key-backup != ''
+      id: claude-run-backup
+      continue-on-error: true
+      uses: anthropics/claude-code-action@v1
+      env:
+        ANTHROPIC_BASE_URL: ${{ inputs.anthropic-base-url }}
+      with:
+        anthropic_api_key: ${{ inputs.api-key-backup }}
+        github_token: ${{ inputs.repo-token }}
+        prompt: |
+          You are the develop module of the GithubAutoDev pipeline (Module 4, v2).
+
+          Issue #${{ inputs.issue-number }}: ${{ steps.issue.outputs.title }}
+          URL: ${{ steps.issue.outputs.url }}
+          Detected issue language: ${{ inputs.issue-language }}
+          Base branch: ${{ inputs.base-branch }} (DO NOT push to it)
+          Head branch: ${{ inputs.head-branch }} (already checked out — commit here)
+
+          Issue body:
+          ```
+          ${{ steps.issue.outputs.body }}
+          ```
+          ${{ inputs.prior-test-report != '' && '
+          ## Prior test feedback (retry attempt)
+
+          The previous Module 6 test run on this issue failed. The test report is
+          included below. Review it carefully and fix the issues identified before
+          committing. This is a retry — the prior implementation did not pass tests.
+
+          ---
+
+          ' || '' }}${{ inputs.prior-test-report }}
+
+          ## Task
+          Implement the issue on the head branch (already checked out for you).
+          Make the smallest change that satisfies the issue. Write code, tests if
+          applicable, and a brief implementation summary.
+
+          ## Hard rules
+          1. **Never push.** The caller workflow pushes and opens the PR. Your
+             `settings.permissions.deny` list blocks `Bash(git push:*)` wholesale. You only commit.
+          2. **Never check out main/master.** Stay on ${{ inputs.head-branch }}.
+          3. **Never force-push, never reset --hard** (PRD §6 idempotency + §7 S3).
+          4. **Match the natural language of the issue body** for any code comments,
+             commit messages, and the implementation summary. Detected: ${{ inputs.issue-language }}.
+             Technical identifiers (API names, library names) stay in their original language.
+          5. **Context budget (PRD §5)**: only read directories named in the issue or
+             CLAUDE.md${{ steps.cfg.outputs.context_paths && format('. Allowed paths: {0}', steps.cfg.outputs.context_paths) || '' }}. Do NOT scan the whole repo.
+          6. **Never print tokens, API keys, or environment values** (PRD §7 S4).
+          7. **Disclosure (AC-V2-15)**: your summary will appear in the PR body; the
+             PR body is decorated by the caller workflow with the AI disclosure preamble.
+
+          ## Output protocol (mandatory)
+
+          Output ONLY a single JSON object on ONE line. No prose around it,
+          no markdown fences, no hidden HTML comments. The downstream parser
+          tolerates accidental wrapping but you should aim for one line.
+
+          Schema:
+          {"summary":"<one-paragraph change summary for the PR body, in the issue's language, >= 10 chars>","language":"<the language you wrote in: zh|en|ja|ko|es|fr|de|ru|pt|other>"}
+
+          Field rules:
+          - summary: >= 10 chars, plain text or markdown, will appear in PR body
+          - language: exactly one of zh|en|ja|ko|es|fr|de|ru|pt|other
+          - No trailing commas, no JSON comments, no surrounding text
+
+          Respond with the JSON object only.
+        settings: ${{ steps.cfg.outputs.settings }}
+
     - name: Capture head SHA + parse engine output
       id: emit
       if: always()
       shell: bash
       env:
         HEAD_BRANCH: ${{ inputs.head-branch }}
-        EXEC_FILE: ${{ steps.claude-run.outputs.execution_file }}
+        EXEC_FILE: ${{ steps.claude-run-backup.outputs.execution_file || steps.claude-run.outputs.execution_file }}
         ISSUE_LANG: ${{ inputs.issue-language }}
       run: |
         set -uo pipefail

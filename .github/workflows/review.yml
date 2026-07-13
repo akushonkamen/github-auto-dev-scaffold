@@ -131,6 +131,7 @@ jobs:
           # downstream events and appears under the developer identity.
           repo-token: ${{ secrets.CLAUDE_DEV_PAT }}
           api-key: ${{ secrets.LLM_API_KEY }}
+          api-key-backup: ${{ secrets.LLM_API_KEY_BACKUP }}
           anthropic-base-url: ${{ vars.ANTHROPIC_BASE_URL }}
           model: ${{ vars.REVIEW_MODEL }}
           max-turns: ${{ vars.REVIEW_MAX_TURNS || '12' }}

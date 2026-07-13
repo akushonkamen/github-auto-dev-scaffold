@@ -44,6 +44,10 @@ inputs:
   api-key:
     description: "Engine provider API key (LLM_API_KEY for GLM passthrough)"
     required: true
+  api-key-backup:
+    description: "Backup API key for 429 quota-exhaustion fallback (LLM_API_KEY_BACKUP). Empty disables retry."
+    required: false
+    default: ""
   anthropic-base-url:
     description: "Anthropic-compatible API base URL (e.g. https://open.bigmodel.cn/api/anthropic for GLM). Empty = Anthropic default."
     required: false
@@ -240,6 +244,86 @@ runs:
     # it handles hidden blocks, fenced JSON, substring JSON, or pure JSON.
     # If parsing fails, extract.sh falls back to decision=reply + a
     # clarification ask, so the workflow never hard-fails here.
+    - name: Detect 429 quota exhaustion (primary key)
+      id: detect-429
+      if: always()
+      shell: bash
+      env:
+        EXEC_FILE: ${{ steps.claude-run.outputs.execution_file }}
+      run: |
+        set -uo pipefail
+        needs_retry="false"
+        if [ -n "$EXEC_FILE" ] && [ -f "$EXEC_FILE" ]; then
+          if grep -qE '"is_error"[[:space:]]*:[[:space:]]*true' "$EXEC_FILE" 2>/dev/null \
+             && grep -q '429' "$EXEC_FILE" 2>/dev/null; then
+            needs_retry="true"
+            echo "::notice::Primary LLM key hit 429 quota — retrying with backup key."
+          fi
+        fi
+        echo "needs-retry=$needs_retry" >> "$GITHUB_OUTPUT"
+
+    - name: Triage via Claude (backup key — primary hit 429)
+      if: steps.detect-429.outputs.needs-retry == 'true' && inputs.api-key-backup != ''
+      id: claude-run-backup
+      continue-on-error: true
+      uses: anthropics/claude-code-action@v1
+      env:
+        ANTHROPIC_BASE_URL: ${{ inputs.anthropic-base-url }}
+      with:
+        anthropic_api_key: ${{ inputs.api-key-backup }}
+        github_token: ${{ inputs.repo-token }}
+        prompt: |
+          You are the triage module of the GithubAutoDev pipeline.
+          A new Issue was just opened.
+
+          Title: ${{ steps.issue.outputs.title }}
+          URL: ${{ steps.issue.outputs.url }}
+          Issue number: ${{ inputs.issue-number }}
+          Existing labels: ${{ steps.issue.outputs.labels }}
+
+          Issue body:
+          ```
+          ${{ steps.issue.outputs.body }}
+          ```
+
+          Read CLAUDE.md for project context ONLY if the issue references
+          directories you need to inspect; otherwise skip. Do NOT scan the
+          whole repo. Do NOT call any tools — output text only.
+
+          Decide ONE of:
+            - "reply": the issue needs clarification, is a duplicate, is out of
+              scope, or is a user-error. Your comment_body should ask the question
+              or explain the resolution.
+            - "work":  the issue is a legitimate feature/bug that should enter the
+              development pipeline. Your comment_body should be a brief
+              acknowledgement + summary of what you understood the ask to be.
+
+          Never print tokens, API keys, or environment variable values (PRD §7 S4).
+
+          ## Output protocol (mandatory)
+
+          Output ONLY a single JSON object on ONE line. No prose around it,
+          no markdown fences, no hidden HTML comments. The downstream parser
+          tolerates accidental wrapping but you should aim for one line.
+
+          Schema:
+          {"decision":"<reply|work>","comment_body":"<markdown for the user-facing reply, >= 10 chars>","suggested_labels":[<array of label-name strings, empty [] if none>],"confidence":<float 0.0-1.0>,"workload_class":"<trivial|standard|complex>"}
+
+          Field rules:
+          - decision: exactly "reply" or "work"
+          - comment_body: >= 10 chars, plain text or markdown, will be posted
+            verbatim as the issue comment
+          - suggested_labels: JSON array of EXISTING label name strings from
+            the project's labels.yml (empty [] if none); do not invent labels
+          - confidence: float in [0, 1]
+          - workload_class: "trivial" (low-risk, single-file, clear AC),
+            "standard" (one module, clear AC), or "complex" (cross-module,
+            ambiguous AC)
+          - No trailing commas, no JSON comments, no surrounding text
+
+          Respond with the JSON object only.
+        settings: ${{ steps.cfg.outputs.settings }}
+
     - name: Parse engine output
       id: parse
       if: always()
@@ -247,7 +331,7 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.repo-token }}
         ISSUE_NUMBER: ${{ inputs.issue-number }}
-        EXEC_FILE: ${{ steps.claude-run.outputs.execution_file }}
+        EXEC_FILE: ${{ steps.claude-run-backup.outputs.execution_file || steps.claude-run.outputs.execution_file }}
       run: |
         set -euo pipefail
         if [ -z "$EXEC_FILE" ] || [ ! -f "$EXEC_FILE" ]; then

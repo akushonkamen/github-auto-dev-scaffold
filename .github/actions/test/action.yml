@@ -45,6 +45,10 @@ inputs:
   api-key:
     description: "Anthropic-compatible API key (LLM_API_KEY for GLM passthrough)"
     required: true
+  api-key-backup:
+    description: "Backup API key for 429 quota-exhaustion fallback (LLM_API_KEY_BACKUP). Empty disables retry."
+    required: false
+    default: ""
   anthropic-base-url:
     description: "Anthropic-compatible API base URL. Empty = Anthropic default. Set for GLM passthrough."
     required: false
@@ -174,6 +178,7 @@ runs:
 
     - name: Run tests via Claude (second isolated process, tool-restricted tester)
       id: claude-run
+      continue-on-error: true
       uses: anthropics/claude-code-action@v1
       env:
         ANTHROPIC_BASE_URL: ${{ inputs.anthropic-base-url }}
@@ -236,11 +241,95 @@ runs:
         settings: ${{ steps.cfg.outputs.settings }}
         claude_args: "--json-schema ${{ steps.cfg.outputs.schema }} --disallowedTools '${{ steps.cfg.outputs.disallowed }}'"
 
+    - name: Detect 429 quota exhaustion (primary key)
+      id: detect-429
+      if: always()
+      shell: bash
+      env:
+        EXEC_FILE: ${{ steps.claude-run.outputs.execution_file }}
+      run: |
+        set -uo pipefail
+        needs_retry="false"
+        if [ -n "$EXEC_FILE" ] && [ -f "$EXEC_FILE" ]; then
+          if grep -qE '"is_error"[[:space:]]*:[[:space:]]*true' "$EXEC_FILE" 2>/dev/null \
+             && grep -q '429' "$EXEC_FILE" 2>/dev/null; then
+            needs_retry="true"
+            echo "::notice::Primary LLM key hit 429 quota — retrying with backup key."
+          fi
+        fi
+        echo "needs-retry=$needs_retry" >> "$GITHUB_OUTPUT"
+
+    - name: Run tests via Claude (backup key — primary hit 429)
+      if: steps.detect-429.outputs.needs-retry == 'true' && inputs.api-key-backup != ''
+      id: claude-run-backup
+      continue-on-error: true
+      uses: anthropics/claude-code-action@v1
+      env:
+        ANTHROPIC_BASE_URL: ${{ inputs.anthropic-base-url }}
+      with:
+        anthropic_api_key: ${{ inputs.api-key-backup }}
+        github_token: ${{ inputs.repo-token }}
+        prompt: |
+          You are the TEST module of the GithubAutoDev pipeline (Module 6, v2).
+          You are a second, isolated Claude Code process — your job is to act as
+          an independent tester reviewing the work that the develop module (Module 4)
+          shipped. You did NOT write this code.
+
+          Issue #${{ inputs.issue-number }}: ${{ steps.context.outputs.title }}
+          URL: ${{ steps.context.outputs.url }}
+
+          ## Issue body (acceptance criteria source)
+          ```
+          ${{ steps.context.outputs.body }}
+          ```
+
+          ## PR diff (implementation to test)
+          ```diff
+          ${{ steps.context.outputs.diff }}
+          ```
+
+          ## Task
+          1. Detect the project's test framework by reading the repo (package.json,
+             pyproject.toml, Cargo.toml, go.mod, etc.).
+          2. Run the existing test suite via Bash (e.g. `npm test`, `pytest`,
+             `cargo test`, `go test ./...`). Capture pass/fail per test.
+          3. For each acceptance criterion in the issue body, decide whether the
+             existing tests cover it. If NOT covered, list it in `coverage_gaps`.
+          4. Do NOT write or modify any file (S5: Write/Edit denied). If you believe
+             a new test file is needed, describe it in `coverage_gaps` instead.
+          5. Never print tokens, API keys, or environment variable values (S4).
+
+          ## Decision rule
+          - `test_status` = "passed" if existing tests run cleanly AND every
+            acceptance criterion is covered by at least one test.
+          - `test_status` = "failed" if any existing test fails OR a critical
+            acceptance criterion has zero test coverage.
+
+          ## Output ONE JSON object (sealed schema):
+          {
+            "test_status": "passed" | "failed",
+            "test_report": "<maintainer-readable report, max 2000 chars>",
+            "failures": ["<specific test that failed>", ...],
+            "coverage_gaps": ["<acceptance criterion not covered by existing tests>", ...]
+          }
+
+          Rules:
+          - `test_report`: structured summary — list each test run with ✓/✗, then
+            list each acceptance criterion with ✓/✗ coverage.
+          - `failures`: empty if all existing tests pass.
+          - `coverage_gaps`: empty if every acceptance criterion is covered.
+          - Match the natural language of the issue body in the test_report.
+          ${{ steps.cfg.outputs.context_paths && format('Allowed paths: {0}', steps.cfg.outputs.context_paths) || '' }}
+
+          Respond ONLY with the JSON object. No prose, no markdown fences.
+        settings: ${{ steps.cfg.outputs.settings }}
+        claude_args: "--json-schema ${{ steps.cfg.outputs.schema }} --disallowedTools '${{ steps.cfg.outputs.disallowed }}'"
+
     - name: Parse engine output
       id: emit
       shell: bash
       env:
-        STRUCTURED: ${{ steps.claude-run.outputs.structured_output }}
+        STRUCTURED: ${{ steps.claude-run-backup.outputs.structured_output || steps.claude-run.outputs.structured_output }}
       run: |
         set -euo pipefail
         sha=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
