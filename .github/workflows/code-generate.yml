@@ -392,6 +392,29 @@ jobs:
           )"
           fi
 
+      - name: Push head branch with Claude's commits (CLAUDE_DEV_PAT)
+        # v2 develop architecture fix: develop composite denies `git push` via
+        # settings.permissions.deny, so Claude's local commits die with the
+        # runner unless we push them here. Without this, pr-lifecycle's
+        # fresh checkout cannot resolve HEAD → "src refspec ... does not match".
+        # Retry path already pushed .verify-state.json (line 296) but NOT the
+        # develop composite's code commits — so this step is required on BOTH
+        # first attempt and retry.
+        if: steps.resolve.outputs.issue-number != '' && steps.develop.outputs.commit-sha != '' && steps.noop.outputs.noop != 'true'
+        env:
+          CLAUDE_DEV_PAT: ${{ secrets.CLAUDE_DEV_PAT }}
+          HEAD_BRANCH: ${{ steps.resolve.outputs.head-branch }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config --local --unset http.https://github.com/.extraheader 2>/dev/null || true
+          git config --local http.https://github.com/.extraheader "Authorization: basic $(printf 'x-access-token:%s' "$CLAUDE_DEV_PAT" | base64)"
+          # No --force: S3/S5 forbid force-push. Fast-forward only; if the
+          # remote tip diverged (concurrent develop run), fail loudly so the
+          # concurrency group serializes the next attempt.
+          git push origin "HEAD:$HEAD_BRANCH"
+
       - name: M6 — emit code-generate-outputs artifact
         if: steps.resolve.outputs.issue-number != '' && steps.develop.outputs.commit-sha != '' && steps.noop.outputs.noop != 'true'
         env:
