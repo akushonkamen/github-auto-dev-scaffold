@@ -290,7 +290,9 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git config --local --unset http.https://github.com/.extraheader 2>/dev/null || true
-          git config --local http.https://github.com/.extraheader "Authorization: basic $(printf 'x-access-token:%s' "$CLAUDE_DEV_PAT" | base64)"
+          # PR #147: `base64 | tr -d '\n'` — default base64 wraps at 76 cols,
+          # fine-grained PAT produces 2-line output that breaks the header.
+          git config --local http.https://github.com/.extraheader "Authorization: basic $(printf 'x-access-token:%s' "$CLAUDE_DEV_PAT" | base64 | tr -d '\n')"
           git add .github/.verify-state.json
           git commit -m "chore(state): record verify attempt=$next_attempt (M2 retry)"
           git push origin "HEAD:$HEAD_BRANCH"
@@ -409,7 +411,11 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git config --local --unset http.https://github.com/.extraheader 2>/dev/null || true
-          git config --local http.https://github.com/.extraheader "Authorization: basic $(printf 'x-access-token:%s' "$CLAUDE_DEV_PAT" | base64)"
+          # PR #147 root cause: default `base64` wraps at 76 cols. Fine-grained
+          # PAT (~90+ chars) → 2-line base64 → malformed Authorization header →
+          # libcurl rejects with "Failed sending HTTP request" in ~80ms (not a
+          # real network timeout). `tr -d '\n'` flattens it.
+          git config --local http.https://github.com/.extraheader "Authorization: basic $(printf 'x-access-token:%s' "$CLAUDE_DEV_PAT" | base64 | tr -d '\n')"
           # No --force: S3/S5 forbid force-push. Fast-forward only; if the
           # remote tip diverged (concurrent develop run), fail loudly so the
           # concurrency group serializes the next attempt.

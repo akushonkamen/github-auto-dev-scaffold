@@ -154,8 +154,10 @@ jobs:
             exit 1
           fi
           # S7 pipeline-fix: embed PAT in extraheader so workflow-scope auth works.
+          # PR #147: `base64 | tr -d '\n'` — default base64 wraps at 76 cols,
+          # fine-grained PAT produces 2-line output that breaks the header.
           git config --local --unset http.https://github.com/.extraheader 2>/dev/null || true
-          git config --local http.https://github.com/.extraheader "Authorization: basic $(printf 'x-access-token:%s' "$CLAUDE_DEV_PAT" | base64)"
+          git config --local http.https://github.com/.extraheader "Authorization: basic $(printf 'x-access-token:%s' "$CLAUDE_DEV_PAT" | base64 | tr -d '\n')"
           git push origin "$HEAD"
 
           body=$(cat <<EOF
