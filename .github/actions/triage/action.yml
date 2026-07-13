@@ -274,6 +274,13 @@ runs:
           exit 1
         fi
         export STRUCTURED="$raw"
+        # Diagnostic: dump Claude's raw text so we can see why extract.sh
+        # fails to find JSON. Bounded markers + head -c 3000 so logs stay
+        # readable. Remove once prompt output is reliable.
+        echo "===== CLAUDE_RAW_START ====="
+        printf '%s' "$raw" | head -c 3000
+        echo ""
+        echo "===== CLAUDE_RAW_END ====="
         ./.github/actions/triage/extract.sh
 
     # Post the triage comment ourselves — Claude no longer self-posts.
