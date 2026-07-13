@@ -255,18 +255,26 @@ runs:
           echo "::error::Check the Run triage step logs for SDK errors."
           exit 1
         fi
-        # claude-execution-output.json keeps the assistant's final text under
-        # the "result" key (top-level string). Some SDK builds nest it under
-        # .messages[-1].content — handle both shapes defensively.
+        # claude-execution-output.json is a JSON ARRAY of transcript events
+        # (system/init, assistant turns, then a final {type:"result",result:"<text>"}
+        # entry). Older SDK builds emit a single object instead — handle both.
         raw=$(jq -r '
-          if has("result") and (.result | type == "string") then
-            .result
-          elif (.messages // []) | length > 0 then
-            (.messages | map(select(.role == "assistant")) | last | .content // "")
+          if type == "array" then
+            ( [ .[] | select(.type == "result" and (.result | type == "string") and (.result | length > 0)) | .result ] | last // "" )
           else
-            ""
+            ( .result // "" )
           end
         ' "$EXEC_FILE" 2>/dev/null || echo "")
+        # If result extraction failed, fall back to last assistant message text.
+        if [ -z "$raw" ]; then
+          raw=$(jq -r '
+            if type == "array" then
+              ( [ .[] | select(.type == "assistant")
+                     | ((.message.content // []) | map(select(.type == "text") | .text) | join("\n")) ]
+                | map(select(length > 0)) | last // "" )
+            else "" end
+          ' "$EXEC_FILE" 2>/dev/null || echo "")
+        fi
         if [ -z "$raw" ]; then
           echo "::error::Could not extract assistant text from execution_file."
           echo "::error::File contents (first 500 chars):"
