@@ -124,16 +124,20 @@ runs:
         MAX_TURNS: ${{ inputs.max-turns }}
       run: |
         set -eu
-        # settings JSON: permissions + maxTurns; model only if non-empty
+        # settings JSON: permissions + maxTurns; model only if non-empty.
+        # PR #132: allow `Bash(gh issue:*)` so Claude can self-post its
+        # triage comment with hidden JSON block. GLM passthrough does not
+        # reliably honor --json-schema strict mode; we instead parse the
+        # hidden TRIAGE_VERDICT block from the issue comment.
         if [ -n "$MODEL_INPUT" ]; then
           settings=$(jq -c -n \
             --arg m "$MODEL_INPUT" \
             --argjson t "$MAX_TURNS" \
-            '{permissions:{allow:["Read","Grep","Glob"],deny:["Write","Edit","Bash"]}, maxTurns:$t, model:$m}')
+            '{permissions:{allow:["Read","Grep","Glob","Bash(gh issue:*)"],deny:["Write","Edit","Bash(git:*)","Bash(gh pr:*)","Bash(gh repo:*)","Bash(rm:*)"]}, maxTurns:$t, model:$m}')
         else
           settings=$(jq -c -n \
             --argjson t "$MAX_TURNS" \
-            '{permissions:{allow:["Read","Grep","Glob"],deny:["Write","Edit","Bash"]}, maxTurns:$t}')
+            '{permissions:{allow:["Read","Grep","Glob","Bash(gh issue:*)"],deny:["Write","Edit","Bash(git:*)","Bash(gh pr:*)","Bash(gh repo:*)","Bash(rm:*)"]}, maxTurns:$t}')
         fi
         {
           echo "settings<<SETTINGS_EOF"
@@ -182,6 +186,7 @@ runs:
 
           Title: ${{ steps.issue.outputs.title }}
           URL: ${{ steps.issue.outputs.url }}
+          Issue number: ${{ inputs.issue-number }}
           Existing labels: ${{ steps.issue.outputs.labels }}
 
           Issue body:
@@ -203,12 +208,37 @@ runs:
 
           Never print tokens, API keys, or environment variable values (PRD §7 S4).
 
-          Respond ONLY with the JSON object matching the schema. No prose, no
-          markdown fences, no commentary outside the JSON.
+          ## Output protocol (mandatory)
+
+          You MUST post your triage decision as a comment on the issue using:
+
+          ```
+          gh issue comment ${{ inputs.issue-number }} --repo "$GITHUB_REPOSITORY" --body "<BODY>"
+          ```
+
+          The `<BODY>` must be a single shell-safe string with this structure:
+
+          ```
+          🤖 **Triage decision**
+
+          <one-paragraph human-readable summary — what you understood, your decision>
+
+          <!-- TRIAGE_VERDICT
+          {"decision":"<reply|work>","comment_body":"<markdown for the user-facing reply>","suggested_labels":[<array of strings>],"confidence":<0.0-1.0>,"workload_class":"<trivial|standard|complex>"}
+          -->
+          ```
+
+          Rules for the JSON inside `<!-- TRIAGE_VERDICT ... -->`:
+          - MUST be valid JSON on a single line (no newlines inside the JSON)
+          - `decision`: exactly "reply" or "work"
+          - `comment_body`: >= 10 chars, plain text or markdown
+          - `suggested_labels`: JSON array of label name strings (empty `[]` if none)
+          - `confidence`: float in [0, 1]
+          - `workload_class`: "trivial" (low-risk, single-file, clear AC), "standard" (one module, clear AC), or "complex" (cross-module, ambiguous AC)
+          - No trailing commas, no comments inside JSON
+
+          After posting the comment, respond with a one-line confirmation.
         settings: ${{ steps.cfg.outputs.settings }}
-        # --json-schema triggers structured output; we read it via
-        # steps.claude-run.outputs.structured_output below.
-        claude_args: "--json-schema ${{ steps.cfg.outputs.schema }}"
 
     - name: Triage via Codex
       if: inputs.engine == 'codex'
@@ -222,15 +252,28 @@ runs:
           Output JSON: { decision: "reply"|"work", comment_body, suggested_labels, confidence }.
           Never print secrets.
 
-    # claude-code-action exposes `structured_output` (JSON string) when
-    # --json-schema is in claude_args. We parse it and emit action outputs.
+    # PR #132: Claude posts triage decision as an issue comment containing
+    # a hidden <!-- TRIAGE_VERDICT {...} --> JSON block. We pull the latest
+    # comment and parse the JSON. GLM passthrough does not reliably honor
+    # --json-schema strict mode, so we use this prompt+parse pattern
+    # (mirrors review.yml REVIEW_VERDICT block design).
     - name: Parse engine output
       id: parse
       shell: bash
       env:
-        STRUCTURED: ${{ steps.claude-run.outputs.structured_output }}
+        GH_TOKEN: ${{ inputs.repo-token }}
+        ISSUE_NUMBER: ${{ inputs.issue-number }}
       run: |
         set -euo pipefail
+        # Fetch the latest comment on the issue (Claude just posted it).
+        body=$(gh issue view "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
+          --json comments --jq '.comments[-1].body // ""' 2>/dev/null || echo "")
+        if [ -z "$body" ]; then
+          echo "::error::No triage comment found on issue #$ISSUE_NUMBER."
+          echo "::error::Claude may have failed to post its TRIAGE_VERDICT block."
+          exit 1
+        fi
+        export STRUCTURED="$body"
         ./.github/actions/triage/extract.sh
 
     - name: Emit common outputs
