@@ -352,7 +352,7 @@ jobs:
             > ./.github/artifacts/issue-context.json
           cat ./.github/artifacts/issue-context.json
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: steps.dispatch.outputs.action == 'accept'
         with:
           name: issue-context
