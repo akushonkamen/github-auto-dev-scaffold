@@ -13,7 +13,9 @@
 #
 # v2 CHANGES (plan §7 S2 amendment):
 #   - adds anthropic-base-url input for GLM passthrough
-#   - seals JSON output schema for {branch_name, commit_sha, summary, language}
+#   - tolerant JSON parsing via .github/actions/develop/extract.sh
+#     (PR #143: GLM passthrough does not honor --json-schema strict mode;
+#      reads assistant text from execution_file and parses with fallback)
 #   - --disallowedTools includes Bash(git push --force*), Bash(git push * --force*),
 #     Bash(git checkout main*), Bash(git push * main*), Bash(git push * master*)
 #   - PR opened by caller workflow with CLAUDE_DEV_PAT (PR author = PAT owner)
@@ -125,7 +127,7 @@ runs:
           echo "BODY_EOF"
         } >> "$GITHUB_OUTPUT"
 
-    - name: Build claude config (settings + sealed schema + disallowed)
+    - name: Build claude config (settings + disallowed)
       id: cfg
       shell: bash
       env:
@@ -150,20 +152,6 @@ runs:
           echo "SETTINGS_EOF"
         } >> "$GITHUB_OUTPUT"
 
-        schema=$(jq -c . <<'JSON'
-        {
-          "type": "object",
-          "required": ["summary", "language"],
-          "properties": {
-            "summary": {"type": "string", "minLength": 20},
-            "language": {"type": "string", "enum": ["zh", "en", "ja", "ko", "es", "fr", "de", "ru", "pt", "other"]}
-          },
-          "additionalProperties": false
-        }
-        JSON
-        )
-        echo "schema='${schema}'" >> "$GITHUB_OUTPUT"
-
         # AC: never force-push, never push to main/master (defense in depth — claude
         # is also denied all `git push` wholesale via settings.permissions.deny above).
         disallowed="Bash(git push --force*),Bash(git push * --force*),Bash(git push *--force*),Bash(git push origin main*),Bash(git push origin master*),Bash(git checkout main),Bash(git checkout master)"
@@ -178,6 +166,7 @@ runs:
     - name: Develop via Claude (or GLM via base-url passthrough)
       if: inputs.engine == 'claude'
       id: claude-run
+      continue-on-error: true
       uses: anthropics/claude-code-action@v1
       env:
         ANTHROPIC_BASE_URL: ${{ inputs.anthropic-base-url }}
@@ -227,36 +216,73 @@ runs:
           7. **Disclosure (AC-V2-15)**: your summary will appear in the PR body; the
              PR body is decorated by the caller workflow with the AI disclosure preamble.
 
-          ## Output ONE JSON object (sealed schema):
-          {
-            "summary": "<one-paragraph change summary for the PR body, in the issue's language>",
-            "language": "<the language you wrote in: zh|en|ja|ko|es|fr|de|ru|pt|other>"
-          }
+          ## Output protocol (mandatory)
 
-          Respond ONLY with the JSON object. No prose, no markdown fences.
+          Output ONLY a single JSON object on ONE line. No prose around it,
+          no markdown fences, no hidden HTML comments. The downstream parser
+          tolerates accidental wrapping but you should aim for one line.
+
+          Schema:
+          {"summary":"<one-paragraph change summary for the PR body, in the issue's language, >= 10 chars>","language":"<the language you wrote in: zh|en|ja|ko|es|fr|de|ru|pt|other>"}
+
+          Field rules:
+          - summary: >= 10 chars, plain text or markdown, will appear in PR body
+          - language: exactly one of zh|en|ja|ko|es|fr|de|ru|pt|other
+          - No trailing commas, no JSON comments, no surrounding text
+
+          Respond with the JSON object only.
         settings: ${{ steps.cfg.outputs.settings }}
-        claude_args: "--json-schema ${{ steps.cfg.outputs.schema }} --disallowedTools '${{ steps.cfg.outputs.disallowed }}'"
+        claude_args: "--disallowedTools ${{ steps.cfg.outputs.disallowed }}"
 
     - name: Capture head SHA + parse engine output
       id: emit
+      if: always()
       shell: bash
       env:
         HEAD_BRANCH: ${{ inputs.head-branch }}
-        STRUCTURED: ${{ steps.claude-run.outputs.structured_output }}
+        EXEC_FILE: ${{ steps.claude-run.outputs.execution_file }}
+        ISSUE_LANG: ${{ inputs.issue-language }}
       run: |
-        set -euo pipefail
+        set -uo pipefail
         sha=$(git rev-parse HEAD)
-        # Validate structured output minimally; tolerate empty (engine may emit plain text).
-        summary="$(printf '%s' "${STRUCTURED:-}" | jq -r '.summary // ""' 2>/dev/null || true)"
-        language="$(printf '%s' "${STRUCTURED:-}" | jq -r '.language // "${{ inputs.issue-language }}"' 2>/dev/null || echo "${{ inputs.issue-language }}")"
-        if [ -z "$summary" ]; then
-          summary="(claude did not emit a structured summary; inspect the diff on the branch)"
+        # PR #143: GLM passthrough does not honor --json-schema strict mode.
+        # Read assistant text from execution_file and parse tolerantly via
+        # extract.sh. If parsing fails, extract.sh falls back to a default
+        # summary + fallback language so the branch push still happens.
+        raw=""
+        if [ -n "$EXEC_FILE" ] && [ -f "$EXEC_FILE" ]; then
+          # execution_file is a JSON array of transcript events; the final
+          # {type:"result", result:"<text>"} entry holds the assistant's text.
+          raw=$(jq -r '
+            if type == "array" then
+              ( [ .[] | select(.type == "result" and (.result | type == "string") and (.result | length > 0)) | .result ] | last // "" )
+            else
+              ( .result // "" )
+            end
+          ' "$EXEC_FILE" 2>/dev/null || echo "")
+          # Fallback: last assistant message text if result extraction failed.
+          if [ -z "$raw" ]; then
+            raw=$(jq -r '
+              if type == "array" then
+                ( [ .[] | select(.type == "assistant")
+                       | ((.message.content // []) | map(select(.type == "text") | .text) | join("\n")) ]
+                  | map(select(length > 0)) | last // "" )
+              else "" end
+            ' "$EXEC_FILE" 2>/dev/null || echo "")
+          fi
+        else
+          echo "::warning::execution_file missing — Claude step may have failed before producing output."
         fi
-        {
-          echo "branch-name=$HEAD_BRANCH"
-          echo "commit-sha=$sha"
-          echo "pr-language=${language}"
-          echo "summary<<SUMMARY_EOF"
-          printf '%s\n' "$summary"
-          echo "SUMMARY_EOF"
-        } >> "$GITHUB_OUTPUT"
+        if [ -z "$raw" ]; then
+          echo "::warning::Could not extract assistant text from execution_file. Using default summary."
+        fi
+        echo "===== CLAUDE_RAW_START ====="
+        printf '%s' "$raw" | head -c 3000
+        echo ""
+        echo "===== CLAUDE_RAW_END ====="
+        # extract.sh writes summary + pr-language directly to GITHUB_OUTPUT.
+        export STRUCTURED="$raw"
+        ./.github/actions/develop/extract.sh || echo "::warning::extract.sh exited non-zero"
+        # Append branch/sha (extract.sh owns summary/language).
+        echo "branch-name=$HEAD_BRANCH" >> "$GITHUB_OUTPUT"
+        echo "commit-sha=$sha" >> "$GITHUB_OUTPUT"
