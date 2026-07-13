@@ -124,6 +124,7 @@ jobs:
           base-branch: ${{ steps.pr.outputs.base-branch }}
           repo-token: ${{ secrets.GITHUB_TOKEN }}
           api-key: ${{ secrets.LLM_API_KEY }}
+          api-key-backup: ${{ secrets.LLM_API_KEY_BACKUP }}
           anthropic-base-url: ${{ vars.ANTHROPIC_BASE_URL || '' }}
           model: ${{ vars.TEST_MODEL || '' }}
           max-turns: ${{ vars.TEST_MAX_TURNS || '10' }}

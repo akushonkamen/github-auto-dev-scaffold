@@ -39,6 +39,10 @@ inputs:
   api-key:
     description: "Engine provider API key (ZHIPU_API_KEY when using GLM passthrough)"
     required: true
+  api-key-backup:
+    description: "Backup API key for 429 quota-exhaustion fallback (LLM_API_KEY_BACKUP). Empty disables retry."
+    required: false
+    default: ""
   anthropic-base-url:
     description: "Anthropic-compatible API base URL. Empty = Anthropic default."
     required: false
@@ -223,11 +227,92 @@ runs:
         settings: ${{ steps.cfg.outputs.settings }}
         claude_args: "--json-schema ${{ steps.cfg.outputs.schema }} --disallowedTools '${{ steps.cfg.outputs.disallowed }}'"
 
+    - name: Detect 429 quota exhaustion (primary key)
+      id: detect-429
+      if: always()
+      shell: bash
+      env:
+        EXEC_FILE: ${{ steps.claude-run.outputs.execution_file }}
+      run: |
+        set -uo pipefail
+        needs_retry="false"
+        if [ -n "$EXEC_FILE" ] && [ -f "$EXEC_FILE" ]; then
+          if grep -qE '"is_error"[[:space:]]*:[[:space:]]*true' "$EXEC_FILE" 2>/dev/null \
+             && grep -q '429' "$EXEC_FILE" 2>/dev/null; then
+            needs_retry="true"
+            echo "::notice::Primary LLM key hit 429 quota — retrying with backup key."
+          fi
+        fi
+        echo "needs-retry=$needs_retry" >> "$GITHUB_OUTPUT"
+
+    - name: Clarify via Claude (backup key — primary hit 429)
+      if: steps.detect-429.outputs.needs-retry == 'true' && inputs.api-key-backup != ''
+      id: claude-run-backup
+      continue-on-error: true
+      uses: anthropics/claude-code-action@v1
+      env:
+        ANTHROPIC_BASE_URL: ${{ inputs.anthropic-base-url }}
+      with:
+        anthropic_api_key: ${{ inputs.api-key-backup }}
+        github_token: ${{ inputs.repo-token }}
+        prompt: |
+          You are the clarify module of the GithubAutoDev pipeline (Module 3', v2).
+          Round ${{ inputs.round-number }} of clarification.
+
+          Issue title: ${{ steps.issue.outputs.title }}
+          URL: ${{ steps.issue.outputs.url }}
+          Existing labels: ${{ steps.issue.outputs.labels }}
+          Detected issue language: ${{ inputs.issue-language }}
+
+          Issue body:
+          ```
+          ${{ steps.issue.outputs.body }}
+          ```
+
+          Comment history (oldest first):
+          ```
+          ${{ steps.issue.outputs.comments }}
+          ```
+
+          ## Task
+          Decide whether the requirements are now clear enough to enter development,
+          OR whether you need to ask another clarifying question, OR whether the
+          request is fundamentally unresolvable (out-of-scope, hostile, duplicate).
+
+          ## Output ONE of:
+            - {"action": "ask",    "question": "<follow-up question>", ...}
+            - {"action": "accept", "reason": "<one-line why clear now>", ...}
+            - {"action": "yield",  "reason": "<one-line why unresolvable>", ...}
+
+          ## Hard rules
+          1. **Match the natural language of the issue body** (detected: ${{ inputs.issue-language }}).
+             If the issue is in Chinese, your question/reason MUST be in Chinese. Technical
+             terms (API names, library names, code identifiers) stay in their original language.
+             Set `suggested_language` to the language you actually used.
+          2. **Disclosure (AC-V2-15)**: if round-number == 1, your `question` (or reason for
+             accept/yield posted by the dispatch shell) MUST begin with: "I'm an AI assistant
+             (powered by Claude) operating under the GithubAutoDev disclosure policy."
+             Subsequent rounds in the same issue may omit this preamble.
+          3. **Never print tokens, API keys, or environment values** (PRD §7 S4).
+          4. **Never attempt to apply labels, push commits, open PRs, or edit the issue**.
+             Your `--disallowedTools` whitelist blocks these wholesale; you produce sealed JSON
+             only. The dispatch shell applies any state changes on your behalf.
+          5. **Round ceiling awareness**: if round-number is 3 and you still need more info,
+             prefer `yield` over `ask` so the maintainer can take over.
+          6. **Conciseness**: ask at most ONE focused question per round. Multi-part questions
+             overwhelm issue authors. Pick the highest-leverage clarification.
+          7. **Read CLAUDE.md for project context** only if the issue references directories
+             you need to inspect. Do NOT scan the whole repo (PRD §5 context budget).
+
+          Respond ONLY with the JSON object matching the schema. No prose, no markdown fences.
+        settings: ${{ steps.cfg.outputs.settings }}
+        claude_args: "--json-schema ${{ steps.cfg.outputs.schema }} --disallowedTools '${{ steps.cfg.outputs.disallowed }}'"
+
     - name: Parse engine output
       id: parse
       shell: bash
       env:
-        STRUCTURED: ${{ steps.claude-run.outputs.structured_output }}
+        STRUCTURED: ${{ steps.claude-run-backup.outputs.structured_output || steps.claude-run.outputs.structured_output }}
       run: |
         set -euo pipefail
         ./.github/actions/clarify/extract.sh
