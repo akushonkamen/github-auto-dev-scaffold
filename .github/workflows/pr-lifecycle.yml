@@ -136,12 +136,11 @@ jobs:
             echo "summary=$summary"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Push branch + open/reuse PR (CLAUDE_DEV_PAT)
+      - name: Open/reuse PR (CLAUDE_DEV_PAT)
         id: pr
         if: steps.resolve.outputs.issue-number != ''
         env:
           GH_TOKEN: ${{ secrets.CLAUDE_DEV_PAT }}
-          CLAUDE_DEV_PAT: ${{ secrets.CLAUDE_DEV_PAT }}
           HEAD: ${{ steps.resolve.outputs.head-branch }}
           BASE: ${{ steps.resolve.outputs.base-branch }}
           SHA: ${{ steps.resolve.outputs.commit-sha }}
@@ -153,12 +152,12 @@ jobs:
             echo "::error::Refusing to open PR against $BASE (PRD §7 S3)"
             exit 1
           fi
-          # S7 pipeline-fix: embed PAT in extraheader so workflow-scope auth works.
-          # PR #147: `base64 | tr -d '\n'` — default base64 wraps at 76 cols,
-          # fine-grained PAT produces 2-line output that breaks the header.
-          git config --local --unset http.https://github.com/.extraheader 2>/dev/null || true
-          git config --local http.https://github.com/.extraheader "Authorization: basic $(printf 'x-access-token:%s' "$CLAUDE_DEV_PAT" | base64 | tr -d '\n')"
-          git push origin "$HEAD"
+          # Issue #148: the v1-era `git push origin "$HEAD"` was removed.
+          # code-generate.yml (PR #146, L395-418) now owns the head-branch
+          # push and runs BEFORE this workflow. The runner's local checkout
+          # is on `dev`, so `git push origin claude/issue-N-...` failed with
+          # "src refspec does not match any". `gh pr create --head` operates
+          # on the remote ref directly — no local branch needed.
 
           body=$(cat <<EOF
           I'm an AI assistant (powered by Claude) operating under the GithubAutoDev disclosure policy.
