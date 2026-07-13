@@ -10,7 +10,7 @@
 #     (S1: NO contents:write — review is read + PR comment only)
 #   - S5: claude --allowedTools "Read,Grep,Glob,Bash(gh pr:*)" — no Write,
 #     no Edit, no gh pr merge/approve
-#   - S4: no secrets printed in workflow; DEEPSEEK_API_KEY never printed
+#   - S4: no secrets printed in workflow; LLM_API_KEY never printed
 #   - S3: never writes to main
 #   - PR #16 lesson: label writes use CLAUDE_DEV_PAT (so downstream workflows fire)
 #   - On failure: stage:failed label + failure comment
@@ -103,6 +103,12 @@ jobs:
       contents: read
       issues: write
       pull-requests: write
+    env:
+      # PR #138 root cause: claude-code-action@v1 reads env.ANTHROPIC_BASE_URL
+      # at the JOB level. Step-level env on composite actions does NOT
+      # propagate to the SDK call. Without this, SDK defaults to
+      # api.anthropic.com and GLM passthrough key gets 401.
+      ANTHROPIC_BASE_URL: ${{ vars.ANTHROPIC_BASE_URL }}
     timeout-minutes: ${{ fromJSON(vars.REVIEW_TIME_BUDGET_MIN || '20') }}
     outputs:
       review-status: ${{ steps.review.outputs.review-status }}
@@ -124,7 +130,7 @@ jobs:
           # PR #16 lesson: pass CLAUDE_DEV_PAT so gh pr comment triggers
           # downstream events and appears under the developer identity.
           repo-token: ${{ secrets.CLAUDE_DEV_PAT }}
-          api-key: ${{ secrets.DEEPSEEK_API_KEY }}
+          api-key: ${{ secrets.LLM_API_KEY }}
           anthropic-base-url: ${{ vars.ANTHROPIC_BASE_URL }}
           model: ${{ vars.REVIEW_MODEL }}
           max-turns: ${{ vars.REVIEW_MAX_TURNS || '12' }}

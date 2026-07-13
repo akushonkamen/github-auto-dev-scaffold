@@ -33,7 +33,7 @@ inputs:
     description: "GITHUB_TOKEN (read-only + issues:write)"
     required: true
   api-key:
-    description: "Engine provider API key (DEEPSEEK_API_KEY for GLM passthrough)"
+    description: "Engine provider API key (LLM_API_KEY for GLM passthrough)"
     required: true
   anthropic-base-url:
     description: "Anthropic-compatible API base URL. Empty = Anthropic default."

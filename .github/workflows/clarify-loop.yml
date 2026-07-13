@@ -180,6 +180,12 @@ jobs:
     permissions:
       contents: read
       issues: write
+    env:
+      # PR #138 root cause: claude-code-action@v1 reads env.ANTHROPIC_BASE_URL
+      # at the JOB level (base-action.yml line 331). Step-level env on the
+      # composite action does NOT propagate to the SDK. Without this, SDK
+      # defaults to api.anthropic.com and GLM passthrough key gets 401.
+      ANTHROPIC_BASE_URL: ${{ vars.ANTHROPIC_BASE_URL }}
     timeout-minutes: ${{ fromJSON(vars.CLARIFY_TIME_BUDGET_MIN || '30') }}
     outputs:
       action: ${{ steps.dispatch.outputs.action }}
@@ -213,7 +219,7 @@ jobs:
           round-number: ${{ needs.preflight.outputs.round-number }}
           issue-language: ${{ needs.preflight.outputs.issue-language }}
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-          api-key: ${{ secrets.DEEPSEEK_API_KEY }}
+          api-key: ${{ secrets.LLM_API_KEY }}
           anthropic-base-url: ${{ vars.ANTHROPIC_BASE_URL }}
           model: ${{ vars.TRIAGE_MODEL }}
 
