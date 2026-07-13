@@ -47,6 +47,14 @@ jobs:
     permissions:
       contents: read
       issues: write
+    env:
+      # claude-code-action@v1 internal reads `env.ANTHROPIC_BASE_URL` (see
+      # anthropics/claude-code-action action.yml line 331), which is the
+      # JOB-LEVEL env context — step-level env in .github/actions/triage
+      # action.yml does NOT propagate. Without this, the SDK call defaults
+      # to https://api.anthropic.com and the GLM passthrough key gets 401.
+      # See issue #131 root-cause analysis (2026-07-13).
+      ANTHROPIC_BASE_URL: ${{ vars.ANTHROPIC_BASE_URL }}
     outputs:
       decision: ${{ steps.triage.outputs.decision }}
       comment-body: ${{ steps.triage.outputs.comment_body }}
