@@ -42,7 +42,7 @@ inputs:
     description: "GITHUB_TOKEN with issues:write"
     required: true
   api-key:
-    description: "Engine provider API key (ZHIPU_API_KEY when using GLM passthrough)"
+    description: "Engine provider API key (LLM_API_KEY for GLM passthrough)"
     required: true
   anthropic-base-url:
     description: "Anthropic-compatible API base URL (e.g. https://open.bigmodel.cn/api/anthropic for GLM). Empty = Anthropic default."

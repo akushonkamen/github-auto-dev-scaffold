@@ -29,7 +29,7 @@
 # SECURITY (PRD §7):
 #   - S1: contents:read + issues:write + pull-requests:write (NO contents:write)
 #   - S3: trigger is pull_request on dev only (never main)
-#   - S4: DEEPSEEK_API_KEY never printed (existence check only, like code-generate)
+#   - S4: LLM_API_KEY never printed (existence check only, like code-generate)
 #   - S5: composite actions enforce their own --allowedTools; no bypass here
 #   - S7: scoped to .github/workflows/verify.yml (pipeline-fix sanctioned)
 #
@@ -125,6 +125,12 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    env:
+      # PR #138 root cause: claude-code-action@v1 reads env.ANTHROPIC_BASE_URL
+      # at the JOB level. Step-level env on composite actions does NOT
+      # propagate to the SDK call. Without this, SDK defaults to
+      # api.anthropic.com and GLM passthrough key gets 401.
+      ANTHROPIC_BASE_URL: ${{ vars.ANTHROPIC_BASE_URL }}
     outputs:
       verdict: ${{ steps.run.outputs.verdict }}
       manifest: ${{ steps.detect.outputs.manifest }}
@@ -145,11 +151,11 @@ jobs:
           echo "manifest=$manifest" >> "$GITHUB_OUTPUT"
           echo "Detected manifest: $manifest"
 
-      - name: "Verify DEEPSEEK_API_KEY (S4: never print value)"
+      - name: "Verify LLM_API_KEY (S4: never print value)"
         shell: bash
         run: |
-          if [ -z "${{ secrets.DEEPSEEK_API_KEY }}" ]; then
-            echo "::warning::DEEPSEEK_API_KEY not set (smoke oracle does not use it, but downstream oracles do)."
+          if [ -z "${{ secrets.LLM_API_KEY }}" ]; then
+            echo "::warning::LLM_API_KEY not set (smoke oracle does not use it, but downstream oracles do)."
           fi
 
       - name: Run smoke oracle
@@ -193,6 +199,12 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+    env:
+      # PR #138 root cause: claude-code-action@v1 reads env.ANTHROPIC_BASE_URL
+      # at the JOB level. Step-level env on composite actions does NOT
+      # propagate to the SDK call. Without this, SDK defaults to
+      # api.anthropic.com and GLM passthrough key gets 401.
+      ANTHROPIC_BASE_URL: ${{ vars.ANTHROPIC_BASE_URL }}
     outputs:
       verdict: ${{ steps.norm.outputs.verdict }}
       report: ${{ steps.invoke.outputs.verify-report }}
@@ -211,7 +223,7 @@ jobs:
           base-branch: ${{ github.base_ref }}
           pr-url: ${{ github.event.pull_request.html_url }}
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-          api-key: ${{ secrets.DEEPSEEK_API_KEY }}
+          api-key: ${{ secrets.LLM_API_KEY }}
           anthropic-base-url: ${{ vars.ANTHROPIC_BASE_URL }}
           model: ${{ vars.SELF_VERIFY_MODEL }}
           max-turns: ${{ vars.SELF_VERIFY_MAX_TURNS || '10' }}

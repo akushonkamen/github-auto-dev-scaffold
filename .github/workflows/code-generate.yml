@@ -86,6 +86,12 @@ jobs:
       contents: write
       issues: write
       actions: read
+    env:
+      # PR #138 root cause: claude-code-action@v1 reads env.ANTHROPIC_BASE_URL
+      # at the JOB level. Step-level env on composite actions does NOT
+      # propagate to the SDK call. Without this, SDK defaults to
+      # api.anthropic.com and GLM passthrough key gets 401.
+      ANTHROPIC_BASE_URL: ${{ vars.ANTHROPIC_BASE_URL }}
     timeout-minutes: ${{ fromJSON(vars.DEVELOP_TIME_BUDGET_MIN || '60') }}
     outputs:
       branch-name: ${{ steps.branch.outputs.branch-name }}
@@ -297,14 +303,14 @@ jobs:
         run: |
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - name: "Verify DEEPSEEK_API_KEY secret exists (S4: never print value)"
+      - name: "Verify LLM_API_KEY secret exists (S4: never print value)"
         shell: bash
         run: |
-          if [ -z "${{ secrets.DEEPSEEK_API_KEY }}" ]; then
-            echo "::error::DEEPSEEK_API_KEY secret is not set or is empty."
+          if [ -z "${{ secrets.LLM_API_KEY }}" ]; then
+            echo "::error::LLM_API_KEY secret is not set or is empty."
             exit 1
           fi
-          echo "::notice::DEEPSEEK_API_KEY secret is configured (value not printed per S4)."
+          echo "::notice::LLM_API_KEY secret is configured (value not printed per S4)."
 
       - name: Run develop composite
         id: develop
@@ -315,7 +321,7 @@ jobs:
           base-branch: ${{ steps.resolve.outputs.base-branch }}
           head-branch: ${{ steps.resolve.outputs.head-branch }}
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-          api-key: ${{ secrets.DEEPSEEK_API_KEY }}
+          api-key: ${{ secrets.LLM_API_KEY }}
           anthropic-base-url: ${{ vars.ANTHROPIC_BASE_URL }}
           model: ${{ vars.DEVELOP_MODEL }}
           max-turns: ${{ vars.DEVELOP_MAX_TURNS || '20' }}

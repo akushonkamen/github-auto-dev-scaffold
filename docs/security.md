@@ -80,7 +80,7 @@ Module 6 (test) was originally Codex (PRD §4 out-of-distribution tester). Amend
 - **Tool blacklist (deny):** `Write`, `Edit`. Module 6 v2 does NOT write test files. If a coverage gap is found, it is reported in the `coverage_gaps` array of the sealed output, not patched.
 - **Git mutation guard:** `claude_args --disallowedTools "Write,Edit,Bash(git push*),Bash(git commit*),Bash(git checkout*),Bash(git reset*),Bash(git rebase*)"`. The tester cannot mutate git state.
 - **Process isolation:** Each Module 6 run is a fresh `claude-code-action@v1` invocation with no conversation memory shared with Module 4 (develop) or Module 5 (self-verify).
-- **API key:** `secrets.ANTHROPIC_API_KEY` (or GLM passthrough equivalent). Scoped to Module 6 only (S3). Never printed (S4).
+- **API key:** `secrets.LLM_API_KEY` (provider-neutral; GLM passthrough by default via `vars.ANTHROPIC_BASE_URL`). Scoped to Module 6 only (S3). Never printed (S4).
 - **Model:** defaults to engine default; `vars.TEST_MODEL` may override (recommend a different tier than Module 4 to retain partial perspective diversity — e.g. Opus for Module 6 if Module 4 ran Sonnet).
 - **Max turns:** default 10 (configurable via `vars.TEST_MAX_TURNS`).
 - **No sandbox bypass:** no `--dangerously-skip-permissions`. The allow/deny lists enforce the boundary at the action level.

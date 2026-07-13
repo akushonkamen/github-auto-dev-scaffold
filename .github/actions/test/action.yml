@@ -2,7 +2,7 @@
 # Originally PRD §4 specified Codex as out-of-distribution tester. Amended to a
 # second isolated Claude Code process with tool-restricted reviewer profile
 # (see docs/architecture.md §"Module 6 engine amendment"). Reason: maintainers
-# cannot configure OPENAI_API_KEY (cost / account constraints); ANTHROPIC_API_KEY
+# cannot configure OPENAI_API_KEY (cost / account constraints); LLM_API_KEY
 # already configured with GLM passthrough. Strict OOD value is reduced but
 # retained partially via model tier separation + tool whitelist + prompt framing.
 #
@@ -43,7 +43,7 @@ inputs:
     description: "GITHUB_TOKEN (read-only + PR comment + label)"
     required: true
   api-key:
-    description: "Anthropic-compatible API key (ANTHROPIC_API_KEY or GLM passthrough key)"
+    description: "Anthropic-compatible API key (LLM_API_KEY for GLM passthrough)"
     required: true
   anthropic-base-url:
     description: "Anthropic-compatible API base URL. Empty = Anthropic default. Set for GLM passthrough."

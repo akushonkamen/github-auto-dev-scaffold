@@ -16,8 +16,8 @@
 #   escalate to repo writes.
 #
 # Engine: claude-code-action@v1 with ANTHROPIC_BASE_URL passthrough.
-#   - Set DEEPSEEK_API_KEY + base url vars → routes to DeepSeek's Anthropic-compatible
-#     endpoint (https://api.deepseek.com/anthropic) with model "deepseek-v4-pro".
+#   - Set LLM_API_KEY + base url vars → routes to any Anthropic-compatible
+#     endpoint (e.g. GLM at https://open.bigmodel.cn/api/anthropic with model "glm-5.2").
 name: triage-issue
 
 on:
@@ -84,7 +84,7 @@ jobs:
         with:
           issue-number: ${{ steps.resolve-issue.outputs.issue-number }}
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-          api-key: ${{ secrets.DEEPSEEK_API_KEY }}
+          api-key: ${{ secrets.LLM_API_KEY }}
           anthropic-base-url: ${{ vars.ANTHROPIC_BASE_URL }}
           model: ${{ vars.TRIAGE_MODEL }}
           engine: claude

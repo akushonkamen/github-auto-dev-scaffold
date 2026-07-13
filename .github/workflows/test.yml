@@ -13,7 +13,7 @@
 #     (S1: NO contents:write — test is read + test execution only)
 #   - S5: claude-code-action with allow Read/Grep/Glob/Bash, deny Write/Edit
 #     (NO --dangerously-skip-permissions)
-#   - S4: no secrets printed in workflow; DEEPSEEK_API_KEY never printed
+#   - S4: no secrets printed in workflow; LLM_API_KEY never printed
 #   - S3: never writes to main
 #   - PR #16 lesson: label writes use CLAUDE_DEV_PAT (so downstream workflows fire)
 #   - On failure: test:failed label + failure comment, stage:failed fallback
@@ -44,6 +44,12 @@ jobs:
       contents: read
       issues: write
       pull-requests: write
+    env:
+      # PR #138 root cause: claude-code-action@v1 reads env.ANTHROPIC_BASE_URL
+      # at the JOB level. Step-level env on composite actions does NOT
+      # propagate to the SDK call. Without this, SDK defaults to
+      # api.anthropic.com and GLM passthrough key gets 401.
+      ANTHROPIC_BASE_URL: ${{ vars.ANTHROPIC_BASE_URL }}
     timeout-minutes: ${{ fromJSON(vars.TEST_TIME_BUDGET_MIN || '30') }}
     outputs:
       test-status: ${{ steps.test.outputs.test-status }}
@@ -98,14 +104,14 @@ jobs:
           set -eu
           gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "testing" || true
 
-      - name: "Verify DEEPSEEK_API_KEY secret exists (S4: never print value)"
+      - name: "Verify LLM_API_KEY secret exists (S4: never print value)"
         shell: bash
         run: |
-          if [ -z "${{ secrets.DEEPSEEK_API_KEY }}" ]; then
-            echo "::error::DEEPSEEK_API_KEY secret is not set or is empty. Module 6 v2 uses this key for GLM passthrough via ANTHROPIC_BASE_URL."
+          if [ -z "${{ secrets.LLM_API_KEY }}" ]; then
+            echo "::error::LLM_API_KEY secret is not set or is empty. Module 6 v2 uses this key for GLM passthrough via ANTHROPIC_BASE_URL."
             exit 1
           fi
-          echo "::notice::DEEPSEEK_API_KEY secret is configured (value not printed per S4)."
+          echo "::notice::LLM_API_KEY secret is configured (value not printed per S4)."
 
       - name: Run test composite (Claude engine, v2)
         id: test
@@ -117,7 +123,7 @@ jobs:
           head-branch: ${{ steps.pr.outputs.head-branch }}
           base-branch: ${{ steps.pr.outputs.base-branch }}
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-          api-key: ${{ secrets.DEEPSEEK_API_KEY }}
+          api-key: ${{ secrets.LLM_API_KEY }}
           anthropic-base-url: ${{ vars.ANTHROPIC_BASE_URL || '' }}
           model: ${{ vars.TEST_MODEL || '' }}
           max-turns: ${{ vars.TEST_MAX_TURNS || '10' }}
