@@ -225,8 +225,13 @@ jobs:
             echo "head-branch=$head_branch"
             echo "base-branch=$base_branch"
             echo "issue-language=$issue_language"
-            echo "prior-test-report=$prior_test_report"
             echo "retry-attempt=$retry_attempt"
+            # Multi-line value must use heredoc syntax — markdown prior-verify-report
+            # contains "| Field | Value |" tables and newlines that break the
+            # single-line `key=value` parser (run 29264389854: "Invalid format '| Field | Value |'").
+            echo "prior-test-report<<EOF"
+            printf '%s\n' "$prior_test_report"
+            echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
       - name: Create head branch (off base, never main)
