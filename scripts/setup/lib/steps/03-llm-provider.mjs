@@ -20,7 +20,7 @@ const PRESETS = {
   deepseek: {
     name: 'DeepSeek passthrough',
     baseUrl: 'https://api.deepseek.com/anthropic',
-    keyEnv: 'DEEPSEEK_API_KEY',
+    keyEnv: 'LLM_API_KEY',
     model: 'deepseek-v4-pro',
   },
   anthropic: {
@@ -52,7 +52,7 @@ export async function run(ctx) {
     });
     baseUrl = validateHttpUrl(url).value;
     keyEnv = await input({
-      message: 'Secret name for API key (e.g. DEEPSEEK_API_KEY):',
+      message: 'Secret name for API key (e.g. LLM_API_KEY):',
       default: 'CUSTOM_API_KEY',
     });
     model = await input({
