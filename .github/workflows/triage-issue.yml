@@ -116,6 +116,7 @@ jobs:
       # v2 lifecycle note: `needs-ralph` is never emitted here. The only emitter
       # of `needs-ralph` is clarify-loop's max-rounds fallback.
       - name: Route by workload_class (M8)
+        id: route
         if: ${{ steps.triage.outputs.decision == 'work' }}
         env:
           # S7 pipeline-fix (2026-07-07): use CLAUDE_DEV_PAT so label events
@@ -129,17 +130,50 @@ jobs:
             trivial|standard)
               gh issue edit "$NUMBER" --add-label accepted-by-claude
               gh issue comment "$NUMBER" --body "🤖 Claude self-acceptance (M8 workload=$WORKLOAD). \`accepted-by-claude\` applied — Module 4 develop-gate will pick this up. Maintainer may override with \`rejected\`."
+              echo "auto-accepted=true" >> "$GITHUB_OUTPUT"
               ;;
             complex)
               gh issue edit "$NUMBER" --add-label needs-clarify
               gh issue comment "$NUMBER" --body "🔬 Claude classified this as **complex** — Module 3' clarify loop will engage to scope the work before acceptance."
+              echo "auto-accepted=false" >> "$GITHUB_OUTPUT"
               ;;
             *)
               # Fallback for empty/unexpected workload: safer to clarify.
               gh issue edit "$NUMBER" --add-label needs-clarify
               gh issue comment "$NUMBER" --body "⏳ Claude recommends development (workload unset). Module 3' clarify loop will engage to confirm scope."
+              echo "auto-accepted=false" >> "$GITHUB_OUTPUT"
               ;;
           esac
+
+      # M8 amendment (pipeline-fix 2026-07-13): when triage auto-applies
+      # `accepted-by-claude` for trivial/standard workload, the issue skips
+      # clarify-loop and goes straight to Module 4. But develop-gate is
+      # triggered via `workflow_run` and consumes an `issue-context` artifact
+      # uploaded by the upstream workflow. clarify-loop.yml uploads it (L338);
+      # triage-issue.yml did NOT, causing develop-gate preflight to bail with
+      # "issue-context artifact not found" for every M8-routed issue.
+      # This step mirrors clarify-loop's artifact contract for the M8 path.
+      - name: M8 — emit issue-context artifact for develop-gate
+        if: ${{ steps.route.outputs.auto-accepted == 'true' }}
+        env:
+          NUMBER: ${{ steps.resolve-issue.outputs.issue-number }}
+        run: |
+          set -eu
+          mkdir -p ./.github/artifacts
+          jq -n \
+            --arg issue_number "$NUMBER" \
+            --arg decision "work" \
+            --arg source "triage-issue" \
+            '{issue_number: $issue_number, decision: $decision, source: $source}' \
+            > ./.github/artifacts/issue-context.json
+          cat ./.github/artifacts/issue-context.json
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ steps.route.outputs.auto-accepted == 'true' }}
+        with:
+          name: issue-context
+          path: ./.github/artifacts/issue-context.json
+          retention-days: 1
 
   # Failure path: post a stage:failed comment and label, do not block other issues.
   # PRD §6 graceful degradation.

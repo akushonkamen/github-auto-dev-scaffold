@@ -40,7 +40,11 @@ on:
         required: true
         type: string
   workflow_run:
-    workflows: [clarify-loop]
+    # M8 amendment (pipeline-fix 2026-07-13): triage-issue now uploads the
+    # `issue-context` artifact for trivial/standard workload that skips
+    # clarify-loop. Without triage-issue in this list, develop-gate never
+    # fires for M8-routed issues and Module 4 stays dark.
+    workflows: [clarify-loop, triage-issue]
     types: [completed]
 
 permissions:
