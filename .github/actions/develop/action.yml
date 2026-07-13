@@ -204,7 +204,7 @@ runs:
 
           ## Hard rules
           1. **Never push.** The caller workflow pushes and opens the PR. Your
-             `--disallowedTools` blocks `git push*` wholesale. You only commit.
+             `settings.permissions.deny` list blocks `Bash(git push:*)` wholesale. You only commit.
           2. **Never check out main/master.** Stay on ${{ inputs.head-branch }}.
           3. **Never force-push, never reset --hard** (PRD §6 idempotency + §7 S3).
           4. **Match the natural language of the issue body** for any code comments,
@@ -232,7 +232,12 @@ runs:
 
           Respond with the JSON object only.
         settings: ${{ steps.cfg.outputs.settings }}
-        claude_args: "--disallowedTools ${{ steps.cfg.outputs.disallowed }}"
+        # PR #143 follow-up: dropped claude_args entirely. The settings JSON
+        # already carries permissions.deny=[Bash(git push:*), Bash(git checkout
+        # main*), Bash(git checkout master*), Bash(git reset --hard*)], which
+        # is strictly more comprehensive than the --disallowedTools list and
+        # avoids the spaces-in-args shell-split bug that crashed the CLI on
+        # startup (run 29244145735: "Claude Code process exited with code 1").
 
     - name: Capture head SHA + parse engine output
       id: emit
