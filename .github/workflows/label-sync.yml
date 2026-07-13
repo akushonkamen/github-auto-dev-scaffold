@@ -1,0 +1,68 @@
+# Label sync — keeps GitHub repo labels in lockstep with .github/labels.yml
+#
+# Purpose: .github/labels.yml is the source of truth (per its own preamble).
+# Before this workflow, label definitions lived only in the file — adding a
+# new label required a maintainer to manually `gh label create` or it would
+# be missing on the repo, breaking label-driven workflows (verify.yml /
+# review.yml retry labels, see issue #128 for the incident).
+#
+# Trigger:
+#   - push to dev that touches .github/labels.yml
+#   - workflow_dispatch (manual re-sync)
+#
+# Engine: crazy-max/ghaction-github-labeler@v5 (the action labels.yml's own
+# preamble references).
+#
+# SECURITY (PRD §7):
+#   - S1: permissions: contents:read + issues:write. NEVER contents:write.
+#   - S3: only runs on dev push, never main.
+#   - S4: no secrets consumed. GITHUB_TOKEN only.
+#   - conservative: delete=false (don't remove labels absent from labels.yml
+#     to avoid nuking ad-hoc labels; flip to true once we're confident).
+
+name: label-sync
+
+on:
+  push:
+    branches: [dev]
+    paths:
+      - .github/labels.yml
+      - .github/workflows/label-sync.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: label-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Sync labels from .github/labels.yml
+        uses: crazy-max/ghaction-github-labeler@v5
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          yaml-file: .github/labels.yml
+          # skip-delete: true keeps ad-hoc labels not declared in labels.yml.
+          # Flip to false (default) once we trust the source of truth fully.
+          skip-delete: true
+
+      - name: Post sync summary
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          total=$(gh label list --repo "$GITHUB_REPOSITORY" -L 200 --json name | jq 'length')
+          echo "::notice::label-sync complete. Total labels on repo: $total"
