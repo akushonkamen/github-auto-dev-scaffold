@@ -42,6 +42,15 @@ existing modules already communicate (PRD §2 — modules talk only via events &
 labels). The `.github/actions/*` engines are out of scope and untouched (Issue #156
 non-goals).
 
+The authentication layer (Issue #3) lives in the API / Edge and Domain / Services
+layers: `NextAuth GitHubProvider` configured in
+[`app/src/auth/config.ts`](../app/src/auth/config.ts) handles the OAuth callback
+at `/api/auth/*` (catch-all route in
+[`app/src/app/api/auth/[...nextauth]/route.ts`](../app/src/app/api/auth/[...nextauth]/route.ts)),
+issues a JWT session cookie, and
+[`app/src/middleware.ts`](../app/src/middleware.ts) guards `/dashboard/*` and
+`/settings/*` by checking the token with `next-auth/jwt` `getToken()`.
+
 ## 2. Data flow
 
 ```
