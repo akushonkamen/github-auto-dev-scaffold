@@ -9,9 +9,11 @@ import { runs } from "@/db/schema";
  *
  * The same Issue produces multiple `workflow_dispatch` calls over its life
  * (triage → clarify → develop → …) — each module updates `currentStage` and
- * `status` on the same row. New Issues insert; subsequent dispatches update.
+ * `status` on the same row.
  *
- * PRD §4.2 audit trail + Issue #9 billing source.
+ * The `uq_runs_installation_issue` unique constraint lets us use
+ * `onConflictDoUpdate` for atomic upsert — no query-then-update race under
+ * concurrent dispatches (PRD §4.2 audit trail + Issue #9 billing source).
  */
 
 export async function findRunByIssue(
@@ -38,21 +40,6 @@ export async function upsertRun(args: {
   currentStage: string;
   status: string;
 }): Promise<{ runId: number }> {
-  const existing = await findRunByIssue(
-    args.installationDbId,
-    args.issueNumber,
-  );
-  if (existing) {
-    await db
-      .update(runs)
-      .set({
-        prNumber: args.prNumber,
-        currentStage: args.currentStage,
-        status: args.status,
-      })
-      .where(eq(runs.id, existing.id));
-    return { runId: existing.id };
-  }
   const inserted = await db
     .insert(runs)
     .values({
@@ -61,6 +48,14 @@ export async function upsertRun(args: {
       prNumber: args.prNumber,
       currentStage: args.currentStage,
       status: args.status,
+    })
+    .onConflictDoUpdate({
+      target: [runs.installationId, runs.issueNumber],
+      set: {
+        prNumber: args.prNumber,
+        currentStage: args.currentStage,
+        status: args.status,
+      },
     })
     .returning({ id: runs.id });
   return { runId: inserted[0]?.id ?? 0 };

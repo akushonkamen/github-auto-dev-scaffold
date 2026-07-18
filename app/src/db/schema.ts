@@ -8,6 +8,7 @@ import {
   real,
   text,
   timestamp,
+  unique,
 } from "drizzle-orm/pg-core";
 import type { InferSelectModel } from "drizzle-orm";
 
@@ -61,6 +62,13 @@ export const runs = pgTable(
   (table) => ({
     installationIdx: index("idx_runs_installation_id").on(table.installationId),
     issueNumberIdx: index("idx_runs_issue_number").on(table.issueNumber),
+    // One run per (installation, issue) — query-then-upsert without this races
+    // under concurrent dispatches. With the constraint, runs.ts uses
+    // onConflictDoUpdate for atomicity.
+    installationIssueUnique: unique("uq_runs_installation_issue").on(
+      table.installationId,
+      table.issueNumber,
+    ),
   }),
 );
 
