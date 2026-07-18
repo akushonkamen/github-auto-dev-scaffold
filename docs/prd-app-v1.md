@@ -296,9 +296,9 @@ async function triggerTriage(installationId: number, issueNumber: number) {
 
 ## 10. 决策点（已锁定 2026-07-18）
 
-1. **品牌名**：`GitAutoDev` ✅ LOCKED — 与仓库名 `github-auto-dev-scaffold` 一脉相承，名字直白无歧义；GitHub App 已注册（App ID `4331480`，slug `gitautodev`，URL https://github.com/apps/gitautodev）。前期候选 Cyclo 在实际注册时被用户改回。
+1. **品牌名**：`GitAutoDev` ✅ LOCKED — 与仓库名 `github-auto-dev-scaffold` 一脉相承，名字直白无歧义；GitHub App 已注册（App ID `4331480`，slug `gitautodev`，URL https://github.com/apps/gitautodev）。
 2. **域名**：待定（候选 `gitautodev.com` / `gitautodev.app` / `getgitautodev.com` / `gitautodev.dev`）— 由用户单独决策
-3. **GitHub App 名**：`GitAutoDev` ✅ LOCKED + 已注册（影响 marketplace URL）
+3. **GitHub App 名**：`GitAutoDev` ✅ LOCKED — 已注册（https://github.com/apps/gitautodev）
 4. **代码仓库**：✅ monorepo（当前 repo 加 `app/`）— Issue #156 已落地 Next.js 脚手架
 5. **v1 开源策略**：✅ 完全开源（路径 A 完整版）
 6. **是否走 YC / 种子轮**：✅ 自筹（v1 MVP 阶段）；融资决策推迟到 100 安装 + $2K MRR 验证后

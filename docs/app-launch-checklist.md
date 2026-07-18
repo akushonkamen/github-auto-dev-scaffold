@@ -45,14 +45,16 @@
 
 ---
 
-## A3-2：域名注册（待定，~10 分钟）— GitAutoDev 已锁定，域名候选待用户决定
+## A3-2：域名注册（待定）
+
+> 品牌 **GitAutoDev** 已锁定（GitHub App 已注册，App ID `4331480`，slug `gitautodev`，https://github.com/apps/gitautodev）。域名候选待用户决定。
 
 ### 推荐
 
 - **Cloudflare Registrar**（最便宜，无加价续费）：https://dash.cloudflare.com/?to=/:domains/registrar
 - 次选：Porkbun / Namecheap
 
-### 候选名（GitAutoDev 已锁定 2026-07-18，域名待查可用性）
+### 候选名（GitAutoDev 已锁定 2026-07-18，域名候选待用户决定）
 
 | 域名 | 状态 | 备注 |
 |---|---|---|
