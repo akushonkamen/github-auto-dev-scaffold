@@ -84,7 +84,23 @@ GitHub event ──▶ Vercel API route (/api/webhook/github) ──▶ Postgres
 6. Pipeline modules (triage → … → merge) run unchanged and report back via labels.
 
 > v1 webhook entry point, signature verification, QStash enqueue, and installation
-> sync ship in Issue #4. The QStash worker (`workflow_dispatch` engine trigger) lands in Issue #5.
+> sync ship in Issue #4. The QStash worker (`workflow_dispatch` engine trigger) lands
+> in Issue #5 (PR for #171):
+>
+> - **Worker route** [`app/src/app/api/webhook/github/worker/route.ts`](../app/src/app/api/webhook/github/worker/route.ts)
+>   consumes `{event, payload}` envelopes delivered by QStash.
+> - **QStash signature verify** ([`qstash-verify.ts`](../app/src/lib/qstash-verify.ts)) —
+>   Ed25519 via `@upstash/qstash` Receiver, separate from the GitHub HMAC path.
+> - **Redis dedup** ([`redis.ts`](../app/src/lib/redis.ts)) — `SETNX delivery:{id} 1 EX 86400`
+>   ensures one X-GitHub-Delivery is processed exactly once per 24h.
+> - **Installation token** ([`installation-token.ts`](../app/src/lib/installation-token.ts)) —
+>   minted via GitHub App JWT + access_tokens endpoint, cached 50 minutes.
+> - **Dispatch** ([`dispatch.ts`](../app/src/lib/dispatch.ts)) — maps action-aware
+>   event key (e.g. `issues.opened`) to workflow file (e.g. `triage-issue.yml`),
+>   calls `/actions/workflows/{file}/dispatches` with `ref=dev`.
+> - **Runs audit** ([`runs.ts`](../app/src/lib/runs.ts)) — upserts `runs` table
+>   with `currentStage` + `status` (`dispatching` → `dispatched` / `failed`).
+> - Failure → `runs.status=failed` + 5xx so QStash retries with exponential backoff.
 
 ## 6. Postgres schema (PRD §4.2)
 
