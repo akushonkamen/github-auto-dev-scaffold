@@ -6,6 +6,7 @@ import { claimDelivery } from "@/lib/redis";
 import { getInstallationToken } from "@/lib/installation-token";
 import { dispatchWorkflow, eventToWorkflow } from "@/lib/dispatch";
 import { upsertRun } from "@/lib/runs";
+import { checkQuota } from "@/lib/quota";
 import { db } from "@/db/client";
 import { eq, and, isNull } from "drizzle-orm";
 import { installations } from "@/db/schema";
@@ -95,6 +96,7 @@ export async function POST(request: Request): Promise<Response> {
   const instRow = await db
     .select({
       id: installations.id,
+      tenantId: installations.tenantId,
       repoFullName: installations.repoFullName,
     })
     .from(installations)
@@ -128,6 +130,34 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   try {
+    // Quota check — Free tier exhausted blocks new dispatches. We mark the
+    // run `failed` (terminal, no QStash retry) and ack 200 so QStash doesn't
+    // loop. The tenant owner sees the failure in the dashboard usage page.
+    const quota = await checkQuota(instRow[0].tenantId);
+    if (!quota.allowed) {
+      await upsertRun({
+        installationDbId: instRow[0].id,
+        issueNumber: issueNumber ?? 0,
+        prNumber,
+        currentStage: event,
+        status: "failed",
+      }).catch(() => undefined);
+
+      return NextResponse.json(
+        {
+          ok: false,
+          event,
+          deliveryId,
+          ignored: true,
+          reason: "quota_exhausted",
+          plan: quota.plan,
+          used: quota.used,
+          limit: quota.limit,
+        },
+        { status: 402 },
+      );
+    }
+
     await upsertRun({
       installationDbId: instRow[0].id,
       issueNumber: issueNumber ?? 0,
