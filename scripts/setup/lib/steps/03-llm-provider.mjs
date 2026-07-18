@@ -1,7 +1,7 @@
 /**
  * Step 3 — LLM provider.
  * GLM 5.2 via Zhipu (default, matches repo's claude-code settings.json) /
- * DeepSeek passthrough / Anthropic direct / custom endpoint.
+ * Anthropic direct / custom endpoint.
  * Performs a health probe against /v1/messages.
  */
 import { input, password, select } from '@inquirer/prompts';
@@ -14,19 +14,13 @@ const PRESETS = {
   glm: {
     name: 'GLM 5.2 via Zhipu bigmodel.cn (recommended — matches repo default)',
     baseUrl: 'https://open.bigmodel.cn/api/anthropic',
-    keyEnv: 'ZHIPU_API_KEY',
-    model: 'glm-5.2',
-  },
-  deepseek: {
-    name: 'DeepSeek passthrough',
-    baseUrl: 'https://api.deepseek.com/anthropic',
     keyEnv: 'LLM_API_KEY',
-    model: 'deepseek-v4-pro',
+    model: 'glm-5.2',
   },
   anthropic: {
     name: 'Anthropic direct (Claude Opus / Sonnet / Haiku)',
     baseUrl: '',
-    keyEnv: 'ANTHROPIC_API_KEY',
+    keyEnv: 'LLM_API_KEY',
     model: 'claude-opus-4-7',
   },
   custom: { name: 'Custom Anthropic-compatible endpoint', baseUrl: '', keyEnv: '', model: '' },

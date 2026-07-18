@@ -72,7 +72,7 @@ export async function run(ctx) {
 
 function buildGroups({ llm, baseBranch, patOwner }) {
   const baseUrlDefault = llm.baseUrl || '';
-  const modelDefault = llm.model || 'deepseek-v4-pro';
+  const modelDefault = llm.model || 'glm-5.2';
 
   return [
     {

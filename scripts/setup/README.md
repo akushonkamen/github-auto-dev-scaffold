@@ -38,7 +38,7 @@ node wizard.mjs --no-state
 | 00 | Pre-flight: gh auth, node ≥20, git installed |
 | 01 | Target repo (owner/name) — validated via `gh repo view` |
 | 02 | Base branch (S3: never `main`/`master`) |
-| 03 | LLM provider (DeepSeek passthrough / Anthropic / custom) + health probe |
+| 03 | LLM provider (GLM passthrough / Anthropic / custom) + health probe |
 | 04 | `CLAUDE_DEV_PAT` — fine-grained only (S6), validated against `/user` |
 | 05 | Pipeline files deployment checklist (manual) |
 | 06 | 24 repo vars (engine core, budgets, retry, repo meta) |
