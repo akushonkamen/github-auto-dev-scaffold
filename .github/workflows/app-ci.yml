@@ -1,0 +1,102 @@
+name: app-ci
+
+# Module: App v1 CI — lint + typecheck + build for the Next.js 14 app under `app/`.
+# Scope: only runs when `app/**` or this workflow file changes (Issue #156 AC).
+# S1 — App CI is read-only on the repo; secrets are intentionally NOT requested.
+
+on:
+  pull_request:
+    paths:
+      - "app/**"
+      - ".github/workflows/app-ci.yml"
+  push:
+    branches:
+      - dev
+      - main
+    paths:
+      - "app/**"
+      - ".github/workflows/app-ci.yml"
+
+# Workflow-level (S1): read-only. Job-level permissions reaffirmed below.
+permissions:
+  contents: read
+
+concurrency:
+  group: app-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-and-typecheck:
+    name: Lint + Typecheck
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # Frozen when a lockfile is committed (reproducible installs); bootstrap
+      # from package.json on the first run so this PR doesn't red-light before
+      # the lockfile lands. Once app/pnpm-lock.yaml is committed, the frozen
+      # branch enforces it strictly.
+      - name: Install dependencies
+        run: |
+          if [ -f pnpm-lock.yaml ]; then
+            pnpm install --frozen-lockfile
+          else
+            echo "::notice file=app/pnpm-lock.yaml::pnpm-lock.yaml not committed yet — generating from package.json (first run)."
+            pnpm install --no-frozen-lockfile
+          fi
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    needs: lint-and-typecheck
+    defaults:
+      run:
+        working-directory: app
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: |
+          if [ -f pnpm-lock.yaml ]; then
+            pnpm install --frozen-lockfile
+          else
+            pnpm install --no-frozen-lockfile
+          fi
+
+      - name: Build
+        run: pnpm build
