@@ -128,6 +128,10 @@ jobs:
               #   3. pull_requests[].body (fetched via gh api) has "closes #N" —
               #      PR-triggered workflow runs
               #   4. display_title first integer — fragile last resort
+              #   5. head_branch=dev fallback: cloud-develop auto-rebase runs
+              #      modules on dev after PR merge; lookup the most recently
+              #      merged PR on dev and extract issue-N from its head ref
+              #      or `closes #N` from its body/title.
               #
               # Step 0 was added 2026-07-18 (pipeline-fix). Upstream workflows
               # that upload `issue-context` (with JSON shape {"issue_number": N})
@@ -221,6 +225,34 @@ jobs:
               if [ -z "$number" ]; then
                 name="$EV_WF_DISPLAY_TITLE"
                 number=$(printf '%s' "$name" | grep -oE '[0-9]+' | head -1 || true)
+              fi
+
+              # Fallback N: cloud-develop pipeline runs verify/code-generate/etc
+              # on `dev` after a PR merge (auto-rebase). head_branch=dev,
+              # head_commit=chore(state) → no signal in any upstream source.
+              # When all else fails, look up the most recently merged PR on dev
+              # (within the last 10 minutes) and extract issue-N from its head
+              # ref or `closes #N` from its body/title.
+              if [ -z "$number" ] && [ "$EV_WF_HEAD_BRANCH" = "dev" ]; then
+                recent_pr_json=$(gh pr list \
+                    --repo "$repo" \
+                    --state merged \
+                    --base dev \
+                    --limit 1 \
+                    --json number,headRefName,title,body 2>/dev/null || echo "")
+                if [ -n "$recent_pr_json" ] && [ "$recent_pr_json" != "[]" ]; then
+                  recent_head=$(printf '%s' "$recent_pr_json" \
+                    | python3 -c "import sys,json; d=json.load(sys.stdin); print(d[0].get('headRefName',''))" 2>/dev/null || echo "")
+                  recent_body=$(printf '%s' "$recent_pr_json" \
+                    | python3 -c "import sys,json; d=json.load(sys.stdin); print((d[0].get('body') or '') + ' ' + (d[0].get('title') or ''))" 2>/dev/null || echo "")
+                  number=$(printf '%s' "$recent_head" | sed -nE 's|.*issue-([0-9]+).*|\1|p' || true)
+                  if [ -z "$number" ]; then
+                    number=$(printf '%s' "$recent_body" | sed -nE 's|.*closes #([0-9]+).*|\1|pi' | head -1 || true)
+                  fi
+                  if [ -z "$number" ]; then
+                    number=$(printf '%s' "$recent_body" | sed -nE 's|.*fixes #([0-9]+).*|\1|pi' | head -1 || true)
+                  fi
+                fi
               fi
 
               etype="workflow_run.completed"
