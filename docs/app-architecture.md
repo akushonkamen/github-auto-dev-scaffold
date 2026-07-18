@@ -233,6 +233,48 @@ Key files:
 | [`app/src/lib/installations-queries.ts`](../app/src/lib/installations-queries.ts) | `findInstallationByGithubId` / `findInstallationByDbId` / `countRunsForInstallation` / `recentRunsForInstallation` |
 | [`app/src/lib/active-installation.ts`](../app/src/lib/active-installation.ts) | Cookie helper — `getActiveInstallationDbId` / `setActiveInstallationDbId` |
 
+## 6.2 Dashboard: runs list + detail + SSE (Issue #7)
+
+```
+/dashboard/installations/[id]/runs          /dashboard/installations/[id]/runs/[runId]
+        │                                                  │
+        ▼                                                  ▼
+ listRecentRunsForInstallation(50)              findRunInInstallation(runId, instId)
+ listUsageLogsForRun(runId)        ← detail only
+        │                                                  │
+        ▼                                                  ▼
+ server-rendered <table> +                        server-rendered header +
+ RunsLiveTable (client)                           RunDetailHeader (client)
+        │                                                  │
+        ▼                                                  ▼
+ for each active run: open EventSource              single EventSource
+ /api/runs/[runId]/events                          /api/runs/[runId]/events
+```
+
+### SSE protocol
+
+- `ready` — server hello, fires once at stream open
+- `snapshot` — full run row; client merges into state by id; server sends only on JSON-stringified diff
+- `complete` — final snapshot + close (status ∈ {dispatched, failed})
+- `timeout` — 10-minute cap hit
+- `error` — run row vanished mid-stream
+
+Server polls Postgres every 2 seconds (Postgres LISTEN/NOTIFY is v2). Auth
+on stream open re-derives `installationGithubId` via `findInstallationForRun`,
+then checks GitHub `/user/installations` membership — same invariant as the
+page route.
+
+Key files:
+
+| File | Role |
+|---|---|
+| [`app/src/app/dashboard/installations/[id]/runs/page.tsx`](../app/src/app/dashboard/installations/[id]/runs/page.tsx) | List page — 50 most recent runs |
+| [`app/src/app/dashboard/installations/[id]/runs/RunsLiveTable.tsx`](../app/src/app/dashboard/installations/[id]/runs/RunsLiveTable.tsx) | Client — up to 10 concurrent EventSource subscriptions on active rows |
+| [`app/src/app/dashboard/installations/[id]/runs/[runId]/page.tsx`](../app/src/app/dashboard/installations/[id]/runs/[runId]/page.tsx) | Detail page — run header + `usage_logs` breakdown |
+| [`app/src/app/dashboard/installations/[id]/runs/[runId]/RunDetailHeader.tsx`](../app/src/app/dashboard/installations/[id]/runs/[runId]/RunDetailHeader.tsx) | Client — single EventSource for the run header |
+| [`app/src/app/api/runs/[runId]/events/route.ts`](../app/src/app/api/runs/[runId]/events/route.ts) | SSE endpoint — 2s poll, 10min cap, terminal-status close |
+| [`app/src/lib/runs-queries.ts`](../app/src/lib/runs-queries.ts) | `listRecentRunsForInstallation` / `findRunInInstallation` (installation-scoped) / `listUsageLogsForRun` / `findInstallationForRun` |
+
 ## 7. CI
 
 [`app-ci.yml`](../.github/workflows/app-ci.yml) runs only on `app/**` changes:
