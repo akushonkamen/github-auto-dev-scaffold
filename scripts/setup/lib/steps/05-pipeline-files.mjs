@@ -3,7 +3,7 @@
  * Skipped when target == current repo (self-hosted dogfood).
  * Otherwise: show copy plan and prompt for project metadata → render CLAUDE.md.
  */
-import { checkbox, confirm, input } from '@inquirer/prompts';
+import { checkbox, confirm, input } from '../prompts.mjs';
 
 export const id = '05-pipeline-files';
 export const title = 'Pipeline files deployment';

@@ -67,7 +67,7 @@ GitHub → your repo → **Settings → Secrets and variables → Actions**
 | Name | Value |
 |---|---|
 | `CLAUDE_DEV_PAT` | The fine-grained PAT from step 1 |
-| `DEEPSEEK_API_KEY` | Your DeepSeek API key (https://platform.deepseek.com) |
+| `LLM_API_KEY` | Your Zhipu GLM API key (https://open.bigmodel.cn) |
 
 **Variables tab** (New repository variable):
 
@@ -76,18 +76,18 @@ GitHub → your repo → **Settings → Secrets and variables → Actions**
 | `CLAUDE_DEV_PAT_OWNER` | (required) | PAT owner's GitHub login — used to filter out bot comments (AC-V2-3b) |
 | `CLARIFY_MAX_ROUNDS` | `3` | How many clarification rounds before falling back to `needs-ralph` |
 | `CLARIFY_TIME_BUDGET_MIN` | `30` | Per-issue wall-clock ceiling (minutes); clarify loop exits if exceeded |
-| `ANTHROPIC_BASE_URL` | `https://api.deepseek.com/anthropic` | DeepSeek Anthropic-compatible endpoint |
-| `TRIAGE_MODEL` | `deepseek-v4-pro` | Model override for triage/clarify LLM calls |
-| `DEVELOP_MODEL` | `deepseek-v4-pro` | Model override for develop LLM calls |
+| `ANTHROPIC_BASE_URL` | `https://open.bigmodel.cn/api/anthropic` | Zhipu GLM Anthropic-compatible endpoint |
+| `TRIAGE_MODEL` | `glm-5.2` | Model override for triage/clarify LLM calls |
+| `DEVELOP_MODEL` | `glm-5.2` | Model override for develop LLM calls |
 
 > **S6**: Never commit `CLAUDE_DEV_PAT` to any file. Never share it across maintainers.
 > The PAT's permissible scope is this repository only.
 
-### 3. Configure DeepSeek passthrough
+### 3. Configure GLM passthrough
 
-The workflows use DeepSeek's Anthropic-compatible endpoint (`https://api.deepseek.com/anthropic`).
-`ANTHROPIC_BASE_URL` redirects claude-code-action's Anthropic SDK to DeepSeek;
-`DEEPSEEK_API_KEY` is passed as the bearer token. Model name must be `deepseek-v4-pro`.
+The workflows use Zhipu GLM's Anthropic-compatible endpoint (`https://open.bigmodel.cn/api/anthropic`).
+`ANTHROPIC_BASE_URL` redirects claude-code-action's Anthropic SDK to GLM;
+`LLM_API_KEY` is passed as the bearer token. Model name must be `glm-5.2`.
 
 ## How the full v2 pipeline connects
 
@@ -208,14 +208,14 @@ then re-apply `needs-clarify` to restart the clarify loop.
 
 ### API key errors
 
-If you see 401/403 from `api.deepseek.com`:
+If you see 401/403 from `open.bigmodel.cn`:
 
-- Verify `DEEPSEEK_API_KEY` is correct and has credit.
+- Verify `LLM_API_KEY` is correct and has credit.
 - Test the key locally:
   ```bash
-  curl -H "Authorization: Bearer $DEEPSEEK_API_KEY" \
-    https://api.deepseek.com/anthropic/v1/messages \
-    -d '{"model":"deepseek-v4-pro","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}'
+  curl -H "Authorization: Bearer $LLM_API_KEY" \
+    https://open.bigmodel.cn/api/anthropic/v1/messages \
+    -d '{"model":"glm-5.2","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}'
   ```
 
 ### PAT expired or invalid

@@ -3,7 +3,7 @@
  * Groups pipeline repo variables into batches, prompts with defaults,
  * previews `gh variable set` commands, executes after confirm.
  */
-import { confirm, input } from '@inquirer/prompts';
+import { confirm, input } from '../prompts.mjs';
 import { gh } from '../shell.mjs';
 import { validateModelId, validatePositiveInt } from '../validators.mjs';
 
@@ -72,7 +72,7 @@ export async function run(ctx) {
 
 function buildGroups({ llm, baseBranch, patOwner }) {
   const baseUrlDefault = llm.baseUrl || '';
-  const modelDefault = llm.model || 'deepseek-v4-pro';
+  const modelDefault = llm.model || 'glm-5.2';
 
   return [
     {

@@ -4,7 +4,7 @@ This is the first end-to-end runnable flow in the repo. When a new Issue is open
 
 ## Quick setup (recommended)
 
-The interactive wizard at [`scripts/setup/wizard.mjs`](../scripts/setup/wizard.mjs) automates the bootstrap steps below (API key secret, DeepSeek passthrough vars, labels, CODEOWNERS, branch protection):
+The interactive wizard at [`scripts/setup/wizard.mjs`](../scripts/setup/wizard.mjs) automates the bootstrap steps below (API key secret, GLM passthrough vars, labels, CODEOWNERS, branch protection):
 
 ```bash
 cd scripts/setup
@@ -42,20 +42,20 @@ GitHub → your repo → **Settings → Secrets and variables → Actions → Ne
 
 | Name | Value |
 |---|---|
-| `DEEPSEEK_API_KEY` | Your DeepSeek API key (get one at https://platform.deepseek.com) |
+| `LLM_API_KEY` | Your Zhipu GLM API key (get one at https://open.bigmodel.cn) |
 
 > **Don't paste the key into the repo, commits, or PR descriptions.** S4: AI must never print tokens or API keys.
 
-### 2. Configure DeepSeek passthrough
+### 2. Configure GLM passthrough
 
 Set these **repo variables** (Settings → Secrets and variables → Actions → Variables tab):
 
 | Name | Value |
 |---|---|
-| `ANTHROPIC_BASE_URL` | `https://api.deepseek.com/anthropic` |
-| `TRIAGE_MODEL` | `deepseek-v4-pro` |
+| `ANTHROPIC_BASE_URL` | `https://open.bigmodel.cn/api/anthropic` |
+| `TRIAGE_MODEL` | `glm-5.2` |
 
-The `ANTHROPIC_BASE_URL` redirects claude-code-action's Anthropic SDK to DeepSeek's Anthropic-compatible endpoint. `DEEPSEEK_API_KEY` is passed as the bearer token.
+The `ANTHROPIC_BASE_URL` redirects claude-code-action's Anthropic SDK to Zhipu GLM's Anthropic-compatible endpoint. `LLM_API_KEY` is passed as the bearer token.
 
 ### 3. Routing behavior (no toggle needed)
 
@@ -94,11 +94,11 @@ claude-code-action's output names may have changed across versions. Check the [a
 
 ### API key errors
 
-If you see 401/403 from `api.deepseek.com`:
+If you see 401/403 from `open.bigmodel.cn`:
 
-- Verify `DEEPSEEK_API_KEY` is the DeepSeek key, not an Anthropic key.
-- Verify the key has not expired and has credit on the DeepSeek dashboard.
-- Test the key locally: `curl -H "Authorization: Bearer $DEEPSEEK_API_KEY" https://api.deepseek.com/anthropic/v1/messages -d '{"model":"deepseek-v4-pro","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}'`
+- Verify `LLM_API_KEY` is the Zhipu GLM key, not an Anthropic key.
+- Verify the key has not expired and has credit on the Zhipu dashboard.
+- Test the key locally: `curl -H "Authorization: Bearer $LLM_API_KEY" https://open.bigmodel.cn/api/anthropic/v1/messages -d '{"model":"glm-5.2","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}'`
 
 ### claude-code-action rejects the base URL
 
@@ -106,7 +106,7 @@ Some versions of claude-code-action hardcode the Anthropic endpoint and ignore `
 
 - Pin a newer version of claude-code-action that respects `ANTHROPIC_BASE_URL`, or
 - Switch to engine=codex in the workflow call (uses `openai/codex-action`), or
-- Replace the claude branch in `.github/actions/triage/action.yml` with a direct `curl` to the DeepSeek endpoint. This drops the claude-code CLI integration but removes the dependency entirely.
+- Replace the claude branch in `.github/actions/triage/action.yml` with a direct `curl` to the GLM endpoint. This drops the claude-code CLI integration but removes the dependency entirely.
 
 ### JSON parse failures
 

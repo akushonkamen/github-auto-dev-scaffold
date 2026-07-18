@@ -2,7 +2,7 @@
  * Step 4 — CLAUDE_DEV_PAT (S6).
  * Fine-grained PAT only, single-repo scope, validated via /user endpoint.
  */
-import { confirm, password } from '@inquirer/prompts';
+import { confirm, password } from '../prompts.mjs';
 import { gh } from '../shell.mjs';
 import { maskSecret, validatePAT } from '../validators.mjs';
 
