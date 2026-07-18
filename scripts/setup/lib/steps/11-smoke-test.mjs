@@ -2,7 +2,7 @@
  * Step 11 — Smoke test.
  * Opens a test issue, waits for triage workflow, reports the run URL.
  */
-import { confirm } from '../prompts.mjs';
+import { confirm } from '@inquirer/prompts';
 import { gh, run as runCmd } from '../shell.mjs';
 
 export const id = '11-smoke-test';

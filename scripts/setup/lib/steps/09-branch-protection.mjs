@@ -4,7 +4,7 @@
  * block force push). Execution via gh api PUT with --input (full JSON body).
  * Refuses to run on main as base.
  */
-import { confirm, input } from '../prompts.mjs';
+import { confirm, input } from '@inquirer/prompts';
 import { gh, ghBranchExists } from '../shell.mjs';
 import { writeFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';

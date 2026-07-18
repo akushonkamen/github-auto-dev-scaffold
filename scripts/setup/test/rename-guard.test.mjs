@@ -18,17 +18,17 @@
  * its load to the first prompt call, so merely importing a step module never
  * touches it.
  *
- * Scope note (why Issue #141 also touches the step modules, wizard.mjs, and
- * adds lib/prompts.mjs): the issue mandates this test run under `node --test`
- * WITHOUT `npm install`. AC3 dynamically imports 03-llm-provider.mjs; the rest
- * of the suite imports other step modules (labels-parser → 07, codeowners-gen
- * → 08) and spawns wizard.mjs (which loads every step). For any of that to
- * import cleanly with no node_modules, no step module may eagerly load
- * '@inquirer/prompts'. Hence the lazy lib/prompts.mjs added here, the
- * mechanical swap of every step's prompt import to '../prompts.mjs', and
- * wizard.mjs setting process.exitCode=1 on a failed step so the pre-existing
- * dry-run smoke test still observes a non-zero exit. None of this is drive-by
- * — each piece is load-bearing for the no-`npm install` invariant.
+ * Scope note (why Issue #141 touches 03-llm-provider.mjs + adds
+ * lib/prompts.mjs, and ONLY those): the issue mandates THIS test run under
+ * `node --test` WITHOUT `npm install`. AC3 dynamically imports
+ * 03-llm-provider.mjs, so that single module must not eagerly load
+ * '@inquirer/prompts' — with no node_modules a top-level import would throw
+ * ERR_MODULE_NOT_FOUND and fail AC3 before any assertion runs. 03 therefore
+ * routes through the lazy lib/prompts.mjs shim, which defers the load to the
+ * first prompt call. No other step module is imported by this test, so none of
+ * them need touching: the rest of the wizard suite runs under `npm ci` (deps
+ * present), where a direct '@inquirer/prompts' import is fine. Editing the
+ * other steps or wizard.mjs would be drive-by and is deliberately avoided.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

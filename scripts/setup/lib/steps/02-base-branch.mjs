@@ -2,7 +2,7 @@
  * Step 2 — Base branch selection.
  * AI code never lands on main/master (S3). Default: dev.
  */
-import { input, select } from '../prompts.mjs';
+import { input, select } from '@inquirer/prompts';
 import { ghBranchExists } from '../shell.mjs';
 import { isForbiddenBaseBranch, validateBranchName } from '../validators.mjs';
 

@@ -1,7 +1,7 @@
 /**
  * Step 10 — Optional Notion mirror.
  */
-import { confirm, input, password } from '../prompts.mjs';
+import { confirm, input, password } from '@inquirer/prompts';
 import { gh } from '../shell.mjs';
 import { validateNotionDatabaseId, validateNotionKey } from '../validators.mjs';
 

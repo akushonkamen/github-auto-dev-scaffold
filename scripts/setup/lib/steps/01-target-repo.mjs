@@ -2,7 +2,7 @@
  * Step 1 — Target repo connection.
  * Prompts for owner/name (default = current origin remote), validates via gh.
  */
-import { confirm, input } from '../prompts.mjs';
+import { confirm, input } from '@inquirer/prompts';
 import { detectCurrentRepo, ghRepoInfo } from '../shell.mjs';
 import { validateRepo } from '../validators.mjs';
 
