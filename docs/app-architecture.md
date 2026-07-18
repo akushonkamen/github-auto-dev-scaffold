@@ -345,6 +345,65 @@ JOIN `usage_logs → runs → installations` so every row is scoped by
 
 v1 uses pure CSS bars (`width: ${(tokens / max) * 100}%`); Recharts lands in v2.
 
+## 6.5 Billing: plan + quota + Stripe (Issue #10)
+
+```
+GitHub issue ─▶ worker ─▶ checkQuota(tenantId) ─▶ allowed? ─▶ dispatch
+                              │                      │
+                              │                      └──no──▶ run.status=failed, HTTP 402
+                              │
+   /settings/billing ─▶ checkQuota() ─▶ render plan + usage bar
+        │
+        ▼ (Upgrade button)
+   POST /api/billing/checkout ─▶ Stripe Checkout Session (mode=subscription)
+        │
+        ▼ (Stripe redirects back)
+   success_url=/settings/billing?checkout=success
+
+Stripe ─▶ POST /api/webhook/stripe ─▶ verify sig ─▶ update tenants.plan + stripe_customer_id
+```
+
+**Plan limits** ([`app/src/lib/quota.ts`](../app/src/lib/quota.ts)):
+
+| Plan | Monthly token limit |
+|---|---|
+| `free` | 100,000 |
+| `pro` | 1,000,000 |
+| `enterprise` | ∞ |
+
+`checkQuota(tenantId)` returns `{allowed, plan, used, limit, remaining}`. Usage
+is the sum of `input_tokens + output_tokens` in `usage_logs` for the current
+UTC month, scoped by `installations.tenant_id`. The worker route
+([`worker/route.ts`](../app/src/app/api/webhook/github/worker/route.ts)) calls
+`checkQuota` before `dispatchWorkflow`; on `allowed=false` it marks the run
+`failed` and returns HTTP 402 — the response body includes `plan/used/limit`
+so the dashboard can surface the reason, but no secrets are leaked (S4).
+
+**Stripe client** ([`app/src/lib/stripe-client.ts`](../app/src/lib/stripe-client.ts)):
+- Lazily-instantiated `Stripe` SDK with `STRIPE_SECRET_KEY`.
+- `PRO_PRICE_ID` from `STRIPE_PRO_PRICE_ID` env (Stripe `price_...` ID).
+- Throws on missing key — callers map to a generic 500 (S4).
+
+**Checkout** ([`/api/billing/checkout`](../app/src/app/api/billing/checkout/route.ts)):
+- Creates Checkout Session with `mode: subscription`, line item = Pro price.
+- `client_reference_id = tenant.id`, `metadata = { githubId, tenantId }`.
+- Re-uses existing `stripe_customer_id` if the tenant has one.
+
+**Portal** ([`/api/billing/portal`](../app/src/app/api/billing/portal/route.ts)):
+- Returns 404 if tenant has no `stripe_customer_id` yet.
+
+**Webhook** ([`/api/webhook/stripe`](../app/src/app/api/webhook/stripe/route.ts)):
+- Verifies `stripe-signature` against `STRIPE_WEBHOOK_SECRET`.
+- `checkout.session.completed` → upgrade tenant to `pro`, persist customer id.
+- `customer.subscription.updated` / `.deleted` → derive plan from `status` (`active`/`trialing` → `pro`, else → `free`).
+- Unhandled event types return 200 (no Stripe retry).
+
+**UI** ([`/settings/billing`](../app/src/app/settings/billing/page.tsx)):
+- Plan name + month-to-date usage bar (red when ≥90%).
+- Free plan → "Upgrade to Pro" button (POST `/api/billing/checkout` → redirect).
+- Paid plan → "Manage subscription" button (POST `/api/billing/portal` → redirect).
+- Client redirect logic lives in [`BillingActions.tsx`](../app/src/app/settings/billing/BillingActions.tsx).
+
 ## 7. CI
 
 [`app-ci.yml`](../.github/workflows/app-ci.yml) runs only on `app/**` changes:
