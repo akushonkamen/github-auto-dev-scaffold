@@ -1,6 +1,6 @@
 {
-  "attempt": 2,
+  "attempt": 4,
   "max": 3,
-  "last_failed_at": "2026-07-18T10:31:01Z",
-  "label": "verify:retry-1"
+  "last_failed_at": "2026-07-18T10:40:00Z",
+  "label": "test:retry-3"
 }
