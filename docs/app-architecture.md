@@ -54,20 +54,37 @@ issues a JWT session cookie, and
 ## 2. Data flow
 
 ```
-GitHub event ──▶ Vercel API route (webhook) ──▶ Postgres (state)
-                     │                               │
-                     ├──▶ Upstash QStash (queue)     │
-                     │                               ▼
-                     └──▶ workflow_dispatch ──▶ pipeline engine
+GitHub event ──▶ Vercel API route (/api/webhook/github) ──▶ Postgres (state)
+                     │                                        │
+                     ├── SYNC lane: installation lifecycle ───┘
+                     │
+                     └── ASYNC lane ──▶ Upstash QStash (queue) ──▶ worker (Issue #5)
+                                                                       │
+                                                                       └──▶ workflow_dispatch ──▶ pipeline engine
 ```
 
-1. **GitHub webhook** hits a Vercel route handler (`src/app/api/webhooks/github`).
-2. The handler verifies the signature, persists the event to **Postgres** via
-   Drizzle, and enqueues background work on **Upstash QStash**.
-3. A worker dispatches a `workflow_dispatch` to the target repo's pipeline.
-4. Pipeline modules (triage → … → merge) run unchanged and report back via labels.
+1. **GitHub webhook** hits [`app/src/app/api/webhook/github/route.ts`](../app/src/app/api/webhook/github/route.ts)
+   with `runtime = "nodejs"` and `dynamic = "force-dynamic"`.
+2. **Signature verify** — raw body is read once via `request.text()` and verified
+   against `X-Hub-Signature-256` using `crypto.timingSafeEqual` in
+   [`webhook-verify.ts`](../app/src/lib/webhook-verify.ts). Failure → `401` (S10).
+   Missing `WEBHOOK_SECRET` → `500` (logged, generic message — S4: never echo to GitHub).
+3. **Event routing** ([`github-events.ts`](../app/src/lib/github-events.ts)) splits into:
+   - **SYNC lane** (`installation`, `installation_repositories`) — processed inline via
+     [`installations.ts`](../app/src/lib/installations.ts): `upsertInstallationFromEvent`
+     creates/updates `tenants` + `installations` rows; `softDeleteInstallationFromEvent`
+     sets `uninstalled_at` on uninstall (preserving FK target for historical `runs`).
+   - **ASYNC lane** (`issues`, `issue_comment`, `pull_request`, `pull_request_review`, `label`)
+     — enqueued to QStash via [`qstash.ts`](../app/src/lib/qstash.ts) with an
+     action-aware key (e.g. `issues.opened`). The worker route `/api/webhook/github/worker`
+     is Issue #5 scope.
+4. All non-2xx paths return `200` to GitHub on internal errors to avoid retry storms;
+   unrecognized events return `{ ignored: true }` (also 200).
+5. The worker (Issue #5) dispatches `workflow_dispatch` to the target repo's pipeline.
+6. Pipeline modules (triage → … → merge) run unchanged and report back via labels.
 
-> v1 scaffold ships only the static landing page. Steps 1–4 land in Issues #2–#4.
+> v1 webhook entry point, signature verification, QStash enqueue, and installation
+> sync ship in Issue #4. The QStash worker (`workflow_dispatch` engine trigger) lands in Issue #5.
 
 ## 6. Postgres schema (PRD §4.2)
 
