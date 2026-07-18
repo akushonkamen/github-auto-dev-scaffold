@@ -67,8 +67,16 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
-      - name: DB schema dry-run (verify drizzle config compiles)
-        run: pnpm db:generate --dry-run
+      - name: DB schema regenerable (verify migrations match schema.ts)
+        # drizzle-kit 0.24 removed --dry-run. Run generate and verify it
+        # produces no new migration (commits must keep schema.ts and
+        # drizzle/0000_*.sql in sync).
+        run: |
+          pnpm db:generate
+          if ! git diff --exit-code drizzle/; then
+            echo "::error::drizzle/ has uncommitted changes — schema.ts was edited without regenerating migrations. Run 'pnpm db:generate' locally and commit the result."
+            exit 1
+          fi
         env:
           DATABASE_URL: postgresql://placeholder:placeholder@localhost:5432/db
 

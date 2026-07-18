@@ -1,12 +1,12 @@
 {
-  "version": "6",
-  "dialect": "pg",
+  "version": "7",
+  "dialect": "postgresql",
   "entries": [
     {
       "idx": 0,
-      "version": "6",
-      "when": 1720896000000,
-      "tag": "0000_initial",
+      "version": "7",
+      "when": 1784381492749,
+      "tag": "0000_easy_earthquake",
       "breakpoints": true
     }
   ]
