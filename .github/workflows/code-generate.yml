@@ -220,19 +220,31 @@ jobs:
               exit 0
             fi
           fi
+          # Issue #151: the prior verify/test/review report is a full markdown
+          # comment containing "| Field | Value |" table rows and newlines.
+          # Emitting it as a bare `prior-test-report=$value` spills each table
+          # row as a separate line and GitHub's file-command parser rejects it
+          # ("Invalid format '| Field | Value |'", run 29264389854), killing the
+          # whole verify/test/review retry chain at this step. The multi-line
+          # value MUST use the heredoc syntax; the delimiter is made unique
+          # (PRIOR_TEST_REPORT_EOF, not a bare EOF) so a report that ever
+          # contains a literal "EOF" line cannot terminate the heredoc early.
           {
             echo "issue-number=$issue_number"
             echo "head-branch=$head_branch"
             echo "base-branch=$base_branch"
             echo "issue-language=$issue_language"
             echo "retry-attempt=$retry_attempt"
-            # Multi-line value must use heredoc syntax — markdown prior-verify-report
-            # contains "| Field | Value |" tables and newlines that break the
-            # single-line `key=value` parser (run 29264389854: "Invalid format '| Field | Value |'").
-            echo "prior-test-report<<EOF"
+            echo "prior-test-report<<PRIOR_TEST_REPORT_EOF"
             printf '%s\n' "$prior_test_report"
-            echo "EOF"
+            echo "PRIOR_TEST_REPORT_EOF"
           } >> "$GITHUB_OUTPUT"
+          # Defense-in-depth (issue #151): re-parse $GITHUB_OUTPUT and fail
+          # loudly HERE if any emitted line is malformed, instead of letting the
+          # retry die three jobs later on a cryptic parser error. The validator
+          # is exercised by .github/actions/code-generate/test/write-outputs.test.sh.
+          source ./.github/actions/code-generate/lib/write-outputs.sh
+          code_generate_validate_github_output
 
       - name: Create head branch (off base, never main)
         id: branch

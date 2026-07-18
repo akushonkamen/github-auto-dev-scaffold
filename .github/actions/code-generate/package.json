@@ -1,0 +1,9 @@
+{
+  "name": "github-autodev-code-generate",
+  "version": "1.0.0",
+  "description": "Module 4 code-generate — output-emission helper + regression test (issue #151: multi-line $GITHUB_OUTPUT). No production code; this package.json exists so `npm test` discovers the bash regression suite the same way notion-sync/feishu-sync are discovered.",
+  "private": true,
+  "scripts": {
+    "test": "bash test/write-outputs.test.sh"
+  }
+}

@@ -1,19 +1,19 @@
 /**
  * Lazy loader for @inquirer/prompts.
  *
- * Why this exists: 03-llm-provider.mjs is imported directly by
- * scripts/setup/test/rename-guard.test.mjs, which Issue #141 mandates must run
- * under `node --test` WITHOUT `npm install`. A top-level
- * `import … from '@inquirer/prompts'` in 03 would make the module unimportable
- * (ERR_MODULE_NOT_FOUND) with no node_modules and fail that test before any
- * assertion runs. Deferring the load to the first prompt call keeps 03
- * importable without the dependency, while preserving identical prompt
- * behavior when node_modules IS present.
+ * Why lazy: the interactive prompt library is an optional runtime dependency
+ * of the setup wizard — it is only needed when the wizard runs interactively.
+ * But several step modules also export pure helpers (renderCodeowners,
+ * parseLabelsYml, …) that the test suite imports directly under
+ * `node --test`. Module 6 runs those tests without `npm install`, so a
+ * top-level `import … from '@inquirer/prompts'` makes the whole step module
+ * unimportable (ERR_MODULE_NOT_FOUND) and fails tests that only exercise the
+ * pure helpers.
  *
- * Only 03 routes through here — it is the sole step module imported by a
- * no-install test. The other steps are loaded only interactively (wizard.mjs,
- * always run with deps installed) or by tests that run under `npm ci`, so
- * their direct '@inquirer/prompts' import is fine and is left untouched.
+ * Deferring the load to the first prompt call keeps every step module
+ * importable without the dependency installed, while preserving identical
+ * prompt behavior when node_modules IS present. Step modules import these
+ * re-exports instead of '@inquirer/prompts' directly.
  */
 let pending;
 function lib() {

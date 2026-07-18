@@ -17,18 +17,6 @@
  * prompt dependency installed: lib/prompts.mjs is a lazy loader that defers
  * its load to the first prompt call, so merely importing a step module never
  * touches it.
- *
- * Scope note (why Issue #141 touches 03-llm-provider.mjs + adds
- * lib/prompts.mjs, and ONLY those): the issue mandates THIS test run under
- * `node --test` WITHOUT `npm install`. AC3 dynamically imports
- * 03-llm-provider.mjs, so that single module must not eagerly load
- * '@inquirer/prompts' — with no node_modules a top-level import would throw
- * ERR_MODULE_NOT_FOUND and fail AC3 before any assertion runs. 03 therefore
- * routes through the lazy lib/prompts.mjs shim, which defers the load to the
- * first prompt call. No other step module is imported by this test, so none of
- * them need touching: the rest of the wizard suite runs under `npm ci` (deps
- * present), where a direct '@inquirer/prompts' import is fine. Editing the
- * other steps or wizard.mjs would be drive-by and is deliberately avoided.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

@@ -118,6 +118,10 @@ jobs:
               ;;
             workflow_run)
               # Resolver fallback chain (most reliable first):
+              #   0. issue-context artifact from upstream workflow_run
+              #      (uploaded by triage-issue / clarify-loop / etc — closes
+              #      the "known gap" where issue-event-triggered workflows
+              #      run on `dev` and head_branch=head_commit give no signal)
               #   1. head_branch matches "issue-N" — workflow ran on a PR branch
               #   2. head_commit.message has "closes #N" / "fixes #N" / "#N" —
               #      pipeline-fix PR merges into dev
@@ -125,14 +129,68 @@ jobs:
               #      PR-triggered workflow runs
               #   4. display_title first integer — fragile last resort
               #
-              # Known gap: issue-event-triggered workflows (e.g. triage-issue
-              # fired by issues.opened) run on `dev`, so head_branch=dev and
-              # head_commit.message is whatever last shipped to dev. These
-              # runs still skip. Closing that gap needs each module workflow
-              # to upload an issue-context artifact (future PR).
+              # Step 0 was added 2026-07-18 (pipeline-fix). Upstream workflows
+              # that upload `issue-context` (with JSON shape {"issue_number": N})
+              # at the time of writing: triage-issue, clarify-loop.
               repo="$EV_REPOSITORY"
+              wf_run_id="${{ github.event.workflow_run.id }}"
+              if [ -n "$wf_run_id" ]; then
+                mkdir -p ./.github/artifacts
+                # Try every upstream artifact name that carries issue_number.
+                # Order: most-direct first.
+                #   - issue-context        : triage-issue / clarify-loop upload
+                #   - develop-gate-outputs : develop-gate uploads (consumes upstream
+                #                            issue-context.json then re-emits)
+                #   - code-generate-outputs: code-generate uploads
+                for artifact_name in issue-context develop-gate-outputs code-generate-outputs; do
+                  artifact_file="./.github/artifacts/${artifact_name}/"
+                  case "$artifact_name" in
+                    issue-context)               json_file="./.github/artifacts/issue-context.json" ;;
+                    develop-gate-outputs)        json_file="./.github/artifacts/develop-gate-outputs.json" ;;
+                    code-generate-outputs)       json_file="./.github/artifacts/code-generate-outputs.json" ;;
+                  esac
+                  # gh run download creates a subdir named after the artifact
+                  # unless we use --dir; clean dir between attempts.
+                  rm -rf ./.github/artifacts/* 2>/dev/null || true
+                  if gh run download "$wf_run_id" \
+                      --repo "$repo" \
+                      --name "$artifact_name" \
+                      --dir ./.github/artifacts 2>/dev/null; then
+                    # The downloaded file may be at root or in a subdir
+                    found_json=""
+                    for candidate in \
+                      "./.github/artifacts/$(basename "$json_file")" \
+                      "./.github/artifacts/$artifact_name/$(basename "$json_file")"; do
+                      if [ -f "$candidate" ]; then
+                        found_json="$candidate"
+                        break
+                      fi
+                    done
+                    if [ -n "$found_json" ]; then
+                      number=$(jq -r '.issue_number // ""' "$found_json" 2>/dev/null || true)
+                      if [ -n "$number" ]; then
+                        etype="workflow_run.completed"
+                        # Resolve PR info if upstream also populated pr_number
+                        pr_in_json=$(jq -r '.pr_number // ""' "$found_json" 2>/dev/null || true)
+                        if [ -n "$pr_in_json" ]; then
+                          pr_number="$pr_in_json"
+                          pr_json=$(gh api "repos/${repo}/pulls/$pr_in_json" 2>/dev/null || echo "")
+                          if [ -n "$pr_json" ]; then
+                            pr_title=$(printf '%s' "$pr_json" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('title',''))" 2>/dev/null || echo "")
+                            pr_url=$(printf '%s' "$pr_json" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('html_url',''))" 2>/dev/null || echo "")
+                          fi
+                        fi
+                        break
+                      fi
+                    fi
+                  fi
+                done
+              fi
+
               head="$EV_WF_HEAD_BRANCH"
-              number=$(printf '%s' "$head" | sed -nE 's|.*issue-([0-9]+).*|\1|p' || true)
+              if [ -z "$number" ]; then
+                number=$(printf '%s' "$head" | sed -nE 's|.*issue-([0-9]+).*|\1|p' || true)
+              fi
 
               if [ -z "$number" ]; then
                 commit_msg="$EV_WF_HEAD_COMMIT_MSG"
