@@ -81,10 +81,27 @@ jobs:
         id: resolve
         env:
           GH_TOKEN: ${{ github.token }}
+          # Inject ALL github.event.* values via env to avoid bash injection
+          # when commit messages / PR titles / display names contain `|`,
+          # backticks, `$()`, or other shell metacharacters. The previous
+          # `${{ github.event.workflow_run.head_commit.message }}` direct
+          # interpolation broke the case-statement parser on any commit
+          # message containing a markdown table row (e.g. "| Field | Value |"
+          # from code-generate retry summaries — runs 29637202291..29637211578,
+          # all failed with exit 127 on 2026-07-18).
+          EV_REPOSITORY: ${{ github.repository }}
+          EV_EVENT_NAME: ${{ github.event_name }}
+          EV_ISSUE_NUMBER: ${{ github.event.issue.number }}
+          EV_ISSUE_ACTION: ${{ github.event.action }}
+          EV_WF_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          EV_WF_HEAD_COMMIT_MSG: ${{ github.event.workflow_run.head_commit.message }}
+          EV_WF_PR_ARRAY: ${{ github.event.workflow_run.pull_requests }}
+          EV_WF_DISPLAY_TITLE: ${{ github.event.workflow_run.display_title }}
+          EV_PUSH_REF: ${{ github.ref }}
         run: |
           set -euo pipefail
           number=""
-          etype="${{ github.event_name }}"
+          etype=""
           pr_number=""
           pr_title=""
           pr_url=""
@@ -94,10 +111,10 @@ jobs:
           issue_assignees=""
           issue_updated=""
 
-          case "${{ github.event_name }}" in
+          case "$EV_EVENT_NAME" in
             issues)
-              number="${{ github.event.issue.number }}"
-              etype="issues.${{ github.event.action }}"
+              number="$EV_ISSUE_NUMBER"
+              etype="issues.$EV_ISSUE_ACTION"
               ;;
             workflow_run)
               # Resolver fallback chain (most reliable first):
@@ -113,12 +130,12 @@ jobs:
               # head_commit.message is whatever last shipped to dev. These
               # runs still skip. Closing that gap needs each module workflow
               # to upload an issue-context artifact (future PR).
-              repo="${{ github.repository }}"
-              head="${{ github.event.workflow_run.head_branch }}"
+              repo="$EV_REPOSITORY"
+              head="$EV_WF_HEAD_BRANCH"
               number=$(printf '%s' "$head" | sed -nE 's|.*issue-([0-9]+).*|\1|p' || true)
 
               if [ -z "$number" ]; then
-                commit_msg="${{ github.event.workflow_run.head_commit.message }}"
+                commit_msg="$EV_WF_HEAD_COMMIT_MSG"
                 number=$(printf '%s' "$commit_msg" | sed -nE 's|.*closes #([0-9]+).*|\1|pi' \
                       | head -1 || true)
                 if [ -z "$number" ]; then
@@ -129,7 +146,7 @@ jobs:
 
               if [ -z "$number" ]; then
                 # PR-linked workflow runs: payload exposes pull_requests[]
-                pr_array='${{ github.event.workflow_run.pull_requests }}'
+                pr_array="$EV_WF_PR_ARRAY"
                 pr_count=$(printf '%s' "$pr_array" | python3 -c \
                   "import sys,json; d=json.loads(sys.stdin.read() or '[]'); print(len(d))" 2>/dev/null || echo 0)
                 if [ "${pr_count:-0}" -gt 0 ]; then
@@ -144,7 +161,7 @@ jobs:
               fi
 
               if [ -z "$number" ]; then
-                name="${{ github.event.workflow_run.display_title }}"
+                name="$EV_WF_DISPLAY_TITLE"
                 number=$(printf '%s' "$name" | grep -oE '[0-9]+' | head -1 || true)
               fi
 
@@ -160,7 +177,7 @@ jobs:
               fi
               ;;
             push)
-              ref="${{ github.ref }}"
+              ref="$EV_PUSH_REF"
               number=$(printf '%s' "$ref" | sed -nE 's|.*issue-([0-9]+).*|\1|p' || true)
               etype="push"
               ;;
@@ -168,7 +185,7 @@ jobs:
 
           # Fetch Issue metadata for Bitable mirror (PR-3)
           if [ -n "$number" ]; then
-            repo="${{ github.repository }}"
+            repo="$EV_REPOSITORY"
             issue_json=$(gh api "repos/${repo}/issues/$number" 2>/dev/null || echo "")
             if [ -n "$issue_json" ]; then
               issue_title=$(printf '%s' "$issue_json" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('title',''))" 2>/dev/null || echo "")
