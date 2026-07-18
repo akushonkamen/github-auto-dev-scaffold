@@ -101,14 +101,17 @@ export async function GET(
           controller.close();
           return;
         }
+        // Clear any prior timer before scheduling — defensive against the
+        // micro-gap where abort fires between assignment and next tick.
+        if (timer) clearTimeout(timer);
         timer = setTimeout(poll, POLL_INTERVAL_MS);
       };
 
-      let timer: NodeJS.Timeout = setTimeout(poll, POLL_INTERVAL_MS);
+      let timer: NodeJS.Timeout | null = setTimeout(poll, POLL_INTERVAL_MS);
 
       // Cleanup when the client disconnects.
       request.signal.addEventListener("abort", () => {
-        clearTimeout(timer);
+        if (timer) clearTimeout(timer);
         try {
           controller.close();
         } catch {
