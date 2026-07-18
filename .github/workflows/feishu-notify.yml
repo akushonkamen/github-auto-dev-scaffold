@@ -95,7 +95,7 @@ jobs:
           EV_ISSUE_ACTION: ${{ github.event.action }}
           EV_WF_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
           EV_WF_HEAD_COMMIT_MSG: ${{ github.event.workflow_run.head_commit.message }}
-          EV_WF_PR_ARRAY: ${{ github.event.workflow_run.pull_requests }}
+          EV_WF_PR_ARRAY: ${{ toJSON(github.event.workflow_run.pull_requests) }}
           EV_WF_DISPLAY_TITLE: ${{ github.event.workflow_run.display_title }}
           EV_PUSH_REF: ${{ github.ref }}
         run: |
