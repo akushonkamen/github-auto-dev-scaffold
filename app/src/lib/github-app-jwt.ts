@@ -1,9 +1,9 @@
 import "server-only";
-import { SignJWT, importPKCS8 } from "jose";
+import { SignJWT, importPKCS8, type KeyLike } from "jose";
 
-let cachedKey: CryptoKey | null = null;
+let cachedKey: KeyLike | Uint8Array | null = null;
 
-async function getPrivateKey(): Promise<CryptoKey> {
+async function getPrivateKey(): Promise<KeyLike | Uint8Array> {
   if (cachedKey) return cachedKey;
   const base64Pem = process.env.APP_PRIVATE_KEY;
   if (!base64Pem) {
