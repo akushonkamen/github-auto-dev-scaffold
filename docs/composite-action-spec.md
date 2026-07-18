@@ -103,7 +103,7 @@ Every module action shares these inputs and outputs so they compose uniformly. M
 | Trigger | Invoked by `verify.yml` targeted oracle (`pull_request.opened` / `.synchronize` on `claude/issue-*` targeting `dev`) |
 | Inputs | common + `issue-number` (required), `head-branch` (required), `base-branch` (required), `pr-url` (required), `anthropic-base-url` (optional), `issue-language` (optional, default `"en"`) |
 | Outputs | `verify-status` (`passed` \| `failed`), `verify-report` (multi-line, max 2000 chars), `commit-sha` (string) |
-| Secrets | `repo-token`, `api-key` (DEEPSEEK_API_KEY for GLM passthrough) |
+| Secrets | `repo-token`, `api-key` (LLM_API_KEY for GLM passthrough) |
 | Permissions | `contents: read`, `issues: write`, `pull-requests: write` (PRD S1 — NO contents:write) |
 | Runner | `ubuntu-latest` |
 | Caches | none |
@@ -122,7 +122,7 @@ Every module action shares these inputs and outputs so they compose uniformly. M
 | Trigger | `issues.labeled: verified` (Module 5 passed) |
 | Inputs | common + `issue-number` (required), `pr-url` (required), `pr-number` (required), `head-branch` (required), `base-branch` (required), `anthropic-base-url` (optional, GLM passthrough) |
 | Outputs | `test-status` (`passed` \| `failed`), `test-report` (multi-line, max 2000 chars), `commit-sha` (string) |
-| Secrets | `repo-token`, `api-key` (`ANTHROPIC_API_KEY` or GLM passthrough equivalent) |
+| Secrets | `repo-token`, `api-key` (LLM_API_KEY for GLM passthrough) |
 | Permissions | `contents: read`, `issues: write`, `pull-requests: write` (PRD S1 — NO contents:write) |
 | Runner | `ubuntu-latest` |
 | Caches | none |
@@ -145,7 +145,7 @@ Every module action shares these inputs and outputs so they compose uniformly. M
 
 ### Module 8 — review (`/.github/actions/review/`)
 
-> **Shipped.** Claude engine composite action with DeepSeek passthrough. AI initial review posts findings as PR comment; NEVER approves.
+> **Shipped.** Claude engine composite action with GLM passthrough. AI initial review posts findings as PR comment; NEVER approves.
 
 | Aspect | Value |
 |---|---|
@@ -153,7 +153,7 @@ Every module action shares these inputs and outputs so they compose uniformly. M
 | Trigger | `pull_request.labeled: in-review` (Module 4c pr-lifecycle applied the label) |
 | Inputs | common + `pr-number` (required), `issue-number` (required), `anthropic-base-url` (optional) |
 | Outputs | `review-status` (`posted`), `audit-comment-url` (URL of the review comment) |
-| Secrets | `repo-token` (CLAUDE_DEV_PAT for PR comment — PR #16 lesson), `api-key` (DEEPSEEK_API_KEY for GLM passthrough) |
+| Secrets | `repo-token` (CLAUDE_DEV_PAT for PR comment — PR #16 lesson), `api-key` (LLM_API_KEY for GLM passthrough) |
 | Permissions | `contents: read`, `pull-requests: write`, `issues: write` (S1 — NO contents:write) |
 | Runner | `ubuntu-latest` |
 | Caches | none |
@@ -246,7 +246,7 @@ To swap a module from Claude to Codex, the caller changes one input:
 - uses: ./.github/actions/<module>
   with:
     engine: codex           # was 'claude'
-    api-key: ${{ secrets.OPENAI_API_KEY }}   # was ANTHROPIC_API_KEY
+    api-key: ${{ secrets.OPENAI_API_KEY }}   # was LLM_API_KEY (claude/GLM passthrough default)
 ```
 
 The composite action handles dispatch via `if: inputs.engine == 'codex'` branches. No caller-side workflow edit beyond the input swap is required (PRD §4 'composite action 封装使切换成本为一次配置改动').

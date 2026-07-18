@@ -106,6 +106,13 @@ if (ctx.artifacts) {
 // Zero out secret memory before exit
 for (const k of Object.keys(ctx._secrets || {})) ctx._secrets[k] = null;
 
+// A failed step means the run is incomplete — exit non-zero so callers (and
+// the --dry-run smoke test) can detect it. Both an interactive prompt hitting
+// EOF and a missing @inquirer/prompts dependency surface as a thrown/failed
+// step; either way the wizard did not complete successfully. Use exitCode
+// (not process.exit) so the event loop drains buffered stdout first.
+if (done.some((d) => d.status === 'failed')) process.exitCode = 1;
+
 function parseArgs(argv) {
   const out = {};
   for (const a of argv) {

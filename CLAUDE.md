@@ -103,7 +103,7 @@ See [`docs/security.md`](docs/security.md) for the operational playbook and inci
   - Claude: `claude-opus-4-7` (heavy) / `claude-sonnet-4-6` (standard) / `claude-haiku-4-5` (lookup)
   - Codex: `gpt-5` family
 - Fallback chain: if the chosen model is unavailable, fall back one tier (Opus → Sonnet → Haiku). Document any fallback in the audit comment.
-- API keys per engine: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` — scoped per-job, never workflow-global (S3).
+- API keys per engine: `LLM_API_KEY` (provider-neutral — GLM passthrough by default via `vars.ANTHROPIC_BASE_URL`), `OPENAI_API_KEY` (Codex engine) — scoped per-job, never workflow-global (S3).
 
 ## References
 

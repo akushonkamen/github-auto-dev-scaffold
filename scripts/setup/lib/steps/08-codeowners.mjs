@@ -3,7 +3,7 @@
  * Prompts for team slugs (maintainers / sec-team / architects) and validates
  * them via gh api. Generates .github/CODEOWNERS for the target repo.
  */
-import { confirm, input } from '@inquirer/prompts';
+import { confirm, input } from '../prompts.mjs';
 import { gh } from '../shell.mjs';
 import { validateTeamSlug } from '../validators.mjs';
 

@@ -41,15 +41,15 @@ test('isForbiddenBaseBranch', () => {
 });
 
 test('validateHttpUrl', () => {
-  assert.equal(validateHttpUrl('https://api.deepseek.com').ok, true);
-  assert.equal(validateHttpUrl('https://api.deepseek.com/').value, 'https://api.deepseek.com');
+  assert.equal(validateHttpUrl('https://open.bigmodel.cn').ok, true);
+  assert.equal(validateHttpUrl('https://open.bigmodel.cn/').value, 'https://open.bigmodel.cn');
   assert.equal(validateHttpUrl('ftp://x').ok, false);
   assert.equal(validateHttpUrl('not-a-url').ok, false);
   assert.equal(validateHttpUrl('', { allowEmpty: true }).ok, true);
 });
 
 test('validateModelId', () => {
-  assert.equal(validateModelId('deepseek-v4-pro').ok, true);
+  assert.equal(validateModelId('glm-5.2').ok, true);
   assert.equal(validateModelId('claude-opus-4-7').value, 'claude-opus-4-7');
   assert.equal(validateModelId('with space').ok, false);
   assert.equal(validateModelId('').ok, false);

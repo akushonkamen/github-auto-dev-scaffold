@@ -1,32 +1,26 @@
 /**
  * Step 3 — LLM provider.
  * GLM 5.2 via Zhipu (default, matches repo's claude-code settings.json) /
- * DeepSeek passthrough / Anthropic direct / custom endpoint.
+ * Anthropic direct / custom endpoint.
  * Performs a health probe against /v1/messages.
  */
-import { input, password, select } from '@inquirer/prompts';
+import { input, password, select } from '../prompts.mjs';
 import { maskSecret, validateHttpUrl, validateModelId } from '../validators.mjs';
 
 export const id = '03-llm-provider';
 export const title = 'LLM provider';
 
-const PRESETS = {
+export const PRESETS = {
   glm: {
     name: 'GLM 5.2 via Zhipu bigmodel.cn (recommended — matches repo default)',
     baseUrl: 'https://open.bigmodel.cn/api/anthropic',
-    keyEnv: 'ZHIPU_API_KEY',
+    keyEnv: 'LLM_API_KEY',
     model: 'glm-5.2',
-  },
-  deepseek: {
-    name: 'DeepSeek passthrough',
-    baseUrl: 'https://api.deepseek.com/anthropic',
-    keyEnv: 'DEEPSEEK_API_KEY',
-    model: 'deepseek-v4-pro',
   },
   anthropic: {
     name: 'Anthropic direct (Claude Opus / Sonnet / Haiku)',
     baseUrl: '',
-    keyEnv: 'ANTHROPIC_API_KEY',
+    keyEnv: 'LLM_API_KEY',
     model: 'claude-opus-4-7',
   },
   custom: { name: 'Custom Anthropic-compatible endpoint', baseUrl: '', keyEnv: '', model: '' },
@@ -52,7 +46,7 @@ export async function run(ctx) {
     });
     baseUrl = validateHttpUrl(url).value;
     keyEnv = await input({
-      message: 'Secret name for API key (e.g. DEEPSEEK_API_KEY):',
+      message: 'Secret name for API key (e.g. LLM_API_KEY):',
       default: 'CUSTOM_API_KEY',
     });
     model = await input({
@@ -84,8 +78,8 @@ async function probeModel(baseUrl, key, model) {
   const start = Date.now();
   try {
     // Send both auth headers — native Anthropic uses x-api-key, compat layers
-    // (Zhipu/GLM, DeepSeek) typically use Authorization: Bearer. Each server
-    // picks the one it recognises and ignores the other.
+    // (e.g. Zhipu/GLM bigmodel.cn) typically use Authorization: Bearer. Each
+    // server picks the one it recognises and ignores the other.
     const res = await fetch(url, {
       method: 'POST',
       headers: {
