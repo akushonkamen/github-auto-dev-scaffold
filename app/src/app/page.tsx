@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { Button } from "@/components/ui/button";
 
 export default function Home() {
@@ -9,9 +10,8 @@ export default function Home() {
           AI-driven Issue → Merge automation. App v1 scaffold.
         </p>
       </div>
-      {/* Sign-in is wired in Issue #3 (next-auth GitHub provider). */}
-      <Button size="lg" disabled>
-        Sign in with GitHub
+      <Button size="lg" asChild>
+        <Link href="/login">Sign in with GitHub</Link>
       </Button>
     </main>
   );

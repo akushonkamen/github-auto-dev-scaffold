@@ -123,7 +123,42 @@ Operational rules (PRD §7):
 - `.env` / `.env.local` are gitignored (see `app/.gitignore`). Vercel injects them
   per-environment at deploy time.
 
-## 5. CI
+## 6. Authentication flow (Issue #3)
+
+```
+GitHub OAuth authorize page
+      │
+      ▼ (redirect after user grants)
+NextAuth /api/auth/callback/github
+      │
+      ▼ (jwt callback: store githubId + githubLogin + accessToken)
+JWT cookie (next-auth.session-token)
+      │
+      ├──▶ middleware (src/middleware.ts) guards /dashboard/*, /settings/*
+      │     └── unauthenticated → redirect /login?callbackUrl=<path>
+      │
+      └──▶ getServerSession(authOptions) in server components
+            └── dashboard (src/app/dashboard/page.tsx) shows profile + installations
+```
+
+Key files:
+
+| File | Role |
+|---|---|
+| [`app/src/auth/config.ts`](../app/src/auth/config.ts) | NextAuth options: `GitHubProvider` with `repo` scope, JWT strategy, session/user callbacks |
+| [`app/src/app/api/auth/[...nextauth]/route.ts`](../app/src/app/api/auth/[...nextauth]/route.ts) | App Router catch-all route handler |
+| [`app/src/middleware.ts`](../app/src/middleware.ts) | Edge middleware — `getToken()` check, redirect to `/login` |
+| [`app/src/app/login/page.tsx`](../app/src/app/login/page.tsx) | Client component "Sign in with GitHub" button |
+| [`app/src/app/dashboard/page.tsx`](../app/src/app/dashboard/page.tsx) | Server component — reads session, lists installations |
+| [`app/src/auth/with-app-installer.ts`](../app/src/auth/with-app-installer.ts) | `getAppInstallationsForUser()` + `getAppInstallationToken()` (S11 cached ≤50 min) |
+| [`app/src/lib/github-app-jwt.ts`](../app/src/lib/github-app-jwt.ts) | `signAppJwt()` — RS256 JWT via `jose`, 9-min expiry, cached PKCS8 key |
+
+The provider uses `APP_CLIENT_ID` / `APP_CLIENT_SECRET` (GitHub App OAuth credentials).
+Session strategy is `jwt` (no DB table — v1 simplification). Protected routes are
+checked in middleware via `next-auth/jwt` `getToken()`; server components use
+`getServerSession(authOptions)`.
+
+## 7. CI
 
 [`app-ci.yml`](../.github/workflows/app-ci.yml) runs only on `app/**` changes:
 `pnpm lint` + `pnpm typecheck` + `pnpm build`, Node 20, `permissions: contents: read`
