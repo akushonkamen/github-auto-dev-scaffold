@@ -10,7 +10,7 @@ import { maskSecret, validateHttpUrl, validateModelId } from '../validators.mjs'
 export const id = '03-llm-provider';
 export const title = 'LLM provider';
 
-const PRESETS = {
+export const PRESETS = {
   glm: {
     name: 'GLM 5.2 via Zhipu bigmodel.cn (recommended — matches repo default)',
     baseUrl: 'https://open.bigmodel.cn/api/anthropic',
