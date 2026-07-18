@@ -200,6 +200,39 @@ Session strategy is `jwt` (no DB table — v1 simplification). Protected routes 
 checked in middleware via `next-auth/jwt` `getToken()`; server components use
 `getServerSession(authOptions)`.
 
+## 6.1 Dashboard: installations + switching (Issue #6)
+
+```
+/dashboard                           /dashboard/installations/[id]
+   │                                       │
+   ▼                                       ▼
+ getServerSession()                    getServerSession()
+ getAppInstallationsForUser()          findInstallationByDbId(id)
+                                       getAppInstallationsForUser() — verify membership
+   │                                       │
+   ▼                                       ▼
+ for each GitHub installation:         render detail + recent runs
+   findInstallationByGithubId(id)
+     → installations row + runs count
+   mark isActive if matches cookie
+```
+
+**Switching UX** — clicking an installation navigates to its detail page;
+the "Set as active" server action writes a 1-year cookie
+`gitautodev_active_installation=<db_id>` so the top-level dashboard can
+surface the most recently used installation. The cookie is a UX affordance
+only — every read of the detail page re-verifies that the user's GitHub
+token still lists the installation (`getAppInstallationsForUser().some(id)`).
+
+Key files:
+
+| File | Role |
+|---|---|
+| [`app/src/app/dashboard/page.tsx`](../app/src/app/dashboard/page.tsx) | Lists installations from GitHub API enriched with DB rows + runs count |
+| [`app/src/app/dashboard/installations/[id]/page.tsx`](../app/src/app/dashboard/installations/[id]/page.tsx) | Detail page — metadata + recent 10 runs (SSE lands in Issue #7) |
+| [`app/src/lib/installations-queries.ts`](../app/src/lib/installations-queries.ts) | `findInstallationByGithubId` / `findInstallationByDbId` / `countRunsForInstallation` / `recentRunsForInstallation` |
+| [`app/src/lib/active-installation.ts`](../app/src/lib/active-installation.ts) | Cookie helper — `getActiveInstallationDbId` / `setActiveInstallationDbId` |
+
 ## 7. CI
 
 [`app-ci.yml`](../.github/workflows/app-ci.yml) runs only on `app/**` changes:
