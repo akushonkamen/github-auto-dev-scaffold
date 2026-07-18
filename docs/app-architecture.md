@@ -275,6 +275,47 @@ Key files:
 | [`app/src/app/api/runs/[runId]/events/route.ts`](../app/src/app/api/runs/[runId]/events/route.ts) | SSE endpoint — 2s poll, 10min cap, terminal-status close |
 | [`app/src/lib/runs-queries.ts`](../app/src/lib/runs-queries.ts) | `listRecentRunsForInstallation` / `findRunInInstallation` (installation-scoped) / `listUsageLogsForRun` / `findInstallationForRun` |
 
+## 6.3 BYOK: settings/engines + AES-256-GCM (Issue #8)
+
+```
+/settings/engines                /api/settings/api-keys           /api/settings/api-keys/[id]
+   │                                  │                                │
+   ▼                                  ▼                                ▼
+ getServerSession()                POST                              DELETE
+ getTenantIdForSessionUser()       getTenantIdForSessionUser()       getTenantIdForSessionUser()
+ listApiKeysForTenant(tenantId)    encryptKey(plaintext)             deleteApiKey(tenantId, id)
+   │                                insertApiKey(...)
+   ▼                                  ▼
+ ApiKeyForm (server action)        201 {id, provider, keyHint}
+ ApiKeyList (rows w/ keyHint)
+```
+
+**Crypto** ([`app/src/lib/crypto.ts`](../app/src/lib/crypto.ts)):
+- AES-256-GCM via `node:crypto`, master key from `APP_BYOK_MASTER_KEY` (32-byte base64).
+- Format `${ivB64}:${ctB64}:${tagB64}` stored in `api_keys.encrypted_key`.
+- Refuses to operate if master key missing/malformed — never falls back to a hardcoded key (S4).
+- Plaintext is only ever in memory long enough to call `encryptKey()` or `decryptKey()`.
+
+**Tenant resolver** ([`app/src/lib/tenant.ts`](../app/src/lib/tenant.ts)):
+- `getTenantIdForSessionUser(session)` → `tenants.githubId === session.user.githubId`.
+- Every BYOK query goes through this resolver — never trusts client-supplied tenant id.
+
+**Queries** ([`app/src/lib/api-keys-queries.ts`](../app/src/lib/api-keys-queries.ts)):
+- `listApiKeysForTenant` returns only public fields (`id`, `provider`, `keyHint`, `createdAt`, `rotatedAt`) — never the ciphertext.
+- `insertApiKey({ tenantId, provider, encryptedKey, keyHint })`.
+- `deleteApiKey(tenantId, id)` — scoped by both ids, returns `boolean`.
+- `getDecryptedKeyForTenant(tenantId, provider)` — internal-only, for the engine dispatch path (Issue #9).
+
+**UI** ([`app/src/app/settings/engines/page.tsx`](../app/src/app/settings/engines/page.tsx)):
+- Page is protected by `middleware.ts` (matches `/settings/*`).
+- `ApiKeyForm` is a server-component `<form action={addApiKeyAction}>` — no client JS, no fetch.
+- `ApiKeyList` shows provider + `••••{last4}` hint + delete button.
+- Server actions live in [`actions.ts`](../app/src/app/settings/engines/actions.ts) (`addApiKeyAction`, `deleteApiKeyAction`).
+
+**API routes**:
+- POST [`/api/settings/api-keys`](../app/src/app/api/settings/api-keys/route.ts) — for programmatic clients; same validation and tenant scoping.
+- DELETE [`/api/settings/api-keys/[id]`](../app/src/app/api/settings/api-keys/[id]/route.ts) — returns 404 if id belongs to a different tenant.
+
 ## 7. CI
 
 [`app-ci.yml`](../.github/workflows/app-ci.yml) runs only on `app/**` changes:
