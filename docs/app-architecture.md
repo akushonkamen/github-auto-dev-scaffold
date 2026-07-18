@@ -316,6 +316,69 @@ Key files:
 - POST [`/api/settings/api-keys`](../app/src/app/api/settings/api-keys/route.ts) — for programmatic clients; same validation and tenant scoping.
 - DELETE [`/api/settings/api-keys/[id]`](../app/src/app/api/settings/api-keys/[id]/route.ts) — returns 404 if id belongs to a different tenant.
 
+## 6.4 Usage dashboard: tenant-level aggregation (Issue #9)
+
+```
+/dashboard/usage
+   │
+   ▼
+ getServerSession()
+ getTenantIdForSessionUser(session) — never from query params
+   │
+   ▼
+ parseSince(range) — ?range=7d | 30d | all
+   │
+   ▼
+ ┌──────────────────────────────────────────────────┐
+ │  Promise.all([                                    │
+ │    getUsageSummary(tenantId, since),              │
+ │    getUsageByStage(tenantId, since),              │
+ │    getUsageByModel(tenantId, since),              │
+ │    getRecentRunsForTenant(tenantId, 20),          │
+ │  ])                                               │
+ └──────────────────────────────────────────────────┘
+   │
+   ▼  (server component, no client JS)
+ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐
+ │ Tokens   │ │ Cost USD │ │ AI min   │ │  Runs    │
+ │ card     │ │ card     │ │ card     │ │  card    │
+ └──────────┘ └──────────┘ └──────────┘ └──────────┘
+ ┌──────────────────────┐  ┌──────────────────────┐
+ │ By stage (table+bar) │  │ By model (table+bar) │
+ └──────────────────────┘  └──────────────────────┘
+ ┌──────────────────────────────────────────────────┐
+ │ Recent 20 runs (cross-installation)               │
+ │ Installation name | Issue link | Stage | Status   │
+ └──────────────────────────────────────────────────┘
+```
+
+**Tenant scoping** — every query joins `usage_logs`/`runs` → `installations` and
+filters by `installations.tenant_id`. This prevents cross-tenant reads even
+if a caller passes another tenant's id (defense-in-depth; the page already
+derives tenantId from the session via `getTenantIdForSessionUser`).
+
+**Time range** — `?range=7d` / `?range=30d` / no param (all-time). The
+`parseSince` helper converts to a `Date` offset used in `called_at` / `started_at`
+WHERE clauses. The toggle is rendered as `<RangeNav>` with active state styling.
+
+**Summary**:
+- `getUsageSummary` runs two aggregations: one on `usage_logs` (tokens, cost)
+  and one on `runs` (minutes, count). Both are scoped to the tenant + time range.
+- `getUsageByStage` groups by `usage_logs.stage` with SUM + COUNT.
+- `getUsageByModel` groups by `usage_logs.model` with SUM + COUNT.
+- Each breakdown table includes a CSS-only bar (relative to the most expensive
+  row in that group).
+
+Key files:
+
+| File | Role |
+|---|---|
+| [`app/src/lib/usage-queries.ts`](../app/src/lib/usage-queries.ts) | 4 query functions: `getUsageSummary`, `getUsageByStage`, `getUsageByModel`, `getRecentRunsForTenant` |
+| [`app/src/app/dashboard/usage/page.tsx`](../app/src/app/dashboard/usage/page.tsx) | Server component — time range nav, summary cards, breakdown tables, recent runs list |
+
+The page is protected by `middleware.ts` (matches `/dashboard/*`). No new
+middleware rules needed.
+
 ## 7. CI
 
 [`app-ci.yml`](../.github/workflows/app-ci.yml) runs only on `app/**` changes:
