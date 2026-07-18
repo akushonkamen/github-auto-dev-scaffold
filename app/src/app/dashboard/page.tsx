@@ -1,28 +1,24 @@
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/auth/config";
-import {
-  getAppInstallationsForUser,
-  INSTALLATION_URL,
-} from "@/auth/with-app-installer";
+import { INSTALLATION_URL } from "@/auth/with-app-installer";
 import { redirect } from "next/navigation";
 import Link from "next/link";
+import { getDashboardInstallations } from "@/lib/dashboard";
+import { formatDistanceToNow } from "@/lib/utils";
 
 export default async function DashboardPage() {
   const session = await getServerSession(authOptions);
   if (!session?.user) redirect("/login?callbackUrl=/dashboard");
 
-  const githubId = (session.user as Record<string, unknown>).githubId as
-    | number
-    | undefined;
   const githubLogin = (session.user as Record<string, unknown>)
     .githubLogin as string | undefined;
 
-  let installations: { id: number; account: { login: string; type: string } }[] = [];
+  let installations: Awaited<ReturnType<typeof getDashboardInstallations>> = [];
   let installationsError = false;
 
   if (session.accessToken) {
     try {
-      installations = await getAppInstallationsForUser(session.accessToken);
+      installations = await getDashboardInstallations(session.accessToken);
     } catch {
       installationsError = true;
     }
@@ -37,35 +33,73 @@ export default async function DashboardPage() {
         <p>
           Welcome, <strong>{githubLogin ?? session.user.name ?? "User"}</strong>
         </p>
-        {githubId && <p>GitHub ID: {githubId}</p>}
+        <div className="text-sm text-muted-foreground space-y-1">
+          <p>
+            Installations shown here are the GitHub org/user accounts that have
+            installed the GithubAutoDev App. Click an installation to view its
+            details.
+          </p>
+        </div>
       </section>
 
       <section className="w-full max-w-md space-y-2">
         <h2 className="text-xl font-semibold">App Installations</h2>
-        {installations.length > 0 ? (
-          <ul className="list-disc pl-5 space-y-1">
+
+        {installationsError && (
+          <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">
+            Could not load installations. Try again later.
+          </div>
+        )}
+
+        {!installationsError && installations.length === 0 && (
+          <div className="space-y-3">
+            <p className="text-muted-foreground text-sm">
+              No GitHub App installations found for your account.
+            </p>
+            <Link
+              href={INSTALLATION_URL}
+              className="inline-block text-primary underline underline-offset-2 text-sm"
+            >
+              Install GithubAutoDev App
+            </Link>
+          </div>
+        )}
+
+        {installations.length > 0 && (
+          <ul className="divide-y rounded-lg border">
             {installations.map((inst) => (
               <li key={inst.id}>
-                {inst.account.login} ({inst.account.type})
+                <Link
+                  href={`/dashboard/installations/${inst.id}`}
+                  className="flex items-center justify-between gap-3 px-4 py-3 transition-colors hover:bg-accent/50"
+                >
+                  <div className="min-w-0 flex-1">
+                    <p className="font-medium truncate">
+                      {inst.accountLogin}
+                      <span className="ml-1.5 text-xs text-muted-foreground font-normal">
+                        ({inst.accountType})
+                      </span>
+                    </p>
+                    <p className="text-sm text-muted-foreground truncate mt-0.5">
+                      {inst.repoFullName ?? (
+                        <span className="italic">Webhook pending</span>
+                      )}
+                    </p>
+                  </div>
+                  <div className="flex flex-col items-end gap-0.5 shrink-0">
+                    <span className="text-xs tabular-nums text-muted-foreground">
+                      {inst.runsCount} run{inst.runsCount !== 1 ? "s" : ""}
+                    </span>
+                    {inst.installedAt && (
+                      <span className="text-xs text-muted-foreground">
+                        {formatDistanceToNow(inst.installedAt)} ago
+                      </span>
+                    )}
+                  </div>
+                </Link>
               </li>
             ))}
           </ul>
-        ) : (
-          <div className="space-y-2">
-            <p className="text-muted-foreground">
-              {installationsError
-                ? "Could not load installations. Try again later."
-                : "No GitHub App installations found for your account."}
-            </p>
-            {!installationsError && (
-              <Link
-                href={INSTALLATION_URL}
-                className="text-primary underline underline-offset-2"
-              >
-                Install GithubAutoDev App
-              </Link>
-            )}
-          </div>
         )}
       </section>
     </main>
