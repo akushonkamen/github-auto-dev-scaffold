@@ -5,16 +5,15 @@ import { Pool } from "pg";
 
 import * as schema from "./schema";
 
-const dbUrl = process.env.DATABASE_URL;
-
-if (!dbUrl) {
-  throw new Error(
-    "DATABASE_URL is not set. Define it in .env.local (see .env.example). " +
-      "v1 uses Neon Postgres — see docs/app-launch-checklist.md A3-6.",
-  );
-}
-
-const pool = new Pool({ connectionString: dbUrl });
+// Lazy: don't throw at module load — Next.js build / typecheck must succeed
+// without DATABASE_URL. Connection errors surface at first query, which is
+// the right granularity (preview deploys without DB shouldn't crash build).
+const pool = new Pool({
+  connectionString:
+    process.env.DATABASE_URL ||
+    "postgresql://unset:unset@localhost:5432/unset?sslmode=disable",
+  max: 5,
+});
 
 export const db = drizzle(pool, { schema });
 
