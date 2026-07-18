@@ -3,7 +3,7 @@
  * Groups pipeline repo variables into batches, prompts with defaults,
  * previews `gh variable set` commands, executes after confirm.
  */
-import { confirm, input } from '@inquirer/prompts';
+import { confirm, input } from '../prompts.mjs';
 import { gh } from '../shell.mjs';
 import { validateModelId, validatePositiveInt } from '../validators.mjs';
 

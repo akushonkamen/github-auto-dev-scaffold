@@ -4,7 +4,7 @@
  * Anthropic direct / custom endpoint.
  * Performs a health probe against /v1/messages.
  */
-import { input, password, select } from '@inquirer/prompts';
+import { input, password, select } from '../prompts.mjs';
 import { maskSecret, validateHttpUrl, validateModelId } from '../validators.mjs';
 
 export const id = '03-llm-provider';
