@@ -27,7 +27,7 @@ minimal — only what the landing page + CI need. Each later issue fills in a la
 └──────────────────────────────────────────────────────────────┘
                              ▼
 ┌──────────────────────────────────────────────────────────────┐
-│  Data (Drizzle ORM → Postgres) · Cache (Upstash Redis)        │
+│  Data (Drizzle ORM → Postgres via `app/src/db/client.ts`) · Cache (Upstash Redis)        │
 └──────────────────────────────────────────────────────────────┘
                              ▼
 ┌──────────────────────────────────────────────────────────────┐
@@ -59,6 +59,25 @@ GitHub event ──▶ Vercel API route (webhook) ──▶ Postgres (state)
 4. Pipeline modules (triage → … → merge) run unchanged and report back via labels.
 
 > v1 scaffold ships only the static landing page. Steps 1–4 land in Issues #2–#4.
+
+## 6. Postgres schema (PRD §4.2)
+
+The canonical schema definition lives at [`app/src/db/schema.ts`](../app/src/db/schema.ts),
+with 5 tables (`tenants`, `installations`, `runs`, `usage_logs`, `api_keys`) defined via
+Drizzle ORM `pgTable`. Migrations (generated SQL) are checked into
+[`app/drizzle/`](../app/drizzle/).
+
+| Table | Purpose | FK |
+|---|---|---|
+| `tenants` | Billing + identity root (GitHub org/user) | — |
+| `installations` | GitHub App installation per repo | `tenant_id → tenants.id` |
+| `runs` | Pipeline execution per Issue | `installation_id → installations.id` |
+| `usage_logs` | Per-stage token / cost audit trail | `run_id → runs.id` |
+| `api_keys` | Encrypted BYOK rows | `tenant_id → tenants.id` |
+
+The runtime bridge is [`app/src/db/client.ts`](../app/src/db/client.ts): a `db` singleton
+(Postgres pool + Drizzle ORM) guarded by `'server-only'` so it is never bundled into
+client components.
 
 ## 3. Directory conventions
 

@@ -67,6 +67,11 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
+      - name: DB schema dry-run (verify drizzle config compiles)
+        run: pnpm db:generate --dry-run
+        env:
+          DATABASE_URL: postgresql://placeholder:placeholder@localhost:5432/db
+
   build:
     name: Build
     runs-on: ubuntu-latest
