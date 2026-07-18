@@ -275,6 +275,52 @@ Key files:
 | [`app/src/app/api/runs/[runId]/events/route.ts`](../app/src/app/api/runs/[runId]/events/route.ts) | SSE endpoint — 2s poll, 10min cap, terminal-status close |
 | [`app/src/lib/runs-queries.ts`](../app/src/lib/runs-queries.ts) | `listRecentRunsForInstallation` / `findRunInInstallation` (installation-scoped) / `listUsageLogsForRun` / `findInstallationForRun` |
 
+## 6.3 BYOK: Bring Your Own Key (Issue #8)
+
+```
+/settings/engines               /api/settings/api-keys         /api/settings/api-keys/[id]
+        │                               │                               │
+        ▼                               ▼                               ▼
+ getServerSession()               getServerSession()              getServerSession()
+ getTenantIdForSessionUser()      getTenantIdForSessionUser()     getTenantIdForSessionUser()
+ listApiKeysForTenant()           encrypt(apiKey)                 deleteApiKey(tenantId, id)
+        │                         insertApiKey(...)                      │
+        ▼                               │                               ▼
+ server component:               return { id, provider,           return { ok: true }
+   list of keys with keyHint             keyHint }
+   AddKeyForm (server action)
+   DeleteKeyButton (server action)
+```
+
+### Crypto layer
+
+[`app/src/lib/crypto.ts`](../app/src/lib/crypto.ts) wraps Node.js `crypto.createCipheriv` / `createDecipheriv` with AES-256-GCM. The master key is read from `APP_BYOK_MASTER_KEY` (32-byte base64). Encrypt returns `iv:cipherText:tag` (each segment base64); decrypt reverses. Missing, malformed, or non-32-byte keys throw — never falls back to a hardcoded value (PRD §7 S9). Never logs plaintext (S4).
+
+### Tenant resolver
+
+[`app/src/lib/tenant.ts`](../app/src/lib/tenant.ts) — `getTenantIdForSessionUser(session)` reads `githubId` from the JWT session (populated by the `jwt` callback in `auth/config.ts`), looks up `tenants.githubId`, returns `tenants.id` or `null`. Every BYOK query is scoped by this tenant ID — no client-supplied tenant id (security).
+
+### Queries
+
+[`app/src/lib/api-keys-queries.ts`](../app/src/lib/api-keys-queries.ts):
+- `listApiKeysForTenant(tenantId)` — returns metadata only (`id`, `provider`, `keyHint`, `createdAt`, `rotatedAt`); `encryptedKey` is never leaked to the client (S4).
+- `insertApiKey({ tenantId, provider, encryptedKey, keyHint })` — expects already-encrypted payload (caller invokes `crypto.ts` first).
+- `deleteApiKey(tenantId, id)` — scoped to tenant; returns 0 if id does not belong to tenant.
+
+### Routes
+
+| File | Method | Purpose |
+|---|---|---|
+| [`app/src/app/api/settings/api-keys/route.ts`](../app/src/app/api/settings/api-keys/route.ts) | POST | Programmatic key creation — validates provider + key, encrypts, inserts, returns `{ id, provider, keyHint }` |
+| [`app/src/app/api/settings/api-keys/[id]/route.ts`](../app/src/app/api/settings/api-keys/[id]/route.ts) | DELETE | Tenant-scoped key deletion |
+
+### Page
+
+[`app/src/app/settings/engines/page.tsx`](../app/src/app/settings/engines/page.tsx) — protected by `middleware.ts` (`/settings/*` matcher). Server component renders:
+- **Add form** (`AddKeyForm.tsx` — client component with `"use server"` action `addApiKey`): provider select (Anthropic / OpenAI / DeepSeek / Custom), masked `type=password` input.
+- **Key list** — each entry shows provider, last-4 `keyHint`, created/rotated dates, and a Delete button (`DeleteKeyButton.tsx` with `removeApiKey` action).
+- Keys are encrypted server-side; the raw key never reaches the client or logs. `rotatedAt` column exists in the schema but rotation UI is v2 (out of scope).
+
 ## 7. CI
 
 [`app-ci.yml`](../.github/workflows/app-ci.yml) runs only on `app/**` changes:
