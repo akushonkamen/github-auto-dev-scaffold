@@ -78,8 +78,8 @@ async function probeModel(baseUrl, key, model) {
   const start = Date.now();
   try {
     // Send both auth headers — native Anthropic uses x-api-key, compat layers
-    // (Zhipu/GLM, DeepSeek) typically use Authorization: Bearer. Each server
-    // picks the one it recognises and ignores the other.
+    // (e.g. Zhipu/GLM bigmodel.cn) typically use Authorization: Bearer. Each
+    // server picks the one it recognises and ignores the other.
     const res = await fetch(url, {
       method: 'POST',
       headers: {
