@@ -316,6 +316,35 @@ Key files:
 - POST [`/api/settings/api-keys`](../app/src/app/api/settings/api-keys/route.ts) — for programmatic clients; same validation and tenant scoping.
 - DELETE [`/api/settings/api-keys/[id]`](../app/src/app/api/settings/api-keys/[id]/route.ts) — returns 404 if id belongs to a different tenant.
 
+## 6.4 Usage dashboard (Issue #9)
+
+```
+/dashboard/usage?range=7d|30d|all
+   │
+   ▼
+ getServerSession()
+ getTenantIdForSessionUser()
+ rangeToSince(range)  // Date | null
+   │
+   ▼
+ Promise.all([
+   getUsageSummary(tenantId, since)
+   getUsageByStage(tenantId, since)
+   getUsageByModel(tenantId, since)
+   getRecentRunsForTenant(tenantId, 20)
+ ])
+   │
+   ▼
+ 4 summary cards + stage bars + model bars + recent 20 runs table
+```
+
+All aggregations live in [`app/src/lib/usage-queries.ts`](../app/src/lib/usage-queries.ts) and
+JOIN `usage_logs → runs → installations` so every row is scoped by
+`installations.tenant_id`. `range` query string (`7d`/`30d`/`all`) lower-bounds
+`called_at` / `started_at`; `null` means all-time.
+
+v1 uses pure CSS bars (`width: ${(tokens / max) * 100}%`); Recharts lands in v2.
+
 ## 7. CI
 
 [`app-ci.yml`](../.github/workflows/app-ci.yml) runs only on `app/**` changes:
