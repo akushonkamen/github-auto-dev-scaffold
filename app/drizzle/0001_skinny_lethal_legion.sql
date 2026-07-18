@@ -1,0 +1,1 @@
+ALTER TABLE "runs" ADD CONSTRAINT "uq_runs_installation_issue" UNIQUE("installation_id","issue_number");
