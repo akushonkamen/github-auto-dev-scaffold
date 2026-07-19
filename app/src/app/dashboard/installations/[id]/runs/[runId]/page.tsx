@@ -11,6 +11,18 @@ import {
 } from "@/lib/runs-queries";
 import { RunDetailHeader } from "./RunDetailHeader";
 
+import { AppShell } from "@/components/app-shell";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+
 interface PageProps {
   params: Promise<{ id: string; runId: string }>;
 }
@@ -46,10 +58,19 @@ export default async function RunDetailPage({ params }: PageProps) {
   }
   if (!authorized) {
     return (
-      <main className="flex min-h-screen flex-col items-center gap-4 p-8">
-        <h1 className="text-2xl font-bold">Access denied</h1>
-        <Link href="/dashboard" className="text-primary underline">返回 Dashboard</Link>
-      </main>
+      <AppShell>
+        <Card className="mx-auto max-w-md">
+          <CardContent className="space-y-2 p-6">
+            <h1 className="text-lg font-semibold">无权访问</h1>
+            <p className="text-sm text-muted-foreground">
+              该 installation 不在当前账号可访问的列表里。
+            </p>
+            <Button asChild size="sm" variant="outline">
+              <Link href="/dashboard">返回 Dashboard</Link>
+            </Button>
+          </CardContent>
+        </Card>
+      </AppShell>
     );
   }
 
@@ -59,64 +80,88 @@ export default async function RunDetailPage({ params }: PageProps) {
   const logs = await listUsageLogsForRun(run.id);
 
   return (
-    <main className="flex min-h-screen flex-col items-center gap-6 p-8">
-      <div className="w-full max-w-4xl">
-        <Link
-          href={`/dashboard/installations/${dbId}/runs`}
-          className="text-sm text-muted-foreground underline"
-        >
-          ← Run 列表
-        </Link>
+    <AppShell>
+      <div className="mx-auto max-w-5xl space-y-6">
+        <div className="text-xs text-muted-foreground">
+          <Link
+            href={`/dashboard/installations/${dbId}/runs`}
+            className="font-mono underline underline-offset-2"
+          >
+            {installation.repoFullName} / runs
+          </Link>
+          {" / "}
+          <span>#{runId}</span>
+        </div>
+
+        <RunDetailHeader
+          run={{
+            id: run.id,
+            issueNumber: run.issueNumber,
+            prNumber: run.prNumber,
+            currentStage: run.currentStage,
+            status: run.status,
+            aiTokensUsed: run.aiTokensUsed,
+            aiMinutesUsed: run.aiMinutesUsed,
+            startedAt: run.startedAt ? run.startedAt.toISOString() : null,
+            completedAt: run.completedAt ? run.completedAt.toISOString() : null,
+          }}
+          fmtDate={fmtDate}
+          repoFullName={installation.repoFullName}
+        />
+
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">阶段用量明细</CardTitle>
+            <CardDescription>
+              {logs.length === 0
+                ? "暂无 usage_logs 行"
+                : `${logs.length} 条记录`}
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="p-0">
+            {logs.length === 0 ? (
+              <p className="p-6 text-sm text-muted-foreground">
+                暂无 usage_logs 行（usage 上报链路在 Issue #9 落地）。
+              </p>
+            ) : (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>阶段</TableHead>
+                    <TableHead>Model</TableHead>
+                    <TableHead className="text-right">Input Tokens</TableHead>
+                    <TableHead className="text-right">Output Tokens</TableHead>
+                    <TableHead className="text-right">Cost (USD)</TableHead>
+                    <TableHead>调用时间</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {logs.map((l) => (
+                    <TableRow key={l.id}>
+                      <TableCell className="font-mono text-xs">{l.stage}</TableCell>
+                      <TableCell className="font-mono text-xs">{l.model}</TableCell>
+                      <TableCell className="text-right font-mono">
+                        {l.inputTokens ?? "—"}
+                      </TableCell>
+                      <TableCell className="text-right font-mono">
+                        {l.outputTokens ?? "—"}
+                      </TableCell>
+                      <TableCell className="text-right font-mono">
+                        {l.costUsd != null
+                          ? `$${Number(l.costUsd).toFixed(4)}`
+                          : "—"}
+                      </TableCell>
+                      <TableCell className="text-xs text-muted-foreground">
+                        {fmtDate(l.calledAt)}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            )}
+          </CardContent>
+        </Card>
       </div>
-
-      <RunDetailHeader
-        run={{
-          id: run.id,
-          issueNumber: run.issueNumber,
-          prNumber: run.prNumber,
-          currentStage: run.currentStage,
-          status: run.status,
-          aiTokensUsed: run.aiTokensUsed,
-          aiMinutesUsed: run.aiMinutesUsed,
-          startedAt: run.startedAt ? run.startedAt.toISOString() : null,
-          completedAt: run.completedAt ? run.completedAt.toISOString() : null,
-        }}
-        fmtDate={fmtDate}
-      />
-
-      <section className="w-full max-w-4xl space-y-2">
-        <h2 className="text-xl font-semibold">阶段用量明细</h2>
-        {logs.length === 0 ? (
-          <p className="text-muted-foreground">
-            暂无 usage_logs 行（usage 上报链路在 Issue #9 落地）。
-          </p>
-        ) : (
-          <table className="w-full text-sm">
-            <thead className="text-left text-muted-foreground">
-              <tr>
-                <th className="py-2 pr-4">阶段</th>
-                <th className="py-2 pr-4">Model</th>
-                <th className="py-2 pr-4">Input Tokens</th>
-                <th className="py-2 pr-4">Output Tokens</th>
-                <th className="py-2 pr-4">Cost (USD)</th>
-                <th className="py-2 pr-4">调用时间</th>
-              </tr>
-            </thead>
-            <tbody>
-              {logs.map((l) => (
-                <tr key={l.id} className="border-t">
-                  <td className="py-2 pr-4 font-mono">{l.stage}</td>
-                  <td className="py-2 pr-4 font-mono">{l.model}</td>
-                  <td className="py-2 pr-4">{l.inputTokens ?? "—"}</td>
-                  <td className="py-2 pr-4">{l.outputTokens ?? "—"}</td>
-                  <td className="py-2 pr-4">{l.costUsd ?? "—"}</td>
-                  <td className="py-2 pr-4">{fmtDate(l.calledAt)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </section>
-    </main>
+    </AppShell>
   );
 }
