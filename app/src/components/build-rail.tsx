@@ -7,20 +7,93 @@ export type StationStatus = "done" | "now" | "pending";
 export interface Station {
   id: string;
   label: string;
+  description?: string;
+  tag?: string;
   status: StationStatus;
 }
 
 interface Props {
   stations: Station[];
+  variant?: "horizontal" | "vertical";
   className?: string;
 }
 
 /**
- * 地铁进度轨 — vibecoding 标志性视觉。
- * done：实心 work 圆点 + 勾；now：脉冲青色；pending：浅灰。
- * 站点之间用连接条，已走过的段着 work 色。
+ * 地铁式进度轨。
+ * - horizontal：水平点+连接条（runs 详情页用）
+ * - vertical：纵向 dot+bar 左列、name+tag+desc 右列（vibecoding 造物页用，
+ *   严格复刻 autodev-frontend-design.html 的 .station 网格）
+ *
+ * 配色：done=work 青；now=you 琥珀 + 脉冲环；pending=border 灰。
  */
-export function BuildRail({ stations, className }: Props) {
+export function BuildRail({ stations, variant = "horizontal", className }: Props) {
+  if (variant === "vertical") {
+    return (
+      <div className={cn("flex flex-col", className)}>
+        {stations.map((s) => (
+          <div
+            key={s.id}
+            className="grid grid-cols-[26px_1fr] gap-x-3.5"
+          >
+            {/* 左列：dot + 连接 bar */}
+            <div className="flex flex-col items-center">
+              <span
+                className={cn(
+                  "relative z-[1] mt-[5px] h-3.5 w-3.5 rounded-full border-[3px] bg-background",
+                  s.status === "done" && "border-work bg-work",
+                  s.status === "now" && "border-you bg-you",
+                  s.status === "pending" && "border-border",
+                )}
+              >
+                {s.status === "now" && (
+                  <span className="absolute inset-[-7px] rounded-full border-2 border-you animate-omc-pulse" />
+                )}
+              </span>
+              <span
+                className={cn(
+                  "my-0 w-[3px] min-h-[34px] flex-1",
+                  s.status === "done" ? "bg-work" : "bg-border",
+                )}
+              />
+            </div>
+
+            {/* 右列：name + tag + desc */}
+            <div className="pb-1.5 pt-0.5">
+              <div
+                className={cn(
+                  "flex items-center gap-2 text-sm font-bold leading-tight",
+                  s.status === "now" && "text-you",
+                  s.status === "done" && "text-foreground",
+                  s.status === "pending" && "font-medium text-muted-foreground",
+                )}
+              >
+                {s.label}
+                {s.tag && (
+                  <span
+                    className={cn(
+                      "rounded font-mono text-[10px] px-1.5 py-px",
+                      s.status === "now"
+                        ? "bg-you-soft text-you"
+                        : "bg-muted/60 text-muted-foreground",
+                    )}
+                  >
+                    {s.tag}
+                  </span>
+                )}
+              </div>
+              {s.description && (
+                <div className="mt-0.5 text-xs text-muted-foreground">
+                  {s.description}
+                </div>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  // horizontal
   return (
     <div className={cn("flex items-center gap-0 overflow-x-auto", className)}>
       {stations.map((s, i) => {
@@ -32,32 +105,16 @@ export function BuildRail({ stations, className }: Props) {
               <span
                 className={cn(
                   "relative flex h-4 w-4 items-center justify-center rounded-full border",
-                  s.status === "done" && "border-work bg-work text-work-foreground",
-                  s.status === "now" && "border-work bg-work-soft",
+                  s.status === "done" && "border-work bg-work",
+                  s.status === "now" && "border-you bg-you-soft",
                   s.status === "pending" && "border-border bg-background",
                 )}
               >
-                {s.status === "done" && (
-                  <svg viewBox="0 0 12 12" className="h-2.5 w-2.5 text-white" fill="none">
-                    <path
-                      d="M2.5 6.5L5 9L9.5 3.5"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                  </svg>
-                )}
                 {s.status === "now" && (
-                  <span className="absolute inset-0 rounded-full bg-work/50 motion-safe:animate-ping" />
+                  <span className="absolute inset-0 rounded-full bg-you/40 animate-omc-pulse" />
                 )}
               </span>
-              <span
-                className={cn(
-                  "whitespace-nowrap text-[11px] font-medium",
-                  s.status === "pending" ? "text-muted-foreground" : "text-foreground",
-                )}
-              >
+              <span className="whitespace-nowrap text-[11px] font-medium">
                 {s.label}
               </span>
             </div>
