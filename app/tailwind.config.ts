@@ -58,6 +58,20 @@ const config = {
           DEFAULT: "hsl(var(--card))",
           foreground: "hsl(var(--card-foreground))",
         },
+        work: {
+          DEFAULT: "hsl(var(--work))",
+          soft: "hsl(var(--work-soft))",
+        },
+        you: {
+          DEFAULT: "hsl(var(--you))",
+          soft: "hsl(var(--you-soft))",
+        },
+        fail: {
+          DEFAULT: "hsl(var(--fail))",
+          soft: "hsl(var(--fail-soft))",
+        },
+        ink: "hsl(var(--ink))",
+        cream: "hsl(var(--cream))",
       },
       borderRadius: {
         lg: "var(--radius)",
