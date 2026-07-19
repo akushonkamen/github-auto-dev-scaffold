@@ -79,8 +79,28 @@ const config = {
         sm: "calc(var(--radius) - 4px)",
       },
       fontFamily: {
-        sans: ["var(--font-inter)", "ui-sans-serif", "system-ui", "sans-serif"],
-        mono: ["ui-monospace", "SFMono-Regular", "Menlo", "Monaco", "monospace"],
+        sans: ["var(--font-sans-sc)", "ui-sans-serif", "system-ui", "sans-serif"],
+        sansSC: ["var(--font-sans-sc)", "PingFang SC", "Microsoft YaHei", "ui-sans-serif", "system-ui", "sans-serif"],
+        serif: ["var(--font-serif)", "ui-serif", "Georgia", "serif"],
+        mono: ["var(--font-mono-jb)", "ui-monospace", "SFMono-Regular", "Menlo", "Monaco", "monospace"],
+      },
+      keyframes: {
+        "omc-pulse": {
+          "0%": { transform: "scale(0.6)", opacity: "0.9" },
+          "100%": { transform: "scale(1.35)", opacity: "0" },
+        },
+        "omc-blink": {
+          "50%": { opacity: "0.25" },
+        },
+        "omc-fadein": {
+          from: { opacity: "0", transform: "translateY(8px)" },
+          to: { opacity: "1", transform: "none" },
+        },
+      },
+      animation: {
+        "omc-pulse": "omc-pulse 1.6s ease-out infinite",
+        "omc-blink": "omc-blink 1.4s infinite",
+        "omc-fadein": "omc-fadein 0.3s ease",
       },
     },
   },
