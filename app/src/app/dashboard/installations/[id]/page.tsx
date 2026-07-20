@@ -1,162 +1,136 @@
+import Link from "next/link";
+import { notFound, redirect } from "next/navigation";
+
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/auth/config";
-import { redirect, notFound } from "next/navigation";
-import Link from "next/link";
+import { getAppInstallationsForUser } from "@/auth/with-app-installer";
 import {
-  verifyInstallationAccess,
-  getInstallationDetail,
-} from "@/lib/dashboard";
-import { formatDistanceToNow } from "@/lib/utils";
-import { SetActiveButton } from "./set-active-button";
+  findInstallationByDbId,
+  recentRunsForInstallation,
+} from "@/lib/installations-queries";
+import { setActiveInstallationDbId } from "@/lib/active-installation";
 
-interface Props {
-  params: { id: string };
+interface PageProps {
+  params: Promise<{ id: string }>;
 }
 
-/**
- * Installation detail page — /dashboard/installations/[id]
- *
- * Shows installation metadata and the last 10 pipeline runs.
- * Every page load re-verifies the session user can access this installation
- * via GitHub API (IDOR protection, AC-004).
- */
-export default async function InstallationDetailPage({ params }: Props) {
+function fmtDate(value: Date | string | null): string {
+  if (!value) return "—";
+  const d = typeof value === "string" ? new Date(value) : value;
+  return d.toISOString().replace("T", " ").slice(0, 19) + " UTC";
+}
+
+export default async function InstallationDetailPage({ params }: PageProps) {
+  const { id } = await params;
+  const dbId = Number.parseInt(id, 10);
+  if (!Number.isFinite(dbId) || dbId <= 0) notFound();
+
   const session = await getServerSession(authOptions);
-  if (!session?.user) redirect("/login?callbackUrl=/dashboard/installations/" + params.id);
+  if (!session?.user) redirect(`/login?callbackUrl=/dashboard/installations/${dbId}`);
 
-  const installationId = Number(params.id);
-  if (!Number.isInteger(installationId) || installationId <= 0) {
-    notFound();
+  const installation = await findInstallationByDbId(dbId);
+  if (!installation) notFound();
+
+  // S11: every read still has to verify the user actually has access to this
+  // installation via the GitHub API. Cookie + path alone are not enough —
+  // anyone could guess a numeric db id.
+  if (!session.accessToken) redirect("/login");
+  let authorized = false;
+  try {
+    const accessible = await getAppInstallationsForUser(session.accessToken);
+    authorized = accessible.some((i) => i.id === installation.installationId);
+  } catch {
+    authorized = false;
+  }
+  if (!authorized) {
+    return (
+      <main className="flex min-h-screen flex-col items-center gap-4 p-8">
+        <h1 className="text-2xl font-bold">Access denied</h1>
+        <p className="text-muted-foreground">
+          Your GitHub token no longer lists installation {installation.installationId}.
+        </p>
+        <Link href="/dashboard" className="text-primary underline">Back to dashboard</Link>
+      </main>
+    );
   }
 
-  // IDOR guard: verify the session user's token grants access to this installation
-  if (!session.accessToken) {
-    redirect("/login?callbackUrl=/dashboard/installations/" + params.id);
-  }
-
-  const hasAccess = await verifyInstallationAccess(
-    session.accessToken,
-    installationId,
-  );
-  if (!hasAccess) {
-    notFound();
-  }
-
-  // Fetch detail data
-  const detail = await getInstallationDetail(session.accessToken, installationId);
+  const recentRuns = await recentRunsForInstallation(installation.id, 10);
 
   return (
-    <main className="flex min-h-screen flex-col items-center gap-8 p-8">
-      <div className="w-full max-w-lg">
-        {/* Breadcrumb */}
-        <nav className="mb-6 text-sm text-muted-foreground">
-          <Link
-            href="/dashboard"
-            className="underline underline-offset-2 hover:text-foreground"
-          >
-            Dashboard
-          </Link>
-          <span className="mx-2">/</span>
-          <span className="text-foreground font-medium">
-            {detail.accountLogin}
-          </span>
-        </nav>
-
-        <h1 className="text-3xl font-bold tracking-tight mb-6">
-          {detail.accountLogin}
-          <span className="ml-2 text-lg font-normal text-muted-foreground">
-            ({detail.accountType})
-          </span>
-        </h1>
-
-        {/* Metadata card */}
-        <section className="rounded-lg border p-4 space-y-3 mb-6">
-          <h2 className="text-lg font-semibold">Installation Details</h2>
-          <dl className="space-y-2 text-sm">
-            <div className="flex justify-between">
-              <dt className="text-muted-foreground">Installation ID</dt>
-              <dd className="font-mono tabular-nums">{detail.id}</dd>
-            </div>
-            <div className="flex justify-between">
-              <dt className="text-muted-foreground">Repository</dt>
-              <dd>
-                {detail.repoFullName ?? (
-                  <span className="italic text-muted-foreground">
-                    Webhook pending
-                  </span>
-                )}
-              </dd>
-            </div>
-            <div className="flex justify-between">
-              <dt className="text-muted-foreground">Repository selection</dt>
-              <dd className="capitalize">
-                {detail.repositorySelection === "all" ? "All repos" : "Selected repos"}
-              </dd>
-            </div>
-            <div className="flex justify-between">
-              <dt className="text-muted-foreground">Installed</dt>
-              <dd>
-                {detail.installedAt ? (
-                  <time dateTime={detail.installedAt.toISOString()}>
-                    {formatDistanceToNow(detail.installedAt)} ago
-                  </time>
-                ) : (
-                  <span className="italic text-muted-foreground">Pending</span>
-                )}
-              </dd>
-            </div>
-          </dl>
-
-          <div className="pt-2">
-            <SetActiveButton installationId={detail.id} accountLogin={detail.accountLogin} />
-          </div>
-        </section>
-
-        {/* Recent runs */}
-        <section className="rounded-lg border p-4 space-y-3">
-          <h2 className="text-lg font-semibold">Recent Runs</h2>
-          {detail.recentRuns.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              No pipeline runs yet. When an Issue is dispatched for this
-              installation, runs will appear here.
-            </p>
-          ) : (
-            <ul className="divide-y">
-              {detail.recentRuns.map((run) => (
-                <li key={run.id} className="py-2 first:pt-0 last:pb-0">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-sm font-medium">
-                      #{run.issueNumber}
-                    </span>
-                    <span
-                      className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${
-                        run.status === "completed" || run.status === "merged"
-                          ? "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400"
-                          : run.status === "failed" || run.status === "cancelled"
-                            ? "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400"
-                            : "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-400"
-                      }`}
-                    >
-                      {run.status ?? "pending"}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-3 mt-1 text-xs text-muted-foreground">
-                    {run.currentStage && <span>Stage: {run.currentStage}</span>}
-                    {run.startedAt && (
-                      <span>
-                        {formatDistanceToNow(run.startedAt)} ago
-                      </span>
-                    )}
-                    {run.prNumber && (
-                      <span>PR #{run.prNumber}</span>
-                    )}
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
+    <main className="flex min-h-screen flex-col items-center gap-6 p-8">
+      <div className="w-full max-w-3xl">
+        <Link href="/dashboard" className="text-sm text-muted-foreground underline">
+          ← All installations
+        </Link>
       </div>
+
+      <header className="flex w-full max-w-3xl items-baseline justify-between">
+        <h1 className="text-2xl font-bold">{installation.repoFullName}</h1>
+        <form action={async () => {
+          "use server";
+          await setActiveInstallationDbId(installation.id);
+          redirect("/dashboard");
+        }}>
+          <button
+            type="submit"
+            className="rounded-md border px-3 py-1 text-sm hover:bg-accent"
+          >
+            Set as active
+          </button>
+        </form>
+      </header>
+
+      <section className="w-full max-w-3xl space-y-1 rounded-lg border p-4 text-sm">
+        <div className="flex justify-between">
+          <span className="text-muted-foreground">GitHub installation ID</span>
+          <code>{installation.installationId}</code>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-muted-foreground">Installed</span>
+          <span>{fmtDate(installation.installedAt)}</span>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-muted-foreground">Uninstalled</span>
+          <span>{fmtDate(installation.uninstalledAt)}</span>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-muted-foreground">Total runs</span>
+          <span>{installation.runsCount}</span>
+        </div>
+      </section>
+
+      <section className="w-full max-w-3xl space-y-2">
+        <h2 className="text-xl font-semibold">Recent runs</h2>
+        {recentRuns.length === 0 ? (
+          <p className="text-muted-foreground">No runs yet.</p>
+        ) : (
+          <table className="w-full text-sm">
+            <thead className="text-left text-muted-foreground">
+              <tr>
+                <th className="py-2 pr-4">#</th>
+                <th className="py-2 pr-4">Stage</th>
+                <th className="py-2 pr-4">Status</th>
+                <th className="py-2 pr-4">Started</th>
+                <th className="py-2 pr-4">PR</th>
+              </tr>
+            </thead>
+            <tbody>
+              {recentRuns.map((r) => (
+                <tr key={r.id} className="border-t">
+                  <td className="py-2 pr-4">#{r.issueNumber}</td>
+                  <td className="py-2 pr-4 font-mono">{r.currentStage ?? "—"}</td>
+                  <td className="py-2 pr-4 font-mono">{r.status ?? "—"}</td>
+                  <td className="py-2 pr-4">{fmtDate(r.startedAt)}</td>
+                  <td className="py-2 pr-4">{r.prNumber ?? "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        <p className="text-xs text-muted-foreground">
+          Live updates (SSE) land in Issue #7.
+        </p>
+      </section>
     </main>
   );
 }
