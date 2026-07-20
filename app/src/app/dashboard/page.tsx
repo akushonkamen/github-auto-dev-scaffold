@@ -4,12 +4,12 @@ import { redirect } from "next/navigation";
 import { AlertCircle, ArrowUpRight, Plus } from "lucide-react";
 
 import { authOptions } from "@/auth/config";
-import {
-  INSTALLATION_URL,
-  getAppInstallationsForUser,
-} from "@/auth/with-app-installer";
-import { findInstallationByGithubId } from "@/lib/installations-queries";
+import { INSTALLATION_URL } from "@/auth/with-app-installer";
 import { getActiveInstallationDbId } from "@/lib/active-installation";
+import {
+  type DashboardInstallation,
+  getDashboardInstallations,
+} from "@/lib/dashboard";
 import { AppShell } from "@/components/app-shell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -145,12 +145,12 @@ export default async function DashboardPage() {
                         <div className="min-w-0 space-y-1">
                           <CardTitle className="flex items-center gap-2 text-base">
                             <span className="truncate font-mono">
-                              {row.github.account.login}
+                              {row.accountLogin}
                             </span>
                           </CardTitle>
                           <CardDescription className="flex items-center gap-2">
                             <Badge variant="outline" className="font-normal">
-                              {row.github.account.type}
+                              {row.accountType}
                             </Badge>
                             {row.isActive && (
                               <Badge variant="success" className="gap-1">
@@ -190,7 +190,7 @@ export default async function DashboardPage() {
                   </Card>
                 );
                 return (
-                  <li key={row.github.id} className="h-full">
+                  <li key={row.id} className="h-full">
                     {target ? (
                       <Link href={target} className="block h-full">
                         {inner}
