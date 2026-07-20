@@ -139,6 +139,14 @@ export function CreateWorkspace({ installationDbId, repoFullName }: Props) {
 
     void pullComments();
 
+    // Independent comment-polling interval. The runs-table SSE only fires
+    // when webhook worker updates status (dispatched/failed) — it does NOT
+    // track stage progression. Without this timer the chat panel stays
+    // empty after the initial pull.
+    const commentTimer = setInterval(() => {
+      if (!cancelled) void pullComments();
+    }, 5_000);
+
     const es = new EventSource(`/api/runs/${runId}/events`, {
       withCredentials: true,
     });
@@ -178,6 +186,7 @@ export function CreateWorkspace({ installationDbId, repoFullName }: Props) {
 
     return () => {
       cancelled = true;
+      clearInterval(commentTimer);
       es.close();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
