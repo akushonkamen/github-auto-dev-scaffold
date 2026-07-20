@@ -18,15 +18,15 @@ const COOKIE_NAME = "gitautodev_active_installation";
  *  - secure: true    — only sent over HTTPS (production)
  *    (Next.js cookies() handles secure automatically in production)
  *
- * @param installationId - The GitHub installation ID to set as active.
+ * @param installationDbId - The DB installations.id to set as active.
  */
 export async function setActiveInstallation(
-  installationId: number,
+  installationDbId: number,
 ): Promise<{ ok: true }> {
   const oneYearSeconds = 365 * 24 * 60 * 60;
 
-  const cookieStore = cookies();
-  cookieStore.set(COOKIE_NAME, String(installationId), {
+  const cookieStore = await cookies();
+  cookieStore.set(COOKIE_NAME, String(installationDbId), {
     httpOnly: true,
     sameSite: "lax",
     secure: process.env.NODE_ENV === "production",

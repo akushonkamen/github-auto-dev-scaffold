@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Check } from "lucide-react";
 
 interface Props {
-  installationId: number;
+  installationDbId: number;
   accountLogin: string;
 }
 
@@ -14,14 +14,18 @@ interface Props {
  * "Set as active" button — writes the `gitautodev_active_installation` cookie
  * when clicked, so the app remembers which installation the user is working with.
  *
+ * Stores the DB `installations.id` (via `installationDbId`) so
+ * `getActiveInstallationDbId` can match it against `DashboardInstallation.dbId`
+ * on the dashboard page.
+ *
  * Uses React 18 `useTransition` for a pending state without blocking the UI.
  */
-export function SetActiveButton({ installationId, accountLogin }: Props) {
+export function SetActiveButton({ installationDbId, accountLogin }: Props) {
   const [pending, startTransition] = useTransition();
 
   function handleClick() {
     startTransition(async () => {
-      await setActiveInstallation(installationId);
+      await setActiveInstallation(installationDbId);
     });
   }
 
