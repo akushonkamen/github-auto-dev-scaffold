@@ -1,10 +1,8 @@
 import "server-only";
-import { and, count, desc, eq, gte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
 
 import { db } from "@/db/client";
 import { installations, runs, usageLogs } from "@/db/schema";
-
-// ── Public types ────────────────────────────────────────────────────────────
 
 export interface UsageSummary {
   totalTokens: number;
@@ -13,191 +11,180 @@ export interface UsageSummary {
   totalRuns: number;
 }
 
-export interface StageBreakdownRow {
+export interface StageBreakdown {
   stage: string;
-  inputTokens: number;
-  outputTokens: number;
-  costUsd: number;
-  callsCount: number;
+  totalTokens: number;
+  totalCostUsd: number;
+  calls: number;
 }
 
-export interface ModelBreakdownRow {
+export interface ModelBreakdown {
   model: string;
-  inputTokens: number;
-  outputTokens: number;
-  costUsd: number;
-  callsCount: number;
+  totalTokens: number;
+  totalCostUsd: number;
+  calls: number;
 }
 
-export interface RecentRunForTenant {
+export interface RecentRunRow {
   id: number;
+  installationId: number;
+  installationGithubId: number;
+  repoFullName: string | null;
   issueNumber: number;
   prNumber: number | null;
   currentStage: string | null;
   status: string | null;
-  aiTokensUsed: number | null;
+  aiTokensUsed: number;
+  aiMinutesUsed: number;
   startedAt: Date | null;
-  repoFullName: string;
-  installationId: number;
-}
-
-// ── Internal helpers ────────────────────────────────────────────────────────
-
-/**
- * Scoping WHERE clause for usage_logs-based queries.
- * Joins through runs → installations to filter by tenant + optional time range.
- */
-function usageScope(tenantId: number, since: Date | null) {
-  return and(
-    eq(installations.tenantId, tenantId),
-    since ? gte(usageLogs.calledAt, since) : undefined,
-  );
 }
 
 /**
- * Scoping WHERE clause for run-based queries (minutes, runs count).
- * Joins through installations to filter by tenant + optional time range.
+ * All aggregations join usage_logs → runs → installations → tenants via
+ * `installations.tenant_id`. The tenantId parameter is the only scoping
+ * knob — every query filters on it so cross-tenant reads are impossible.
+ *
+ * `since` is optional; when undefined, no lower bound (all-time).
  */
-function runScope(tenantId: number, since: Date | null) {
-  return and(
-    eq(installations.tenantId, tenantId),
-    since ? gte(runs.startedAt, since) : undefined,
-  );
+function tenantScope(tenantId: number) {
+  return eq(installations.tenantId, tenantId);
 }
 
-// ── Queries ─────────────────────────────────────────────────────────────────
-
-/**
- * Aggregate usage summary across all installations for a tenant.
- * Token + cost data comes from `usage_logs` (per-call granularity);
- * minutes + run count come from `runs` (per-run totals).
- */
 export async function getUsageSummary(
   tenantId: number,
   since: Date | null,
 ): Promise<UsageSummary> {
-  const [usageAgg] = await db
+  const conditions = [tenantScope(tenantId)];
+  if (since) conditions.push(gte(usageLogs.calledAt, since));
+
+  const row = await db
     .select({
-      totalTokens: sql<number>`
-        COALESCE(SUM(${usageLogs.inputTokens} + ${usageLogs.outputTokens}), 0)
-      `,
-      totalCostUsd: sql<number>`
-        COALESCE(SUM(${usageLogs.costUsd})::numeric, 0)
-      `,
+      totalTokens: sql<number>`coalesce(sum(${usageLogs.inputTokens} + ${usageLogs.outputTokens}), 0)`.as("total_tokens"),
+      totalCostUsd: sql<number>`coalesce(sum(${usageLogs.costUsd}), 0)`.as("total_cost_usd"),
+      totalCalls: sql<number>`count(${usageLogs.id})`.as("total_calls"),
     })
     .from(usageLogs)
-    .innerJoin(runs, eq(usageLogs.runId, runs.id))
-    .innerJoin(installations, eq(runs.installationId, installations.id))
-    .where(usageScope(tenantId, since));
+    .innerJoin(runs, eq(runs.id, usageLogs.runId))
+    .innerJoin(installations, eq(installations.id, runs.installationId))
+    .where(and(...conditions));
 
-  const [runAgg] = await db
+  // AI minutes + run count are at the runs level, not usage_logs.
+  const runConditions = [tenantScope(tenantId)];
+  if (since) runConditions.push(gte(runs.startedAt, since));
+  const runRow = await db
     .select({
-      totalMinutes: sql<number>`COALESCE(SUM(${runs.aiMinutesUsed}), 0)`,
-      totalRuns: count(),
+      totalMinutes: sql<number>`coalesce(sum(${runs.aiMinutesUsed}), 0)`.as("total_minutes"),
+      totalRuns: sql<number>`count(${runs.id})`.as("total_runs"),
     })
     .from(runs)
-    .innerJoin(installations, eq(runs.installationId, installations.id))
-    .where(runScope(tenantId, since));
+    .innerJoin(installations, eq(installations.id, runs.installationId))
+    .where(and(...runConditions));
 
   return {
-    totalTokens: Number(usageAgg?.totalTokens ?? 0),
-    totalCostUsd: Number(usageAgg?.totalCostUsd ?? 0),
-    totalMinutes: Number(runAgg?.totalMinutes ?? 0),
-    totalRuns: runAgg?.totalRuns ?? 0,
+    totalTokens: Number(row[0]?.totalTokens ?? 0),
+    totalCostUsd: Number(row[0]?.totalCostUsd ?? 0),
+    totalMinutes: Number(runRow[0]?.totalMinutes ?? 0),
+    totalRuns: Number(runRow[0]?.totalRuns ?? 0),
   };
 }
 
-/**
- * Token / cost / call count grouped by `usage_logs.stage`.
- * Useful for identifying which pipeline stage consumes the most budget.
- */
 export async function getUsageByStage(
   tenantId: number,
   since: Date | null,
-): Promise<StageBreakdownRow[]> {
+): Promise<StageBreakdown[]> {
+  const conditions = [tenantScope(tenantId)];
+  if (since) conditions.push(gte(usageLogs.calledAt, since));
+
   const rows = await db
     .select({
       stage: usageLogs.stage,
-      inputTokens: sql<number>`COALESCE(SUM(${usageLogs.inputTokens}), 0)`,
-      outputTokens: sql<number>`COALESCE(SUM(${usageLogs.outputTokens}), 0)`,
-      costUsd: sql<number>`COALESCE(SUM(${usageLogs.costUsd})::numeric, 0)`,
-      callsCount: count(),
+      totalTokens: sql<number>`coalesce(sum(${usageLogs.inputTokens} + ${usageLogs.outputTokens}), 0)`.as("total_tokens"),
+      totalCostUsd: sql<number>`coalesce(sum(${usageLogs.costUsd}), 0)`.as("total_cost_usd"),
+      calls: sql<number>`count(${usageLogs.id})`.as("calls"),
     })
     .from(usageLogs)
-    .innerJoin(runs, eq(usageLogs.runId, runs.id))
-    .innerJoin(installations, eq(runs.installationId, installations.id))
-    .where(usageScope(tenantId, since))
+    .innerJoin(runs, eq(runs.id, usageLogs.runId))
+    .innerJoin(installations, eq(installations.id, runs.installationId))
+    .where(and(...conditions))
     .groupBy(usageLogs.stage)
-    .orderBy(desc(sql`SUM(${usageLogs.costUsd})`));
+    .orderBy(desc(sql`total_tokens`));
 
-  return rows.map(normaliseNumeric);
+  return rows.map((r) => ({
+    stage: r.stage,
+    totalTokens: Number(r.totalTokens),
+    totalCostUsd: Number(r.totalCostUsd),
+    calls: Number(r.calls),
+  }));
 }
 
-/**
- * Token / cost / call count grouped by `usage_logs.model`.
- * Useful for comparing model cost-efficiency across providers.
- */
 export async function getUsageByModel(
   tenantId: number,
   since: Date | null,
-): Promise<ModelBreakdownRow[]> {
+): Promise<ModelBreakdown[]> {
+  const conditions = [tenantScope(tenantId)];
+  if (since) conditions.push(gte(usageLogs.calledAt, since));
+
   const rows = await db
     .select({
       model: usageLogs.model,
-      inputTokens: sql<number>`COALESCE(SUM(${usageLogs.inputTokens}), 0)`,
-      outputTokens: sql<number>`COALESCE(SUM(${usageLogs.outputTokens}), 0)`,
-      costUsd: sql<number>`COALESCE(SUM(${usageLogs.costUsd})::numeric, 0)`,
-      callsCount: count(),
+      totalTokens: sql<number>`coalesce(sum(${usageLogs.inputTokens} + ${usageLogs.outputTokens}), 0)`.as("total_tokens"),
+      totalCostUsd: sql<number>`coalesce(sum(${usageLogs.costUsd}), 0)`.as("total_cost_usd"),
+      calls: sql<number>`count(${usageLogs.id})`.as("calls"),
     })
     .from(usageLogs)
-    .innerJoin(runs, eq(usageLogs.runId, runs.id))
-    .innerJoin(installations, eq(runs.installationId, installations.id))
-    .where(usageScope(tenantId, since))
+    .innerJoin(runs, eq(runs.id, usageLogs.runId))
+    .innerJoin(installations, eq(installations.id, runs.installationId))
+    .where(and(...conditions))
     .groupBy(usageLogs.model)
-    .orderBy(desc(sql`SUM(${usageLogs.costUsd})`));
+    .orderBy(desc(sql`total_tokens`));
 
-  return rows.map(normaliseNumeric);
+  return rows.map((r) => ({
+    model: r.model,
+    totalTokens: Number(r.totalTokens),
+    totalCostUsd: Number(r.totalCostUsd),
+    calls: Number(r.calls),
+  }));
 }
 
-/**
- * Cross-installation recent runs for a tenant.
- * Returns up to `limit` runs ordered by `started_at` descending.
- */
 export async function getRecentRunsForTenant(
   tenantId: number,
   limit = 20,
-): Promise<RecentRunForTenant[]> {
-  return db
+): Promise<RecentRunRow[]> {
+  const rows = await db
     .select({
       id: runs.id,
+      installationId: installations.id,
+      installationGithubId: installations.installationId,
+      repoFullName: installations.repoFullName,
       issueNumber: runs.issueNumber,
       prNumber: runs.prNumber,
       currentStage: runs.currentStage,
       status: runs.status,
       aiTokensUsed: runs.aiTokensUsed,
+      aiMinutesUsed: runs.aiMinutesUsed,
       startedAt: runs.startedAt,
-      repoFullName: installations.repoFullName,
-      installationId: installations.id,
     })
     .from(runs)
-    .innerJoin(installations, eq(runs.installationId, installations.id))
-    .where(eq(installations.tenantId, tenantId))
+    .innerJoin(installations, eq(installations.id, runs.installationId))
+    .where(tenantScope(tenantId))
     .orderBy(desc(runs.startedAt))
     .limit(limit);
+
+  return rows.map((r) => ({
+    ...r,
+    aiTokensUsed: r.aiTokensUsed ?? 0,
+    aiMinutesUsed: r.aiMinutesUsed ?? 0,
+    repoFullName: r.repoFullName ?? null,
+  }));
 }
 
-// ── Internal helpers ────────────────────────────────────────────────────────
-
-/**
- * Drizzle returns numeric aggregates as strings; normalise to number.
- */
-function normaliseNumeric<T extends { inputTokens: number; outputTokens: number; costUsd: number }>(
-  row: T,
-): T {
-  return {
-    ...row,
-    inputTokens: Number(row.inputTokens),
-    outputTokens: Number(row.outputTokens),
-    costUsd: Number(row.costUsd),
-  };
+/** Resolve a `range` query string into a Date lower-bound (or null). */
+export function rangeToSince(range: string | undefined): Date | null {
+  const now = Date.now();
+  if (range === "7d") return new Date(now - 7 * 24 * 60 * 60 * 1000);
+  if (range === "30d") return new Date(now - 30 * 24 * 60 * 60 * 1000);
+  return null; // all-time
 }
+
+// Silence unused-import lint when inArray is not yet used in v1.
+void inArray;

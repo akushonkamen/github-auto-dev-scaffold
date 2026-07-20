@@ -66,18 +66,26 @@ export default async function InstallationDetailPage({ params }: PageProps) {
 
       <header className="flex w-full max-w-3xl items-baseline justify-between">
         <h1 className="text-2xl font-bold">{installation.repoFullName}</h1>
-        <form action={async () => {
-          "use server";
-          await setActiveInstallationDbId(installation.id);
-          redirect("/dashboard");
-        }}>
-          <button
-            type="submit"
-            className="rounded-md border px-3 py-1 text-sm hover:bg-accent"
+        <div className="flex gap-2">
+          <Link
+            href={`/dashboard/installations/${dbId}/deploy`}
+            className="rounded-md bg-primary px-3 py-1 text-sm text-primary-foreground hover:bg-primary/90"
           >
-            Set as active
-          </button>
-        </form>
+            Deploy Pipeline
+          </Link>
+          <form action={async () => {
+            "use server";
+            await setActiveInstallationDbId(installation.id);
+            redirect("/dashboard");
+          }}>
+            <button
+              type="submit"
+              className="rounded-md border px-3 py-1 text-sm hover:bg-accent"
+            >
+              Set as active
+            </button>
+          </form>
+        </div>
       </header>
 
       <section className="w-full max-w-3xl space-y-1 rounded-lg border p-4 text-sm">

@@ -379,7 +379,7 @@ runs:
         echo "===== CLAUDE_RAW_END ====="
         # extract.sh writes summary + pr-language directly to GITHUB_OUTPUT.
         export STRUCTURED="$raw"
-        ./.github/actions/develop/extract.sh || echo "::warning::extract.sh exited non-zero"
+        bash ./.github/actions/develop/extract.sh || echo "::warning::extract.sh exited non-zero"
         # Append branch/sha (extract.sh owns summary/language).
         echo "branch-name=$HEAD_BRANCH" >> "$GITHUB_OUTPUT"
         echo "commit-sha=$sha" >> "$GITHUB_OUTPUT"

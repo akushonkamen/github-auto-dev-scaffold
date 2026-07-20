@@ -316,68 +316,93 @@ Key files:
 - POST [`/api/settings/api-keys`](../app/src/app/api/settings/api-keys/route.ts) — for programmatic clients; same validation and tenant scoping.
 - DELETE [`/api/settings/api-keys/[id]`](../app/src/app/api/settings/api-keys/[id]/route.ts) — returns 404 if id belongs to a different tenant.
 
-## 6.4 Usage dashboard: tenant-level aggregation (Issue #9)
+## 6.4 Usage dashboard (Issue #9)
 
 ```
-/dashboard/usage
+/dashboard/usage?range=7d|30d|all
    │
    ▼
  getServerSession()
- getTenantIdForSessionUser(session) — never from query params
+ getTenantIdForSessionUser()
+ rangeToSince(range)  // Date | null
    │
    ▼
- parseSince(range) — ?range=7d | 30d | all
+ Promise.all([
+   getUsageSummary(tenantId, since)
+   getUsageByStage(tenantId, since)
+   getUsageByModel(tenantId, since)
+   getRecentRunsForTenant(tenantId, 20)
+ ])
    │
    ▼
- ┌──────────────────────────────────────────────────┐
- │  Promise.all([                                    │
- │    getUsageSummary(tenantId, since),              │
- │    getUsageByStage(tenantId, since),              │
- │    getUsageByModel(tenantId, since),              │
- │    getRecentRunsForTenant(tenantId, 20),          │
- │  ])                                               │
- └──────────────────────────────────────────────────┘
-   │
-   ▼  (server component, no client JS)
- ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐
- │ Tokens   │ │ Cost USD │ │ AI min   │ │  Runs    │
- │ card     │ │ card     │ │ card     │ │  card    │
- └──────────┘ └──────────┘ └──────────┘ └──────────┘
- ┌──────────────────────┐  ┌──────────────────────┐
- │ By stage (table+bar) │  │ By model (table+bar) │
- └──────────────────────┘  └──────────────────────┘
- ┌──────────────────────────────────────────────────┐
- │ Recent 20 runs (cross-installation)               │
- │ Installation name | Issue link | Stage | Status   │
- └──────────────────────────────────────────────────┘
+ 4 summary cards + stage bars + model bars + recent 20 runs table
 ```
 
-**Tenant scoping** — every query joins `usage_logs`/`runs` → `installations` and
-filters by `installations.tenant_id`. This prevents cross-tenant reads even
-if a caller passes another tenant's id (defense-in-depth; the page already
-derives tenantId from the session via `getTenantIdForSessionUser`).
+All aggregations live in [`app/src/lib/usage-queries.ts`](../app/src/lib/usage-queries.ts) and
+JOIN `usage_logs → runs → installations` so every row is scoped by
+`installations.tenant_id`. `range` query string (`7d`/`30d`/`all`) lower-bounds
+`called_at` / `started_at`; `null` means all-time.
 
-**Time range** — `?range=7d` / `?range=30d` / no param (all-time). The
-`parseSince` helper converts to a `Date` offset used in `called_at` / `started_at`
-WHERE clauses. The toggle is rendered as `<RangeNav>` with active state styling.
+v1 uses pure CSS bars (`width: ${(tokens / max) * 100}%`); Recharts lands in v2.
 
-**Summary**:
-- `getUsageSummary` runs two aggregations: one on `usage_logs` (tokens, cost)
-  and one on `runs` (minutes, count). Both are scoped to the tenant + time range.
-- `getUsageByStage` groups by `usage_logs.stage` with SUM + COUNT.
-- `getUsageByModel` groups by `usage_logs.model` with SUM + COUNT.
-- Each breakdown table includes a CSS-only bar (relative to the most expensive
-  row in that group).
+## 6.5 Billing: plan + quota + Stripe (Issue #10)
 
-Key files:
+```
+GitHub issue ─▶ worker ─▶ checkQuota(tenantId) ─▶ allowed? ─▶ dispatch
+                              │                      │
+                              │                      └──no──▶ run.status=failed, HTTP 402
+                              │
+   /settings/billing ─▶ checkQuota() ─▶ render plan + usage bar
+        │
+        ▼ (Upgrade button)
+   POST /api/billing/checkout ─▶ Stripe Checkout Session (mode=subscription)
+        │
+        ▼ (Stripe redirects back)
+   success_url=/settings/billing?checkout=success
 
-| File | Role |
+Stripe ─▶ POST /api/webhook/stripe ─▶ verify sig ─▶ update tenants.plan + stripe_customer_id
+```
+
+**Plan limits** ([`app/src/lib/quota.ts`](../app/src/lib/quota.ts)):
+
+| Plan | Monthly token limit |
 |---|---|
-| [`app/src/lib/usage-queries.ts`](../app/src/lib/usage-queries.ts) | 4 query functions: `getUsageSummary`, `getUsageByStage`, `getUsageByModel`, `getRecentRunsForTenant` |
-| [`app/src/app/dashboard/usage/page.tsx`](../app/src/app/dashboard/usage/page.tsx) | Server component — time range nav, summary cards, breakdown tables, recent runs list |
+| `free` | 100,000 |
+| `pro` | 1,000,000 |
+| `enterprise` | ∞ |
 
-The page is protected by `middleware.ts` (matches `/dashboard/*`). No new
-middleware rules needed.
+`checkQuota(tenantId)` returns `{allowed, plan, used, limit, remaining}`. Usage
+is the sum of `input_tokens + output_tokens` in `usage_logs` for the current
+UTC month, scoped by `installations.tenant_id`. The worker route
+([`worker/route.ts`](../app/src/app/api/webhook/github/worker/route.ts)) calls
+`checkQuota` before `dispatchWorkflow`; on `allowed=false` it marks the run
+`failed` and returns HTTP 402 — the response body includes `plan/used/limit`
+so the dashboard can surface the reason, but no secrets are leaked (S4).
+
+**Stripe client** ([`app/src/lib/stripe-client.ts`](../app/src/lib/stripe-client.ts)):
+- Lazily-instantiated `Stripe` SDK with `STRIPE_SECRET_KEY`.
+- `PRO_PRICE_ID` from `STRIPE_PRO_PRICE_ID` env (Stripe `price_...` ID).
+- Throws on missing key — callers map to a generic 500 (S4).
+
+**Checkout** ([`/api/billing/checkout`](../app/src/app/api/billing/checkout/route.ts)):
+- Creates Checkout Session with `mode: subscription`, line item = Pro price.
+- `client_reference_id = tenant.id`, `metadata = { githubId, tenantId }`.
+- Re-uses existing `stripe_customer_id` if the tenant has one.
+
+**Portal** ([`/api/billing/portal`](../app/src/app/api/billing/portal/route.ts)):
+- Returns 404 if tenant has no `stripe_customer_id` yet.
+
+**Webhook** ([`/api/webhook/stripe`](../app/src/app/api/webhook/stripe/route.ts)):
+- Verifies `stripe-signature` against `STRIPE_WEBHOOK_SECRET`.
+- `checkout.session.completed` → upgrade tenant to `pro`, persist customer id.
+- `customer.subscription.updated` / `.deleted` → derive plan from `status` (`active`/`trialing` → `pro`, else → `free`).
+- Unhandled event types return 200 (no Stripe retry).
+
+**UI** ([`/settings/billing`](../app/src/app/settings/billing/page.tsx)):
+- Plan name + month-to-date usage bar (red when ≥90%).
+- Free plan → "Upgrade to Pro" button (POST `/api/billing/checkout` → redirect).
+- Paid plan → "Manage subscription" button (POST `/api/billing/portal` → redirect).
+- Client redirect logic lives in [`BillingActions.tsx`](../app/src/app/settings/billing/BillingActions.tsx).
 
 ## 7. CI
 
