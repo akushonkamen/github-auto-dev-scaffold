@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { Button } from "@/components/ui/button";
 
 interface Props {
   plan: "free" | "pro" | "enterprise";
@@ -54,25 +55,24 @@ export function BillingActions({ plan }: Props) {
   }
 
   return (
-    <div className="flex flex-col items-end gap-1">
+    <div className="flex flex-col items-stretch gap-1 sm:items-end">
       {plan === "free" ? (
-        <button
+        <Button
           type="button"
           onClick={startCheckout}
           disabled={loading !== null}
-          className="rounded bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
         >
           {loading === "checkout" ? "跳转中…" : "升级到 Pro"}
-        </button>
+        </Button>
       ) : (
-        <button
+        <Button
           type="button"
+          variant="outline"
           onClick={startPortal}
           disabled={loading !== null}
-          className="rounded border px-4 py-2 text-sm font-medium disabled:opacity-50"
         >
           {loading === "portal" ? "跳转中…" : "管理订阅"}
-        </button>
+        </Button>
       )}
       {error && <span className="text-xs text-destructive">{error}</span>}
     </div>
