@@ -8,6 +8,13 @@
       "when": 1784381492749,
       "tag": "0000_easy_earthquake",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1784387428580,
+      "tag": "0001_skinny_lethal_legion",
+      "breakpoints": true
     }
   ]
 }

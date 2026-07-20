@@ -1,15 +1,18 @@
-import { resolve } from "node:path";
 import { defineConfig } from "vitest/config";
+import path from "path";
 
 export default defineConfig({
+  test: {
+    globals: true,
+    environment: "node",
+    include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
+  },
   resolve: {
     alias: {
-      "@": resolve(__dirname, "./src"),
+      "@": path.resolve(__dirname, "./src"),
+      // `server-only` is a runtime guard for Next.js RSC boundaries; in vitest
+      // it has no meaning so we stub it to an empty module.
+      "server-only": path.resolve(__dirname, "./vitest.server-only-stub.ts"),
     },
-  },
-  test: {
-    // Keep the test environment fast — no DOM presets needed for lib tests
-    environment: "node",
-    include: ["src/**/*.test.ts"],
   },
 });

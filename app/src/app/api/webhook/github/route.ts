@@ -1,6 +1,5 @@
 import "server-only";
 import { NextResponse } from "next/server";
-import { Redis } from "@upstash/redis";
 
 import { verifyGitHubWebhookSignature } from "@/lib/webhook-verify";
 import {
@@ -19,59 +18,15 @@ import {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// Lazy Redis client for webhook dedup. Build / typecheck must succeed
-// without UPSTASH_REDIS env vars (CI, preview deploys), so we construct it
-// on first use and cache the error if missing — the route handles gracefully.
-let redisClient: Redis | null = null;
-let redisMissing = false;
-
-function getRedis(): Redis | null {
-  if (redisClient) return redisClient;
-  if (redisMissing) return null;
-  const url = process.env.UPSTASH_REDIS_REST_URL;
-  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
-  if (!url || !token) {
-    redisMissing = true;
-    return null;
-  }
-  redisClient = new Redis({ url, token });
-  return redisClient;
-}
-
-/**
- * Try to claim this delivery ID as processed. Returns `true` if this is
- * the first claim (SETNX succeeded), `false` if already processed.
- * When Redis is unavailable, returns `true` (allow through — at-least-once
- * delivery is safer than dropping events).
- */
-async function tryClaimDelivery(
-  deliveryId: string,
-): Promise<boolean | "dedup"> {
-  try {
-    const r = getRedis();
-    if (!r) return true; // Redis not configured — pass through
-    // SETNX: 1 if key was set, 0 if already exists
-    const claimed = await r.setnx(
-      `webhook:delivery:${deliveryId}`,
-      "1",
-    );
-    if (claimed === 0) return "dedup";
-    // 24-hour TTL so the key self-cleans
-    await r.expire(`webhook:delivery:${deliveryId}`, 86_400);
-    return true;
-  } catch {
-    // Redis transient error — allow through rather than dropping events
-    return true;
-  }
-}
-
 /**
  * GitHub webhook entrypoint.
  *
  * Lifecycle (PRD §6 S10, §8 R6):
  *  1. Read raw body as text (NEVER `.json()` — signature is over raw bytes).
  *  2. Verify X-Hub-Signature-256 with timingSafeEqual. Reject → 401.
- *  3. Dedup via X-GitHub-Delivery (Upstash Redis SETNX + TTL 24h).
+ *  3. Dedup via X-GitHub-Delivery (Upstash Redis SETNX, Issue #5 will
+ *     add the Redis layer; for v1 the queue's idempotency covers the
+ *     common case).
  *  4. Route:
  *     - installation / installation_repositories → sync upsert (Postgres)
  *     - issues / pull_request / label / issue_comment → QStash enqueue
@@ -107,21 +62,6 @@ export async function POST(request: Request): Promise<Response> {
 
   if (!event) {
     return NextResponse.json({ error: "Missing event header" }, { status: 400 });
-  }
-
-  // ── Dedup: claim this delivery ID ────────────────────────────────
-  if (deliveryId) {
-    const claimed = await tryClaimDelivery(deliveryId);
-    if (claimed === "dedup") {
-      // Already processed this delivery — ack 200 + signal so callers
-      // can observe the dedup (but do NOT log it per S4).
-      return NextResponse.json({
-        ok: true,
-        event,
-        deliveryId,
-        dedup: true,
-      });
-    }
   }
 
   // Parse only after verification succeeds — avoids wasting cycles on
