@@ -121,17 +121,21 @@ export function CreateWorkspace({ installationDbId, repoFullName }: Props) {
             createdAt: string;
           }>;
         };
-        const seen = new Set(chat.map((m) => m.meta));
-        const fresh: ChatMsg[] = data.messages
-          .filter((m) => !seen.has(`bot-${m.id}`))
-          .map((m) => ({
-            role: "ai" as const,
-            body: m.body,
-            meta: `bot-${m.id}`,
-          }));
-        if (fresh.length > 0) {
-          setChat((prev) => [...prev, ...fresh]);
-        }
+        // Dedupe INSIDE setChat so we read the latest state, not the
+        // stale closure capture. setInterval closures capture `chat` at
+        // creation time — using it directly causes every poll to re-add
+        // the same message.
+        setChat((prev) => {
+          const seen = new Set(prev.map((m) => m.meta));
+          const fresh: ChatMsg[] = data.messages
+            .filter((m) => !seen.has(`bot-${m.id}`))
+            .map((m) => ({
+              role: "ai" as const,
+              body: m.body,
+              meta: `bot-${m.id}`,
+            }));
+          return fresh.length > 0 ? [...prev, ...fresh] : prev;
+        });
       } catch {
         // network errors are non-fatal for chat — SSE keeps stage updates going
       }
