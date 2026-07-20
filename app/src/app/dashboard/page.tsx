@@ -3,18 +3,17 @@ import { getServerSession } from "next-auth";
 import { redirect } from "next/navigation";
 
 import { authOptions } from "@/auth/config";
-import { INSTALLATION_URL, getAppInstallationsForUser } from "@/auth/with-app-installer";
-import { findInstallationByGithubId } from "@/lib/installations-queries";
+import { INSTALLATION_URL } from "@/auth/with-app-installer";
+import { getDashboardInstallations, type DashboardInstallation } from "@/lib/dashboard";
 import { getActiveInstallationDbId } from "@/lib/active-installation";
 
-interface GithubInstallation {
-  id: number;
-  account: { login: string; type: string };
-}
+export const dynamic = "force-dynamic";
 
 interface EnrichedRow {
-  github: GithubInstallation;
+  id: number;
   dbId: number | null;
+  accountLogin: string;
+  accountType: string;
   repoFullName: string | null;
   installedAt: Date | null;
   runsCount: number;
@@ -32,7 +31,7 @@ export default async function DashboardPage() {
     | string
     | undefined;
 
-  let installations: GithubInstallation[] = [];
+  let installations: DashboardInstallation[] = [];
   let installationsError = false;
   if (session.accessToken) {
     try {
@@ -44,18 +43,16 @@ export default async function DashboardPage() {
 
   const activeDbId = await getActiveInstallationDbId();
 
-  const rows: EnrichedRow[] = [];
-  for (const inst of installations) {
-    const meta = await findInstallationByGithubId(inst.id).catch(() => null);
-    rows.push({
-      github: inst,
-      dbId: meta?.id ?? null,
-      repoFullName: meta?.repoFullName ?? null,
-      installedAt: meta?.installedAt ?? null,
-      runsCount: meta?.runsCount ?? 0,
-      isActive: meta?.id != null && meta.id === activeDbId,
-    });
-  }
+  const rows: EnrichedRow[] = installations.map((inst) => ({
+    id: inst.id,
+    dbId: inst.dbId,
+    accountLogin: inst.accountLogin,
+    accountType: inst.accountType,
+    repoFullName: inst.repoFullName,
+    installedAt: inst.installedAt,
+    runsCount: inst.runsCount,
+    isActive: inst.dbId != null && inst.dbId === activeDbId,
+  }));
 
   return (
     <main className="flex min-h-screen flex-col items-center gap-8 p-8">
@@ -97,7 +94,7 @@ export default async function DashboardPage() {
         ) : (
           <ul className="space-y-2">
             {rows.map((row) => {
-              const account = `${row.github.account.login} (${row.github.account.type})`;
+              const account = `${row.accountLogin} (${row.accountType})`;
               const target =
                 row.dbId != null ? `/dashboard/installations/${row.dbId}` : null;
               const inner = (
@@ -123,7 +120,7 @@ export default async function DashboardPage() {
               );
               return (
                 <li
-                  key={row.github.id}
+                  key={row.id}
                   className={
                     "rounded-md border p-3 transition hover:border-primary/60 " +
                     (row.isActive ? "border-primary/60 bg-primary/5" : "")

@@ -21,6 +21,7 @@ export interface GitHubInstallation {
 /** Installation enriched with DB data for the dashboard list. */
 export interface DashboardInstallation {
   id: number; // GitHub installation_id
+  dbId: number | null; // DB installations.id (null = webhook not yet landed)
   accountLogin: string;
   accountType: string;
   accountId: number;
@@ -177,6 +178,7 @@ export async function getDashboardInstallations(
     const runsCount = db ? (runsCountMap.get(db.id) ?? 0) : 0;
     return {
       id: gh.id,
+      dbId: db?.id ?? null,
       accountLogin: gh.account.login,
       accountType: gh.account.type,
       accountId: gh.account.id,
