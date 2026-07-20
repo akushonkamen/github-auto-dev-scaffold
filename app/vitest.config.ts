@@ -6,15 +6,13 @@ export default defineConfig({
     globals: true,
     environment: "node",
     include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
-    coverage: {
-      provider: "v8",
-      reporter: ["text", "lcov"],
-      include: ["src/lib/**", "src/app/api/webhook/github/worker/**"],
-    },
   },
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
+      // `server-only` is a runtime guard for Next.js RSC boundaries; in vitest
+      // it has no meaning so we stub it to an empty module.
+      "server-only": path.resolve(__dirname, "./vitest.server-only-stub.ts"),
     },
   },
 });

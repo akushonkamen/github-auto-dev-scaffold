@@ -200,6 +200,210 @@ Session strategy is `jwt` (no DB table — v1 simplification). Protected routes 
 checked in middleware via `next-auth/jwt` `getToken()`; server components use
 `getServerSession(authOptions)`.
 
+## 6.1 Dashboard: installations + switching (Issue #6)
+
+```
+/dashboard                           /dashboard/installations/[id]
+   │                                       │
+   ▼                                       ▼
+ getServerSession()                    getServerSession()
+ getAppInstallationsForUser()          findInstallationByDbId(id)
+                                       getAppInstallationsForUser() — verify membership
+   │                                       │
+   ▼                                       ▼
+ for each GitHub installation:         render detail + recent runs
+   findInstallationByGithubId(id)
+     → installations row + runs count
+   mark isActive if matches cookie
+```
+
+**Switching UX** — clicking an installation navigates to its detail page;
+the "Set as active" server action writes a 1-year cookie
+`gitautodev_active_installation=<db_id>` so the top-level dashboard can
+surface the most recently used installation. The cookie is a UX affordance
+only — every read of the detail page re-verifies that the user's GitHub
+token still lists the installation (`getAppInstallationsForUser().some(id)`).
+
+Key files:
+
+| File | Role |
+|---|---|
+| [`app/src/app/dashboard/page.tsx`](../app/src/app/dashboard/page.tsx) | Lists installations from GitHub API enriched with DB rows + runs count |
+| [`app/src/app/dashboard/installations/[id]/page.tsx`](../app/src/app/dashboard/installations/[id]/page.tsx) | Detail page — metadata + recent 10 runs (SSE lands in Issue #7) |
+| [`app/src/lib/installations-queries.ts`](../app/src/lib/installations-queries.ts) | `findInstallationByGithubId` / `findInstallationByDbId` / `countRunsForInstallation` / `recentRunsForInstallation` |
+| [`app/src/lib/active-installation.ts`](../app/src/lib/active-installation.ts) | Cookie helper — `getActiveInstallationDbId` / `setActiveInstallationDbId` |
+
+## 6.2 Dashboard: runs list + detail + SSE (Issue #7)
+
+```
+/dashboard/installations/[id]/runs          /dashboard/installations/[id]/runs/[runId]
+        │                                                  │
+        ▼                                                  ▼
+ listRecentRunsForInstallation(50)              findRunInInstallation(runId, instId)
+ listUsageLogsForRun(runId)        ← detail only
+        │                                                  │
+        ▼                                                  ▼
+ server-rendered <table> +                        server-rendered header +
+ RunsLiveTable (client)                           RunDetailHeader (client)
+        │                                                  │
+        ▼                                                  ▼
+ for each active run: open EventSource              single EventSource
+ /api/runs/[runId]/events                          /api/runs/[runId]/events
+```
+
+### SSE protocol
+
+- `ready` — server hello, fires once at stream open
+- `snapshot` — full run row; client merges into state by id; server sends only on JSON-stringified diff
+- `complete` — final snapshot + close (status ∈ {dispatched, failed})
+- `timeout` — 10-minute cap hit
+- `error` — run row vanished mid-stream
+
+Server polls Postgres every 2 seconds (Postgres LISTEN/NOTIFY is v2). Auth
+on stream open re-derives `installationGithubId` via `findInstallationForRun`,
+then checks GitHub `/user/installations` membership — same invariant as the
+page route.
+
+Key files:
+
+| File | Role |
+|---|---|
+| [`app/src/app/dashboard/installations/[id]/runs/page.tsx`](../app/src/app/dashboard/installations/[id]/runs/page.tsx) | List page — 50 most recent runs |
+| [`app/src/app/dashboard/installations/[id]/runs/RunsLiveTable.tsx`](../app/src/app/dashboard/installations/[id]/runs/RunsLiveTable.tsx) | Client — up to 10 concurrent EventSource subscriptions on active rows |
+| [`app/src/app/dashboard/installations/[id]/runs/[runId]/page.tsx`](../app/src/app/dashboard/installations/[id]/runs/[runId]/page.tsx) | Detail page — run header + `usage_logs` breakdown |
+| [`app/src/app/dashboard/installations/[id]/runs/[runId]/RunDetailHeader.tsx`](../app/src/app/dashboard/installations/[id]/runs/[runId]/RunDetailHeader.tsx) | Client — single EventSource for the run header |
+| [`app/src/app/api/runs/[runId]/events/route.ts`](../app/src/app/api/runs/[runId]/events/route.ts) | SSE endpoint — 2s poll, 10min cap, terminal-status close |
+| [`app/src/lib/runs-queries.ts`](../app/src/lib/runs-queries.ts) | `listRecentRunsForInstallation` / `findRunInInstallation` (installation-scoped) / `listUsageLogsForRun` / `findInstallationForRun` |
+
+## 6.3 BYOK: settings/engines + AES-256-GCM (Issue #8)
+
+```
+/settings/engines                /api/settings/api-keys           /api/settings/api-keys/[id]
+   │                                  │                                │
+   ▼                                  ▼                                ▼
+ getServerSession()                POST                              DELETE
+ getTenantIdForSessionUser()       getTenantIdForSessionUser()       getTenantIdForSessionUser()
+ listApiKeysForTenant(tenantId)    encryptKey(plaintext)             deleteApiKey(tenantId, id)
+   │                                insertApiKey(...)
+   ▼                                  ▼
+ ApiKeyForm (server action)        201 {id, provider, keyHint}
+ ApiKeyList (rows w/ keyHint)
+```
+
+**Crypto** ([`app/src/lib/crypto.ts`](../app/src/lib/crypto.ts)):
+- AES-256-GCM via `node:crypto`, master key from `APP_BYOK_MASTER_KEY` (32-byte base64).
+- Format `${ivB64}:${ctB64}:${tagB64}` stored in `api_keys.encrypted_key`.
+- Refuses to operate if master key missing/malformed — never falls back to a hardcoded key (S4).
+- Plaintext is only ever in memory long enough to call `encryptKey()` or `decryptKey()`.
+
+**Tenant resolver** ([`app/src/lib/tenant.ts`](../app/src/lib/tenant.ts)):
+- `getTenantIdForSessionUser(session)` → `tenants.githubId === session.user.githubId`.
+- Every BYOK query goes through this resolver — never trusts client-supplied tenant id.
+
+**Queries** ([`app/src/lib/api-keys-queries.ts`](../app/src/lib/api-keys-queries.ts)):
+- `listApiKeysForTenant` returns only public fields (`id`, `provider`, `keyHint`, `createdAt`, `rotatedAt`) — never the ciphertext.
+- `insertApiKey({ tenantId, provider, encryptedKey, keyHint })`.
+- `deleteApiKey(tenantId, id)` — scoped by both ids, returns `boolean`.
+- `getDecryptedKeyForTenant(tenantId, provider)` — internal-only, for the engine dispatch path (Issue #9).
+
+**UI** ([`app/src/app/settings/engines/page.tsx`](../app/src/app/settings/engines/page.tsx)):
+- Page is protected by `middleware.ts` (matches `/settings/*`).
+- `ApiKeyForm` is a server-component `<form action={addApiKeyAction}>` — no client JS, no fetch.
+- `ApiKeyList` shows provider + `••••{last4}` hint + delete button.
+- Server actions live in [`actions.ts`](../app/src/app/settings/engines/actions.ts) (`addApiKeyAction`, `deleteApiKeyAction`).
+
+**API routes**:
+- POST [`/api/settings/api-keys`](../app/src/app/api/settings/api-keys/route.ts) — for programmatic clients; same validation and tenant scoping.
+- DELETE [`/api/settings/api-keys/[id]`](../app/src/app/api/settings/api-keys/[id]/route.ts) — returns 404 if id belongs to a different tenant.
+
+## 6.4 Usage dashboard (Issue #9)
+
+```
+/dashboard/usage?range=7d|30d|all
+   │
+   ▼
+ getServerSession()
+ getTenantIdForSessionUser()
+ rangeToSince(range)  // Date | null
+   │
+   ▼
+ Promise.all([
+   getUsageSummary(tenantId, since)
+   getUsageByStage(tenantId, since)
+   getUsageByModel(tenantId, since)
+   getRecentRunsForTenant(tenantId, 20)
+ ])
+   │
+   ▼
+ 4 summary cards + stage bars + model bars + recent 20 runs table
+```
+
+All aggregations live in [`app/src/lib/usage-queries.ts`](../app/src/lib/usage-queries.ts) and
+JOIN `usage_logs → runs → installations` so every row is scoped by
+`installations.tenant_id`. `range` query string (`7d`/`30d`/`all`) lower-bounds
+`called_at` / `started_at`; `null` means all-time.
+
+v1 uses pure CSS bars (`width: ${(tokens / max) * 100}%`); Recharts lands in v2.
+
+## 6.5 Billing: plan + quota + Stripe (Issue #10)
+
+```
+GitHub issue ─▶ worker ─▶ checkQuota(tenantId) ─▶ allowed? ─▶ dispatch
+                              │                      │
+                              │                      └──no──▶ run.status=failed, HTTP 402
+                              │
+   /settings/billing ─▶ checkQuota() ─▶ render plan + usage bar
+        │
+        ▼ (Upgrade button)
+   POST /api/billing/checkout ─▶ Stripe Checkout Session (mode=subscription)
+        │
+        ▼ (Stripe redirects back)
+   success_url=/settings/billing?checkout=success
+
+Stripe ─▶ POST /api/webhook/stripe ─▶ verify sig ─▶ update tenants.plan + stripe_customer_id
+```
+
+**Plan limits** ([`app/src/lib/quota.ts`](../app/src/lib/quota.ts)):
+
+| Plan | Monthly token limit |
+|---|---|
+| `free` | 100,000 |
+| `pro` | 1,000,000 |
+| `enterprise` | ∞ |
+
+`checkQuota(tenantId)` returns `{allowed, plan, used, limit, remaining}`. Usage
+is the sum of `input_tokens + output_tokens` in `usage_logs` for the current
+UTC month, scoped by `installations.tenant_id`. The worker route
+([`worker/route.ts`](../app/src/app/api/webhook/github/worker/route.ts)) calls
+`checkQuota` before `dispatchWorkflow`; on `allowed=false` it marks the run
+`failed` and returns HTTP 402 — the response body includes `plan/used/limit`
+so the dashboard can surface the reason, but no secrets are leaked (S4).
+
+**Stripe client** ([`app/src/lib/stripe-client.ts`](../app/src/lib/stripe-client.ts)):
+- Lazily-instantiated `Stripe` SDK with `STRIPE_SECRET_KEY`.
+- `PRO_PRICE_ID` from `STRIPE_PRO_PRICE_ID` env (Stripe `price_...` ID).
+- Throws on missing key — callers map to a generic 500 (S4).
+
+**Checkout** ([`/api/billing/checkout`](../app/src/app/api/billing/checkout/route.ts)):
+- Creates Checkout Session with `mode: subscription`, line item = Pro price.
+- `client_reference_id = tenant.id`, `metadata = { githubId, tenantId }`.
+- Re-uses existing `stripe_customer_id` if the tenant has one.
+
+**Portal** ([`/api/billing/portal`](../app/src/app/api/billing/portal/route.ts)):
+- Returns 404 if tenant has no `stripe_customer_id` yet.
+
+**Webhook** ([`/api/webhook/stripe`](../app/src/app/api/webhook/stripe/route.ts)):
+- Verifies `stripe-signature` against `STRIPE_WEBHOOK_SECRET`.
+- `checkout.session.completed` → upgrade tenant to `pro`, persist customer id.
+- `customer.subscription.updated` / `.deleted` → derive plan from `status` (`active`/`trialing` → `pro`, else → `free`).
+- Unhandled event types return 200 (no Stripe retry).
+
+**UI** ([`/settings/billing`](../app/src/app/settings/billing/page.tsx)):
+- Plan name + month-to-date usage bar (red when ≥90%).
+- Free plan → "Upgrade to Pro" button (POST `/api/billing/checkout` → redirect).
+- Paid plan → "Manage subscription" button (POST `/api/billing/portal` → redirect).
+- Client redirect logic lives in [`BillingActions.tsx`](../app/src/app/settings/billing/BillingActions.tsx).
+
 ## 7. CI
 
 [`app-ci.yml`](../.github/workflows/app-ci.yml) runs only on `app/**` changes:
