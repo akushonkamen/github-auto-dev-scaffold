@@ -4,14 +4,7 @@ import { and, desc, eq } from "drizzle-orm";
 import { db } from "@/db/client";
 import { apiKeys } from "@/db/schema";
 
-/**
- * DB queries for BYOK API key management (Issue #8).
- *
- * Every query is scoped by `tenantId` derived from the session — never
- * accept a tenant id from client input (security constraint).
- */
-
-export interface ApiKeyRow {
+export interface ApiKeyRowPublic {
   id: number;
   provider: string;
   keyHint: string | null;
@@ -20,13 +13,14 @@ export interface ApiKeyRow {
 }
 
 /**
- * List all API keys for a tenant, with `encryptedKey` redacted.
- * Only exposes metadata — no key material leaves the server (S4).
+ * List BYOK rows for a tenant. The encrypted blob is never returned —
+ * only the public hint fields. This is the only safe shape to send to the
+ * browser or to log.
  */
 export async function listApiKeysForTenant(
   tenantId: number,
-): Promise<ApiKeyRow[]> {
-  return db
+): Promise<ApiKeyRowPublic[]> {
+  const rows = await db
     .select({
       id: apiKeys.id,
       provider: apiKeys.provider,
@@ -37,47 +31,55 @@ export async function listApiKeysForTenant(
     .from(apiKeys)
     .where(eq(apiKeys.tenantId, tenantId))
     .orderBy(desc(apiKeys.createdAt));
+  return rows;
 }
 
-export interface InsertApiKeyParams {
+export async function insertApiKey(input: {
   tenantId: number;
   provider: string;
   encryptedKey: string;
-  keyHint: string;
-}
-
-/**
- * Insert a new encrypted API key row for a tenant.
- * The `encryptedKey` must already be encrypted by `crypto.ts` — this
- * function does not encrypt (the caller owns that responsibility so the
- * layer boundary is explicit).
- */
-export async function insertApiKey(params: InsertApiKeyParams) {
+  keyHint: string | null;
+}): Promise<{ id: number }> {
   const [row] = await db
     .insert(apiKeys)
     .values({
-      tenantId: params.tenantId,
-      provider: params.provider,
-      encryptedKey: params.encryptedKey,
-      keyHint: params.keyHint,
+      tenantId: input.tenantId,
+      provider: input.provider,
+      encryptedKey: input.encryptedKey,
+      keyHint: input.keyHint,
     })
     .returning({ id: apiKeys.id });
-
+  if (!row) throw new Error("insert failed");
   return row;
 }
 
 /**
- * Delete an API key row, scoped to a specific tenant.
- * Returns the number of deleted rows (0 if the id did not belong to the
- * tenant, preventing cross-tenant deletion).
+ * Delete scoped by both tenantId and id. Returns true if a row was deleted,
+ * false otherwise — caller can map false to 404.
  */
 export async function deleteApiKey(
   tenantId: number,
   id: number,
-): Promise<number> {
+): Promise<boolean> {
   const result = await db
     .delete(apiKeys)
-    .where(and(eq(apiKeys.id, id), eq(apiKeys.tenantId, tenantId)));
+    .where(and(eq(apiKeys.id, id), eq(apiKeys.tenantId, tenantId)))
+    .returning({ id: apiKeys.id });
+  return result.length > 0;
+}
 
-  return result.rowCount ?? 0;
+/** Decrypt helper for internal callers (worker dispatch, usage audit). */
+export async function getDecryptedKeyForTenant(
+  tenantId: number,
+  provider: string,
+): Promise<string | null> {
+  const rows = await db
+    .select({ encryptedKey: apiKeys.encryptedKey })
+    .from(apiKeys)
+    .where(and(eq(apiKeys.tenantId, tenantId), eq(apiKeys.provider, provider)))
+    .orderBy(desc(apiKeys.createdAt))
+    .limit(1);
+  if (!rows[0]) return null;
+  const { decryptKey } = await import("@/lib/crypto");
+  return decryptKey(rows[0].encryptedKey);
 }

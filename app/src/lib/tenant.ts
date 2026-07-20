@@ -1,33 +1,32 @@
 import "server-only";
 import { eq } from "drizzle-orm";
-import type { Session } from "next-auth";
 
 import { db } from "@/db/client";
 import { tenants } from "@/db/schema";
 
+interface SessionLike {
+  user?: { githubId?: number } & Record<string, unknown>;
+}
+
 /**
- * Resolve the tenant ID for a session-authenticated user.
+ * Resolve the tenant row for the currently signed-in user via
+ * `tenants.githubId === session.githubId`. Returns `null` if the session
+ * has no githubId or the tenant row does not exist yet ( installations
+ * webhook may not have fired for this user ).
  *
- * Reads `githubId` from the session (populated by the JWT callback in
- * auth/config.ts), looks up the matching `tenants.githubId` row, and
- * returns `tenants.id` or `null` if the user has no tenant record.
- *
- * All BYOK queries MUST be scoped by the returned tenantId — never accept
- * a tenant id from client input (security constraint).
+ * Every BYOK query MUST go through this resolver so the tenant scope is
+ * always derived from the session — never from a client-supplied id.
  */
 export async function getTenantIdForSessionUser(
-  session: Session,
+  session: SessionLike | null | undefined,
 ): Promise<number | null> {
-  const githubId = (session.user as Record<string, unknown> | undefined)
-    ?.githubId as number | undefined;
+  const githubId = session?.user?.githubId;
+  if (typeof githubId !== "number" || !Number.isFinite(githubId)) return null;
 
-  if (!githubId) return null;
-
-  const row = await db
+  const rows = await db
     .select({ id: tenants.id })
     .from(tenants)
     .where(eq(tenants.githubId, githubId))
     .limit(1);
-
-  return row[0]?.id ?? null;
+  return rows[0]?.id ?? null;
 }

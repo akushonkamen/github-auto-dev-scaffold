@@ -1,103 +1,91 @@
 import "server-only";
-import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 
+import { getServerSession } from "next-auth";
 import { authOptions } from "@/auth/config";
-import { encrypt } from "@/lib/crypto";
-import { insertApiKey } from "@/lib/api-keys-queries";
 import { getTenantIdForSessionUser } from "@/lib/tenant";
+import { insertApiKey } from "@/lib/api-keys-queries";
+import { encryptKey, keyHint } from "@/lib/crypto";
 
-// ── POST /api/settings/api-keys ──────────────────────────────────────────
-// Programmatic endpoint: accepts { provider, apiKey }, encrypts the key,
-// inserts into DB, returns the new row (metadata only — never echoes the
-// raw key). Server-side validation + tenant scoping (S4).
+export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const VALID_PROVIDERS = new Set([
+const ALLOWED_PROVIDERS = new Set([
   "anthropic",
   "openai",
   "deepseek",
   "custom",
 ]);
 
-export async function POST(request: Request) {
+/**
+ * POST /api/settings/api-keys
+ * Body: { "provider": string, "apiKey": string }
+ *
+ * Encrypts the raw key with AES-256-GCM using APP_BYOK_MASTER_KEY, stores
+ * the ciphertext in `api_keys.encrypted_key`, and returns the public row
+ * (id, provider, keyHint, createdAt) — never the raw key.
+ *
+ * The POST route exists for programmatic clients (CLI, curl). The browser
+ * form uses a server action (see ../../settings/engines/actions.ts).
+ */
+export async function POST(request: Request): Promise<Response> {
   const session = await getServerSession(authOptions);
   if (!session?.user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const tenantId = await getTenantIdForSessionUser(session);
-  if (!tenantId) {
-    return NextResponse.json(
-      { error: "No tenant found for this user" },
-      { status: 404 },
-    );
-  }
-
-  let body: { provider?: unknown; apiKey?: unknown };
+  let body: unknown;
   try {
     body = await request.json();
   } catch {
+    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
+  }
+  const provider =
+    typeof (body as { provider?: unknown })?.provider === "string"
+      ? ((body as { provider: string }).provider).trim()
+      : "";
+  const apiKey =
+    typeof (body as { apiKey?: unknown })?.apiKey === "string"
+      ? ((body as { apiKey: string }).apiKey).trim()
+      : "";
+
+  if (!ALLOWED_PROVIDERS.has(provider)) {
+    return NextResponse.json({ error: "Invalid provider" }, { status: 400 });
+  }
+  if (apiKey.length < 8) {
+    return NextResponse.json({ error: "API key too short" }, { status: 400 });
+  }
+
+  const tenantId = await getTenantIdForSessionUser(session);
+  if (tenantId === null) {
     return NextResponse.json(
-      { error: "Invalid JSON body" },
-      { status: 400 },
+      { error: "Tenant not initialized" },
+      { status: 409 },
     );
   }
 
-  const { provider, apiKey } = body;
-
-  if (typeof provider !== "string" || !VALID_PROVIDERS.has(provider)) {
-    return NextResponse.json(
-      {
-        error: `Invalid provider. Must be one of: ${Array.from(VALID_PROVIDERS).join(", ")}`,
-      },
-      { status: 400 },
-    );
-  }
-
-  if (typeof apiKey !== "string" || apiKey.length === 0) {
-    return NextResponse.json(
-      { error: "apiKey is required and must be a non-empty string" },
-      { status: 400 },
-    );
-  }
-
-  // Encrypt — throws on missing / invalid master key (security: never
-  // fall back to a hardcoded key).
   let encryptedKey: string;
+  let hint: string;
   try {
-    encryptedKey = encrypt(apiKey);
-  } catch (err) {
-    const message =
-      err instanceof Error ? err.message : "Encryption failed";
-    // S4: generic message, never log the raw error which could hint at
-    // the master key format.
-    console.error("BYOK encryption error:", message);
+    encryptedKey = encryptKey(apiKey);
+    hint = keyHint(apiKey);
+  } catch {
+    // Missing/malformed master key — generic 500, no leak (S4).
     return NextResponse.json(
-      {
-        error: "Internal encryption error — check server configuration",
-      },
+      { error: "Encryption unavailable" },
       { status: 500 },
     );
   }
-
-  // keyHint: last 4 characters — enough for the user to identify which
-  // key they're looking at, never enough to reconstruct (S4).
-  const keyHint = apiKey.length >= 4 ? apiKey.slice(-4) : apiKey;
 
   const row = await insertApiKey({
     tenantId,
     provider,
     encryptedKey,
-    keyHint,
+    keyHint: hint,
   });
 
   return NextResponse.json(
-    {
-      id: row.id,
-      provider,
-      keyHint,
-    },
+    { id: row.id, provider, keyHint: hint },
     { status: 201 },
   );
 }

@@ -1,46 +1,46 @@
 import "server-only";
-import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 
+import { getServerSession } from "next-auth";
 import { authOptions } from "@/auth/config";
-import { deleteApiKey } from "@/lib/api-keys-queries";
 import { getTenantIdForSessionUser } from "@/lib/tenant";
+import { deleteApiKey } from "@/lib/api-keys-queries";
 
-// ── DELETE /api/settings/api-keys/[id] ───────────────────────────────────
-// Tenant-scoped key deletion. The tenant id is derived from the session,
-// never from client input — this prevents cross-tenant key deletion.
+export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+/**
+ * DELETE /api/settings/api-keys/[id]
+ *
+ * Tenant-scoped delete. The id from the URL is paired with the session's
+ * tenantId — a row from another tenant is never deleted (returns 404).
+ */
 export async function DELETE(
-  _request: Request,
-  { params }: { params: { id: string } },
-) {
+  request: Request,
+  context: { params: Promise<{ id: string }> },
+): Promise<Response> {
+  const { id: idStr } = await context.params;
+  const id = Number.parseInt(idStr, 10);
+  if (!Number.isFinite(id) || id <= 0) {
+    return NextResponse.json({ error: "Invalid id" }, { status: 400 });
+  }
+
   const session = await getServerSession(authOptions);
   if (!session?.user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
   const tenantId = await getTenantIdForSessionUser(session);
-  if (!tenantId) {
+  if (tenantId === null) {
     return NextResponse.json(
-      { error: "No tenant found for this user" },
-      { status: 404 },
+      { error: "Tenant not initialized" },
+      { status: 409 },
     );
   }
 
-  const id = Number(params.id);
-  if (!Number.isFinite(id) || id <= 0) {
-    return NextResponse.json({ error: "Invalid key id" }, { status: 400 });
+  const ok = await deleteApiKey(tenantId, id);
+  if (!ok) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
-
-  const deleted = await deleteApiKey(tenantId, id);
-
-  if (deleted === 0) {
-    return NextResponse.json(
-      { error: "Key not found" },
-      { status: 404 },
-    );
-  }
-
   return NextResponse.json({ ok: true });
 }
