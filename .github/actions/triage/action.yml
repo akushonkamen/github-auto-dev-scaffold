@@ -173,6 +173,10 @@ runs:
       with:
         anthropic_api_key: ${{ inputs.api-key }}
         github_token: ${{ inputs.repo-token }}
+        # Triage fires on issues.opened. Issues created via the App
+        # installation token (e.g. smoke test, future bot-driven flows)
+        # have actor=gitautodev[bot]; allow explicitly so the action runs.
+        allowed_bots: "gitautodev[bot],akushonkamen[bot]"
         prompt: |
           You are the triage module of the GithubAutoDev pipeline.
           A new Issue was just opened.
@@ -373,33 +377,7 @@ runs:
         printf '%s' "$raw" | head -c 3000
         echo ""
         echo "===== CLAUDE_RAW_END ====="
-        ./.github/actions/triage/extract.sh
-
-    # Post the triage comment ourselves — Claude no longer self-posts.
-    # PR-133 follow-up: GLM passthrough tool-use is unreliable, so the
-    # workflow owns the gh issue comment call.
-    - name: Post triage comment
-      id: post-comment
-      if: always() && steps.parse.outputs.decision != ''
-      shell: bash
-      env:
-        GH_TOKEN: ${{ inputs.repo-token }}
-        ISSUE_NUMBER: ${{ inputs.issue-number }}
-        COMMENT_BODY: ${{ steps.parse.outputs.comment_body }}
-      run: |
-        set -euo pipefail
-        if [ -z "$COMMENT_BODY" ]; then
-          echo "::warning::comment_body empty — skipping post."
-          exit 0
-        fi
-        url=$(gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
-          --body "$COMMENT_BODY" 2>/dev/null || echo "")
-        if [ -n "$url" ]; then
-          echo "comment-url=$url" >> "$GITHUB_OUTPUT"
-          echo "Posted triage comment: $url"
-        else
-          echo "::warning::gh issue comment returned no URL (token scope or rate limit?)."
-        fi
+        bash ./.github/actions/triage/extract.sh
 
     - name: Emit common outputs
       id: emit
@@ -407,10 +385,9 @@ runs:
       env:
         DECISION: ${{ steps.parse.outputs.decision }}
         DRY_RUN: ${{ inputs.dry-run }}
-        COMMENT_URL: ${{ steps.post-comment.outputs.comment-url }}
       run: |
         echo "stage=triage" >> "$GITHUB_OUTPUT"
-        echo "audit-comment-url=$COMMENT_URL" >> "$GITHUB_OUTPUT"
+        echo "audit-comment-url=" >> "$GITHUB_OUTPUT"
         if [ "$DRY_RUN" = "true" ]; then
           echo "Dry-run: skipping label application (comment posting is caller's job)"
         fi
