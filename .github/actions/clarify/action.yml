@@ -315,4 +315,4 @@ runs:
         STRUCTURED: ${{ steps.claude-run-backup.outputs.structured_output || steps.claude-run.outputs.structured_output }}
       run: |
         set -euo pipefail
-        ./.github/actions/clarify/extract.sh
+        bash ./.github/actions/clarify/extract.sh
