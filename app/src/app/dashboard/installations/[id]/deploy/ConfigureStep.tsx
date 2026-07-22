@@ -19,6 +19,7 @@ interface Props {
 export function ConfigureStep({ config, onChange, onBack, onApply }: Props) {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [touched, setTouched] = useState(false);
+  const [permsAgreed, setPermsAgreed] = useState(false);
 
   const llmKeyValid = config.llmKey.trim().length >= 8;
   // Classic PAT (ghp_...) with `repo` + `workflow` scope OR fine-grained
@@ -29,7 +30,7 @@ export function ConfigureStep({ config, onChange, onBack, onApply }: Props) {
     patTrim.startsWith("ghp_") || patTrim.startsWith("github_pat_");
   const ownerValid = config.claudePatOwner.trim().length > 0;
   const branchValid = /^[a-z0-9._/-]+$/i.test(config.baseBranch.trim()) && config.baseBranch.trim().length > 0;
-  const canApply = llmKeyValid && patValid && ownerValid && branchValid;
+  const canApply = llmKeyValid && patValid && ownerValid && branchValid && permsAgreed;
 
   function update<K extends keyof WizardConfig>(key: K, value: string) {
     onChange({ ...config, [key]: value });
@@ -116,6 +117,32 @@ export function ConfigureStep({ config, onChange, onBack, onApply }: Props) {
         )}
       </section>
 
+      <section className="rounded-md border border-primary/30 bg-primary/5 p-4 space-y-3">
+        <h2 className="text-lg font-semibold">权限授权清单</h2>
+        <p className="text-sm text-muted-foreground">
+          部署将要求目标 repo 授予 GitAutoDev App / PAT 以下权限：
+        </p>
+        <ul className="space-y-1 text-sm">
+          <li>• <strong>Contents: write</strong> — 写入 <code>.github/</code> 工作流与 CLAUDE.md</li>
+          <li>• <strong>Issues: write</strong> — 创建/标记 triage label</li>
+          <li>• <strong>Pull requests: write</strong> — 开/评/合 AI 生成的 PR</li>
+          <li>• <strong>Workflows</strong> — 触发 GitHub Actions（含 PAT <code>workflow</code> scope）</li>
+        </ul>
+        <label className="flex items-start gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={permsAgreed}
+            onChange={(e) => setPermsAgreed(e.target.checked)}
+            className="mt-1"
+          />
+          <span>
+            我已阅读并同意上述权限授权。已知 branch protection ruleset 会包含
+            <code className="mx-1 rounded bg-muted px-1">"GitAutoDev Deploy"</code>
+            例外 actor，以便 pipeline-fix 维护者绕过 PR 限制救援故障。
+          </span>
+        </label>
+      </section>
+
       <div className="flex justify-between">
         <button
           type="button"
@@ -129,6 +156,7 @@ export function ConfigureStep({ config, onChange, onBack, onApply }: Props) {
           disabled={!canApply}
           onClick={onApply}
           className="rounded-md bg-primary px-4 py-2 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed"
+          title={!permsAgreed ? "请先勾选权限授权" : undefined}
         >
           开始部署
         </button>
