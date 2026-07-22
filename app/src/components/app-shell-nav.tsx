@@ -8,6 +8,7 @@ import {
   LayoutDashboard,
   Receipt,
   Settings,
+  Sparkles,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -15,9 +16,11 @@ interface NavItem {
   href: string;
   label: string;
   icon: React.ComponentType<{ className?: string }>;
+  accent?: "work" | "default";
 }
 
 const NAV: NavItem[] = [
+  { href: "/create", label: "造物", icon: Sparkles, accent: "work" },
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/dashboard/usage", label: "用量", icon: Activity },
   { href: "/settings/engines", label: "引擎密钥", icon: KeyRound },
@@ -55,16 +58,24 @@ export function AppShellNav() {
                 className={cn(
                   "group flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
                   active
-                    ? "bg-secondary text-secondary-foreground"
-                    : "text-muted-foreground hover:bg-accent hover:text-foreground",
+                    ? item.accent === "work"
+                      ? "bg-work/10 text-work"
+                      : "bg-secondary text-secondary-foreground"
+                    : item.accent === "work"
+                      ? "text-work/90 hover:bg-work/10 hover:text-work"
+                      : "text-muted-foreground hover:bg-accent hover:text-foreground",
                 )}
               >
                 <Icon
                   className={cn(
                     "h-4 w-4 shrink-0",
                     active
-                      ? "text-foreground"
-                      : "text-muted-foreground group-hover:text-foreground",
+                      ? item.accent === "work"
+                        ? "text-work"
+                        : "text-foreground"
+                      : item.accent === "work"
+                        ? "text-work/80 group-hover:text-work"
+                        : "text-muted-foreground group-hover:text-foreground",
                   )}
                 />
                 <span>{item.label}</span>

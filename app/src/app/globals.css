@@ -42,6 +42,33 @@
     --ring: 240 5.9% 10%;
 
     --radius: 0.5rem;
+
+    /* "造物" mode — vibecoding intake palette */
+    --work: 172 80% 29%;          /* AI working — teal */
+    --work-soft: 165 47% 92%;
+    --you: 38 86% 45%;            /* needs user — amber */
+    --you-soft: 38 86% 94%;
+    --fail: 14 58% 44%;           /* failure — brick */
+    --fail-soft: 14 58% 92%;
+    --ink: 203 28% 16%;           /* deep teal-ink for serif */
+    --cream: 192 14% 95%;         /* warm paper background */
+
+    /* Font stacks — vibecoding typography */
+    --font-serif: "Noto Serif SC", "Source Han Serif SC", "Songti SC", "STSong", ui-serif, serif;
+    --font-sans-sc: "Noto Sans SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", ui-sans-serif, system-ui, sans-serif;
+    --font-mono-jb: "JetBrains Mono", "SF Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+  }
+
+  @keyframes omc-pulse {
+    0% { transform: scale(0.6); opacity: 0.9; }
+    100% { transform: scale(1.35); opacity: 0; }
+  }
+  @keyframes omc-blink {
+    50% { opacity: 0.25; }
+  }
+  @keyframes omc-fadein {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: none; }
   }
 
   .dark {
@@ -81,6 +108,15 @@
     --border: 240 3.7% 17%;
     --input: 240 3.7% 17%;
     --ring: 240 4.9% 83.9%;
+
+    --work: 172 60% 45%;
+    --work-soft: 172 30% 18%;
+    --you: 38 86% 55%;
+    --you-soft: 38 50% 16%;
+    --fail: 14 58% 55%;
+    --fail-soft: 14 30% 16%;
+    --ink: 192 30% 90%;
+    --cream: 240 8% 6%;
   }
 }
 
