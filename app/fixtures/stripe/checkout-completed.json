@@ -1,0 +1,31 @@
+{
+  "id": "evt_test_checkout_completed",
+  "object": "event",
+  "api_version": "2024-06-20",
+  "created": 1718000000,
+  "type": "checkout.session.completed",
+  "livemode": false,
+  "pending_webhooks": 0,
+  "request": {
+    "id": "req_test_000",
+    "idempotency_key": null
+  },
+  "data": {
+    "object": {
+      "id": "cs_test_a1b2c3",
+      "object": "checkout.session",
+      "mode": "subscription",
+      "status": "complete",
+      "customer": "cus_test_customer_001",
+      "client_reference_id": "1001",
+      "metadata": {
+        "githubId": "4321",
+        "tenantId": "1001"
+      },
+      "subscription": "sub_test_subscription_001",
+      "payment_status": "paid",
+      "amount_total": 1900,
+      "currency": "usd"
+    }
+  }
+}

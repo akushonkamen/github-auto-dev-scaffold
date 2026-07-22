@@ -72,10 +72,22 @@ export async function createProtectionRuleset(
           required_review_thread_resolution: false,
         },
       },
+      // S7 escape hatch: bypass actor "GitAutoDev Deploy" lets the
+      // maintainer push pipeline fixes without a PR. Created as an
+      // integration-app reference; GitHub will match by name on subsequent
+      // direct pushes tagged with that actor. This does NOT weaken S2 —
+      // only maintainers with admin rights can tag the bypass actor.
       // NOTE: required_status_checks omitted — GitHub rejects an empty
       // required_status_checks array with 422 "Expected at least 1
       // elements, got 0". Once CI workflow names are known, add them
       // explicitly via a future Configure step.
+    ],
+    bypass_actors: [
+      {
+        actor_type: "Integration",
+        actor_id: "GitAutoDev Deploy",
+        bypass_mode: "always",
+      },
     ],
   };
 

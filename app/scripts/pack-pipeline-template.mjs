@@ -160,7 +160,13 @@ async function main() {
 
   await writeFile(join(DEST_DIR, "manifest.json"), JSON.stringify(manifest, null, 2));
 
-  console.log(`[pack-pipeline-template] OK: ${manifestEntries.length} files, ${labelsCount} labels`);
+  // version.txt — read by checkUpgradeNeeded() to compare against
+  // installations.pipeline_version. PIPELINE_VERSION env var overrides;
+  // default v0.1.0 keeps the bundle self-describing when the var is unset.
+  const pipelineVersion = process.env.PIPELINE_VERSION ?? "v0.1.0";
+  await writeFile(join(DEST_DIR, "version.txt"), pipelineVersion, "utf8");
+
+  console.log(`[pack-pipeline-template] OK: ${manifestEntries.length} files, ${labelsCount} labels, version=${pipelineVersion}`);
 }
 
 main().catch((err) => {
