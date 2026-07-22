@@ -13,6 +13,7 @@ export const dynamic = "force-dynamic";
 const ALLOWED_PROVIDERS = new Set([
   "anthropic",
   "openai",
+  "glm",
   "deepseek",
   "custom",
 ]);
