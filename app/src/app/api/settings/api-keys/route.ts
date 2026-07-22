@@ -14,6 +14,7 @@ const ALLOWED_PROVIDERS = new Set([
   "anthropic",
   "openai",
   "deepseek",
+  "glm",
   "custom",
 ]);
 
