@@ -82,13 +82,12 @@ export async function createProtectionRuleset(
       // elements, got 0". Once CI workflow names are known, add them
       // explicitly via a future Configure step.
     ],
-    bypass_actors: [
-      {
-        actor_type: "Integration",
-        actor_id: "GitAutoDev Deploy",
-        bypass_mode: "always",
-      },
-    ],
+    // S7: NO bypass_actors. The dogfood rule has zero branch-protection
+    // escape hatches. The single sanctioned bypass is the `pipeline-fix`
+    // PR label, enforced by the branch-protection workflow (not here).
+    // A previous version set actor_type:"Integration" with actor_id as a
+    // string name — GitHub requires numeric App ID there and silently
+    // never matches, so the "bypass" was both broken and a violation of S7.
   };
 
   const res = await fetch(`${API}/repos/${repo.owner}/${repo.repo}/rulesets`, {

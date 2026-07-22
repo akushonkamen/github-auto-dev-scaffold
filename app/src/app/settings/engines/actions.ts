@@ -12,6 +12,7 @@ import { encryptKey, keyHint } from "@/lib/crypto";
 const ALLOWED_PROVIDERS = new Set([
   "anthropic",
   "openai",
+  "glm",
   "deepseek",
   "custom",
 ]);
