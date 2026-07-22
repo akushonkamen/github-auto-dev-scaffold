@@ -60,7 +60,7 @@ export function ConfigureStep({ config, onChange, onBack, onApply }: Props) {
         <h2 className="text-lg font-semibold">必填：部署用 PAT</h2>
         <p className="text-sm text-muted-foreground">
           GitHub App 的 installation token 调 Actions vars/secrets API 会被
-          GitHub 限制（403 "Resource not accessible by integration"）。
+          GitHub 限制（403 &quot;Resource not accessible by integration&quot;）。
           必须提供 PAT 才能写入 vars/secrets/branch protection。S4：不回显、不入数据库。
         </p>
         <Field
@@ -136,9 +136,10 @@ export function ConfigureStep({ config, onChange, onBack, onApply }: Props) {
             className="mt-1"
           />
           <span>
-            我已阅读并同意上述权限授权。已知 branch protection ruleset 会包含
-            <code className="mx-1 rounded bg-muted px-1">"GitAutoDev Deploy"</code>
-            例外 actor，以便 pipeline-fix 维护者绕过 PR 限制救援故障。
+            我已阅读并同意上述权限授权。已知 branch protection ruleset
+            不设 bypass actor —— S7 唯一豁免是
+            <code className="mx-1 rounded bg-muted px-1">pipeline-fix</code>
+            PR label，由 branch-protection workflow 校验。
           </span>
         </label>
       </section>
