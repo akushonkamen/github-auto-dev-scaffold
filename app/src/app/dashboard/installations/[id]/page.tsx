@@ -9,6 +9,9 @@ import {
   recentRunsForInstallation,
 } from "@/lib/installations-queries";
 import { setActiveInstallationDbId } from "@/lib/active-installation";
+import { checkUpgradeNeeded } from "@/lib/deploy-pipeline/versioning";
+import { getPlanForTenant } from "@/lib/quota";
+import { UpgradeButton } from "./UpgradeButton";
 
 interface PageProps {
   params: Promise<{ id: string }>;
@@ -55,6 +58,8 @@ export default async function InstallationDetailPage({ params }: PageProps) {
   }
 
   const recentRuns = await recentRunsForInstallation(installation.id, 10);
+  const versionInfo = await checkUpgradeNeeded(installation.id);
+  const plan = await getPlanForTenant(installation.tenantId);
 
   return (
     <main className="flex min-h-screen flex-col items-center gap-6 p-8">
@@ -88,6 +93,22 @@ export default async function InstallationDetailPage({ params }: PageProps) {
         </div>
       </header>
 
+      <section className="w-full max-w-3xl space-y-2 rounded-lg border border-primary/30 bg-primary/5 p-4 text-sm">
+        <div className="flex items-baseline justify-between gap-2">
+          <h2 className="text-base font-semibold">Pipeline version</h2>
+          <div className="flex items-center gap-2">
+            <code className="rounded bg-muted px-2 py-0.5">{versionInfo.current}</code>
+            <span className="text-muted-foreground">→</span>
+            <code className="rounded bg-muted px-2 py-0.5">{versionInfo.latest}</code>
+          </div>
+        </div>
+        {versionInfo.needsUpgrade ? (
+          <UpgradeButton dbId={dbId} latest={versionInfo.latest} />
+        ) : (
+          <p className="text-muted-foreground">Up to date.</p>
+        )}
+      </section>
+
       <section className="w-full max-w-3xl space-y-1 rounded-lg border p-4 text-sm">
         <div className="flex justify-between">
           <span className="text-muted-foreground">GitHub installation ID</span>
@@ -104,6 +125,10 @@ export default async function InstallationDetailPage({ params }: PageProps) {
         <div className="flex justify-between">
           <span className="text-muted-foreground">Total runs</span>
           <span>{installation.runsCount}</span>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-muted-foreground">Plan</span>
+          <span className="font-medium uppercase">{plan}</span>
         </div>
       </section>
 
